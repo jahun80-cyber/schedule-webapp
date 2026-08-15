@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import {
   Settings, Users, Tag, CalendarDays, ClipboardList, CheckCircle2,
   PlayCircle, Plus, Trash2, Store, Loader2, AlertTriangle,
-  Sparkles, Save, ClipboardCheck, LogOut, Lock,
+  Sparkles, Save, ClipboardCheck, LogOut, Lock, Download, Upload,
 } from "lucide-react";
 import { api, getPassword, setPassword, clearPassword, getRole, setRole } from "./api";
 import {
@@ -881,6 +881,53 @@ function MainApp({ role, onLogout }) {
     } catch (e) { alert(e.message); }
   };
 
+  const [backupBusy, setBackupBusy] = useState(false);
+  const restoreFileRef = useRef(null);
+
+  const downloadBackup = async () => {
+    setBackupBusy(true);
+    try {
+      const backup = await api.getBackup();
+      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const today = new Date().toISOString().slice(0, 10);
+      a.href = url;
+      a.download = `매장스케줄_전체백업_${today}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      alert("백업 다운로드에 실패했습니다: " + e.message);
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
+  const pickRestoreFile = () => restoreFileRef.current?.click();
+
+  const handleRestoreFile = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (!window.confirm("백업 파일로 전체 데이터를 덮어씁니다. 지금 있는 모든 매장 데이터가 백업 시점 상태로 바뀝니다. 계속할까요?")) return;
+    setBackupBusy(true);
+    try {
+      const text = await file.text();
+      const backup = JSON.parse(text);
+      await api.restoreBackup(backup);
+      const list = await api.listStores();
+      setStoreList(list);
+      setCurrentStoreId(list[0]?.id || null);
+      alert("복원이 완료됐습니다.");
+    } catch (e) {
+      alert("복원에 실패했습니다: " + e.message);
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
   if (loading && storeList === null) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
@@ -918,6 +965,26 @@ function MainApp({ role, onLogout }) {
             <>
               <button onClick={renameStore} className="text-xs text-slate-300 hover:text-white px-2 py-1.5">이름변경</button>
               <button onClick={deleteStore} className="text-xs text-red-300 hover:text-red-200 px-2 py-1.5">삭제</button>
+            </>
+          )}
+          {isAdmin && (
+            <>
+              <span className="w-px h-4 bg-slate-700 mx-1" />
+              <button
+                onClick={downloadBackup} disabled={backupBusy}
+                title="전체 매장 데이터를 파일로 내려받습니다 (재배포 전에 꼭 눌러두세요)"
+                className="inline-flex items-center gap-1 text-xs text-emerald-300 hover:text-emerald-200 px-2 py-1.5 disabled:opacity-50"
+              >
+                <Download size={12} /> 전체 백업
+              </button>
+              <button
+                onClick={pickRestoreFile} disabled={backupBusy}
+                title="백업 파일로 전체 데이터를 복원합니다"
+                className="inline-flex items-center gap-1 text-xs text-amber-300 hover:text-amber-200 px-2 py-1.5 disabled:opacity-50"
+              >
+                <Upload size={12} /> 백업 복원
+              </button>
+              <input ref={restoreFileRef} type="file" accept="application/json" onChange={handleRestoreFile} className="hidden" />
             </>
           )}
           <span className="text-[10px] text-slate-400 flex items-center gap-1 ml-1">

@@ -113,6 +113,29 @@ async function handleApi(req, res, pathname, method) {
 
     if (pathname === "/api/health") return sendJson(res, 200, { ok: true });
 
+    // GET /api/backup - 전체 데이터를 파일로 내려받기 (관리자 전용)
+    if (pathname === "/api/backup" && method === "GET") {
+      const auth = checkAuth(req, "admin");
+      if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
+      const db = readDb();
+      return sendJson(res, 200, db);
+    }
+
+    // POST /api/restore - 백업 파일로 전체 데이터 덮어쓰기 (관리자 전용)
+    if (pathname === "/api/restore" && method === "POST") {
+      const auth = checkAuth(req, "admin");
+      if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
+      const body = await readBody(req);
+      if (!body || !Array.isArray(body.stores) || typeof body.storeData !== "object") {
+        return sendJson(res, 400, { error: "올바른 백업 파일이 아닙니다." });
+      }
+      await writeDb((db) => {
+        db.stores = body.stores;
+        db.storeData = body.storeData;
+      });
+      return sendJson(res, 200, { ok: true });
+    }
+
     // GET /api/stores
     if (pathname === "/api/stores" && method === "GET") {
       const auth = checkAuth(req, "staff");
