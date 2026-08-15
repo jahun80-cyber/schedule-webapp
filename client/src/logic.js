@@ -459,8 +459,8 @@ function assignShiftCodes(schedule, employees, tags, settings, ftTemplates, ptTe
     const extendedToday = isWeekendBucket(settings, day); // 주말/공휴일/(설정에 따라)금요일 등 연장근무 상황
     ptEmps.forEach((e) => {
       if (!e.fixedCode) return; // 근무형태가 지정 안 된 파트타이머는 건드리지 않음
-      const isWeekdayPerson = e.dayType === "평일";
-      const isWeekendPerson = e.dayType === "주말";
+      const isWeekdayPerson = e.dayType === "평일" || e.dayType === "평일전담" || e.dayType === "전체가능";
+      const isWeekendPerson = e.dayType === "주말" || e.dayType === "주말전담" || e.dayType === "전체가능";
       const todayIsWeekendCalendar = wd === "토" || wd === "일";
       const dayMatch =
         (isWeekdayPerson && !todayIsWeekendCalendar) ||
