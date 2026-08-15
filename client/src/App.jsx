@@ -10,7 +10,7 @@ import {
   defaultStoreData,
   buildMonthDays, applyPersonalTags, assignRestDays, assignShiftCodes,
   validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT,
-  isOffTag, dowBucket, nextMonth, emptySchedule, reconcileSchedule,
+  isOffTag, dowBucket, nextMonth, emptySchedule, reconcileSchedule, isActiveEmployee,
 } from "./logic";
 
 /* ============================================================
@@ -224,30 +224,68 @@ function SettingsTab({ data, setData }) {
    ============================================================ */
 function EmployeesTab({ data, setData }) {
   const emps = data.employees;
+  const ptCodeOptions = ["", ...data.ptTemplates.map((t) => t.code)];
   const update = (id, patch) => setData((d) => ({ ...d, employees: d.employees.map((e) => (e.id === id ? { ...e, ...patch } : e)) }));
   const remove = (id) => setData((d) => ({ ...d, employees: d.employees.filter((e) => e.id !== id) }));
-  const add = () => setData((d) => ({ ...d, employees: [...d.employees, { id: "e" + Date.now(), name: "", type: "정직원", dayType: "전체가능", status: "재직" }] }));
+  const addFT = () => setData((d) => ({ ...d, employees: [...d.employees, { id: "e" + Date.now(), name: "", type: "정직원", status: "재직" }] }));
+  const addPT = () => setData((d) => ({
+    ...d,
+    employees: [...d.employees, {
+      id: "e" + Date.now(), name: "", type: "파트타이머",
+      fixedCode: d.ptTemplates[0]?.code || "", extendedCode: "", dayType: "평일", status: "재직",
+    }],
+  }));
+
+  const ftList = emps.filter((e) => e.type === "정직원");
+  const ptList = emps.filter((e) => e.type === "파트타이머");
 
   return (
-    <div className="max-w-4xl">
-      <SectionCard title="직원목록" icon={Users} right={<GhostBtn onClick={add} icon={Plus}>직원 추가</GhostBtn>}>
+    <div className="max-w-5xl">
+      <SectionCard title="정직원" icon={Users} right={<GhostBtn onClick={addFT} icon={Plus}>정직원 추가</GhostBtn>}>
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
               <th className="py-2 font-semibold">이름</th>
-              <th className="py-2 font-semibold">구분</th>
+              <th className="py-2 font-semibold">재직상태</th>
+              <th className="py-2 w-8"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {ftList.map((e) => (
+              <tr key={e.id} className="border-b border-slate-100">
+                <td className="py-1.5 pr-2"><TextInput value={e.name} onChange={(v) => update(e.id, { name: v })} className="w-40" /></td>
+                <td className="py-1.5 pr-2"><Select value={e.status} onChange={(v) => update(e.id, { status: v })} options={["재직", "퇴직예정", "퇴직"]} /></td>
+                <td><IconBtn onClick={() => remove(e.id)} title="삭제" danger /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </SectionCard>
+
+      <SectionCard title="파트타이머" icon={Users} right={<GhostBtn onClick={addPT} icon={Plus}>파트타이머 추가</GhostBtn>}>
+        <p className="text-xs text-slate-500 mb-3">
+          기본근무형태는 평소 근무하는 코드, 연장근무형태는 그날이 "주말/공휴일"(설정에 따라 금요일 포함)로 판정될 때 대신 쓰일 코드입니다.
+          연장근무형태를 비워두면 항상 기본근무형태 그대로 채워집니다.
+        </p>
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+              <th className="py-2 font-semibold">이름</th>
+              <th className="py-2 font-semibold">기본근무형태</th>
+              <th className="py-2 font-semibold">연장근무형태</th>
               <th className="py-2 font-semibold">근무요일구분</th>
               <th className="py-2 font-semibold">재직상태</th>
               <th className="py-2 w-8"></th>
             </tr>
           </thead>
           <tbody>
-            {emps.map((e) => (
+            {ptList.map((e) => (
               <tr key={e.id} className="border-b border-slate-100">
                 <td className="py-1.5 pr-2"><TextInput value={e.name} onChange={(v) => update(e.id, { name: v })} className="w-32" /></td>
-                <td className="py-1.5 pr-2"><Select value={e.type} onChange={(v) => update(e.id, { type: v })} options={["정직원", "파트타이머"]} /></td>
-                <td className="py-1.5 pr-2"><Select value={e.dayType} onChange={(v) => update(e.id, { dayType: v })} options={["전체가능", "평일전담", "주말전담"]} /></td>
-                <td className="py-1.5 pr-2"><Select value={e.status} onChange={(v) => update(e.id, { status: v })} options={["재직", "퇴직"]} /></td>
+                <td className="py-1.5 pr-2"><Select value={e.fixedCode || ""} onChange={(v) => update(e.id, { fixedCode: v })} options={ptCodeOptions} className="w-24" /></td>
+                <td className="py-1.5 pr-2"><Select value={e.extendedCode || ""} onChange={(v) => update(e.id, { extendedCode: v })} options={ptCodeOptions} className="w-24" /></td>
+                <td className="py-1.5 pr-2"><Select value={e.dayType} onChange={(v) => update(e.id, { dayType: v })} options={["평일", "주말"]} /></td>
+                <td className="py-1.5 pr-2"><Select value={e.status} onChange={(v) => update(e.id, { status: v })} options={["재직", "퇴직예정", "퇴직"]} /></td>
                 <td><IconBtn onClick={() => remove(e.id)} title="삭제" danger /></td>
               </tr>
             ))}
@@ -391,7 +429,7 @@ function ShiftTemplatesTab({ data, setData }) {
 
   const updPt = (i, patch) => setData((d) => { const a = [...d.ptTemplates]; a[i] = { ...a[i], ...patch }; return { ...d, ptTemplates: a }; });
   const rmPt = (i) => setData((d) => ({ ...d, ptTemplates: d.ptTemplates.filter((_, idx) => idx !== i) }));
-  const addPt = () => setData((d) => ({ ...d, ptTemplates: [...d.ptTemplates, { code: "", start: "", end: "", wd: "", fri: "", we: "" }] }));
+  const addPt = () => setData((d) => ({ ...d, ptTemplates: [...d.ptTemplates, { code: "", start: "", end: "" }] }));
 
   return (
     <div className="max-w-6xl">
@@ -428,23 +466,22 @@ function ShiftTemplatesTab({ data, setData }) {
         </div>
       </SectionCard>
 
-      <SectionCard title="파트타이머 근무형태" icon={ClipboardCheck} right={<GhostBtn onClick={addPt} icon={Plus}>추가</GhostBtn>}>
+      <SectionCard title="파트타이머 근무형태 (코드 정의)" icon={ClipboardCheck} right={<GhostBtn onClick={addPt} icon={Plus}>추가</GhostBtn>}>
+        <p className="text-xs text-slate-500 mb-3">
+          여기서는 코드와 시간대만 정의합니다. 실제로 "누가 어떤 코드로 언제 근무할지"는 [직원목록] 탭에서 파트타이머별로 지정합니다.
+        </p>
         <table className="text-sm w-full">
           <thead>
             <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
-              <th className="py-2">코드</th><th>시작</th><th>종료</th>
-              <th>평일(월~목)</th><th>금/공휴일</th><th>주말(토~일)</th><th></th>
+              <th className="py-2">코드</th><th>시작</th><th>종료</th><th></th>
             </tr>
           </thead>
           <tbody>
             {ptTemplates.map((t, i) => (
               <tr key={i} className="border-b border-slate-100">
-                <td className="py-1"><TextInput value={t.code} onChange={(v) => updPt(i, { code: v })} className="w-16" /></td>
-                <td><TextInput value={t.start} onChange={(v) => updPt(i, { start: v })} className="w-20" /></td>
-                <td><TextInput value={t.end} onChange={(v) => updPt(i, { end: v })} className="w-20" /></td>
-                <td><NumberInput value={t.wd} onChange={(v) => updPt(i, { wd: v })} className="w-14" /></td>
-                <td><NumberInput value={t.fri} onChange={(v) => updPt(i, { fri: v })} className="w-14" /></td>
-                <td><NumberInput value={t.we} onChange={(v) => updPt(i, { we: v })} className="w-14" /></td>
+                <td className="py-1"><TextInput value={t.code} onChange={(v) => updPt(i, { code: v })} className="w-20" /></td>
+                <td><TextInput value={t.start} onChange={(v) => updPt(i, { start: v })} className="w-24" /></td>
+                <td><TextInput value={t.end} onChange={(v) => updPt(i, { end: v })} className="w-24" /></td>
                 <td><IconBtn onClick={() => rmPt(i)} danger /></td>
               </tr>
             ))}
@@ -467,7 +504,7 @@ function ScheduleGrid({ data, schedule, setSchedule, monthKey, days }) {
     return Array.from(set);
   }, [tags, data.ftTemplates, data.ptTemplates]);
 
-  const active = employees.filter((e) => e.status === "재직");
+  const active = employees.filter((e) => isActiveEmployee(e));
   const ftList = active.filter((e) => e.type === "정직원");
   const ptList = active.filter((e) => e.type === "파트타이머");
 
@@ -672,7 +709,7 @@ function ScheduleTab({ data, schedule, setSchedule, monthsMeta, monthKey }) {
    2개월 요약 탭
    ============================================================ */
 function SummaryTab({ data, schedule, monthsMeta }) {
-  const active = data.employees.filter((e) => e.status === "재직");
+  const active = data.employees.filter((e) => isActiveEmployee(e));
   const target =
     satTarget(monthsMeta[0].days) + sunHolTarget(monthsMeta[0].days) +
     satTarget(monthsMeta[1].days) + sunHolTarget(monthsMeta[1].days);

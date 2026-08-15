@@ -23,15 +23,15 @@ const DEFAULT_TAGS = [
 ];
 
 const DEFAULT_EMPLOYEES = [
-  { id: "e1", name: "이재훈", type: "정직원", dayType: "전체가능", status: "재직" },
-  { id: "e2", name: "하윤수", type: "정직원", dayType: "전체가능", status: "재직" },
-  { id: "e3", name: "강미성", type: "정직원", dayType: "전체가능", status: "재직" },
-  { id: "e4", name: "송나현", type: "정직원", dayType: "전체가능", status: "재직" },
-  { id: "e5", name: "박승민", type: "파트타이머", dayType: "평일전담", status: "재직" },
-  { id: "e6", name: "김현준", type: "파트타이머", dayType: "평일전담", status: "재직" },
-  { id: "e7", name: "임예빈", type: "파트타이머", dayType: "주말전담", status: "재직" },
-  { id: "e8", name: "이주현", type: "파트타이머", dayType: "주말전담", status: "재직" },
-  { id: "e9", name: "이채은", type: "파트타이머", dayType: "평일전담", status: "재직" },
+  { id: "e1", name: "이재훈", type: "정직원", status: "재직" },
+  { id: "e2", name: "하윤수", type: "정직원", status: "재직" },
+  { id: "e3", name: "강미성", type: "정직원", status: "재직" },
+  { id: "e4", name: "송나현", type: "정직원", status: "재직" },
+  { id: "e5", name: "박승민", type: "파트타이머", fixedCode: "D(8)", extendedCode: "E(8)", dayType: "평일", status: "재직" },
+  { id: "e6", name: "김현준", type: "파트타이머", fixedCode: "A(6)", extendedCode: "", dayType: "평일", status: "재직" },
+  { id: "e7", name: "임예빈", type: "파트타이머", fixedCode: "A(6)", extendedCode: "", dayType: "주말", status: "재직" },
+  { id: "e8", name: "이주현", type: "파트타이머", fixedCode: "E(8)", extendedCode: "", dayType: "주말", status: "재직" },
+  { id: "e9", name: "이채은", type: "파트타이머", fixedCode: "A(6)", extendedCode: "", dayType: "평일", status: "재직" },
 ];
 
 const DEFAULT_HOLIDAYS = [
@@ -57,11 +57,11 @@ const DEFAULT_FT_TEMPLATES = [
 ];
 
 const DEFAULT_PT_TEMPLATES = [
-  { code: "A(6)", start: "10:30", end: "17:00", wd: 1, fri: 1, we: 1 },
-  { code: "B(6)", start: "13:30", end: "20:00", wd: "", fri: "", we: "" },
-  { code: "C(6)", start: "14:00", end: "20:30", wd: "", fri: "", we: "" },
-  { code: "D(8)", start: "11:00", end: "20:00", wd: 1, fri: "", we: "" },
-  { code: "E(8)", start: "11:30", end: "20:30", wd: "", fri: 1, we: 1 },
+  { code: "A(6)", start: "10:30", end: "17:00" },
+  { code: "B(6)", start: "13:30", end: "20:00" },
+  { code: "C(6)", start: "14:00", end: "20:30" },
+  { code: "D(8)", start: "11:00", end: "20:00" },
+  { code: "E(8)", start: "11:30", end: "20:30" },
 ];
 
 function defaultSettings() {
@@ -145,6 +145,10 @@ function sunHolTarget(days) {
   );
 }
 
+function isActiveEmployee(e) {
+  return e.status === "재직" || e.status === "퇴직예정";
+}
+
 function isOffTag(tags, v) {
   if (!v) return false;
   const t = tags.find((t) => t.code === v);
@@ -213,7 +217,7 @@ function assignRestDays(schedule, employees, tags, settings, monthsMeta) {
   Object.keys(next.m1).forEach((id) => (next.m1[id] = [...schedule.m1[id]]));
   Object.keys(next.m2).forEach((id) => (next.m2[id] = [...schedule.m2[id]]));
 
-  const ftEmps = employees.filter((e) => e.type === "정직원" && e.status === "재직");
+  const ftEmps = employees.filter((e) => e.type === "정직원" && isActiveEmployee(e));
   const ftCount = ftEmps.length;
   if (ftCount === 0) return { schedule: next, message: "정직원이 없어 자동배정을 건너뛰었습니다.", inserted: 0 };
 
@@ -364,8 +368,8 @@ function assignShiftCodes(schedule, employees, tags, settings, ftTemplates, ptTe
   Object.keys(next.m1).forEach((id) => (next.m1[id] = [...schedule.m1[id]]));
   Object.keys(next.m2).forEach((id) => (next.m2[id] = [...schedule.m2[id]]));
 
-  const ftEmps = employees.filter((e) => e.type === "정직원" && e.status === "재직");
-  const ptEmps = employees.filter((e) => e.type === "파트타이머" && e.status === "재직");
+  const ftEmps = employees.filter((e) => e.type === "정직원" && isActiveEmployee(e));
+  const ptEmps = employees.filter((e) => e.type === "파트타이머" && isActiveEmployee(e));
   const timeline = buildTimeline(monthsMeta);
   const usage = {};
   const getU = (id, code) => usage[id + "|" + code] || 0;
@@ -451,49 +455,23 @@ function assignShiftCodes(schedule, employees, tags, settings, ftTemplates, ptTe
       }
     }
 
-    // ---- 파트타이머 ----
-    const db = dowBucket(settings, wd);
-    let bucket;
-    if (db === "주말") bucket = "주말";
-    else if (db === "평일(소프트-주말수준)" || isHoliday) bucket = "금공휴일";
-    else bucket = "평일";
-
-    const ptEligible = [];
+    // ---- 파트타이머 (개인별로 고정된 근무형태를 그대로 채움 - 형평성 순환 없음) ----
+    const extendedToday = isWeekendBucket(settings, day); // 주말/공휴일/(설정에 따라)금요일 등 연장근무 상황
     ptEmps.forEach((e) => {
+      if (!e.fixedCode) return; // 근무형태가 지정 안 된 파트타이머는 건드리지 않음
+      const isWeekdayPerson = e.dayType === "평일";
+      const isWeekendPerson = e.dayType === "주말";
+      const todayIsWeekendCalendar = wd === "토" || wd === "일";
       const dayMatch =
-        e.dayType === "전체가능" ||
-        (e.dayType === "평일전담" && db !== "주말") ||
-        (e.dayType === "주말전담" && db === "주말");
-      if (dayMatch) {
-        const v = arr(e.id)[day.day - 1] || "";
-        if (v === "") ptEligible.push(e);
-      }
+        (isWeekdayPerson && !todayIsWeekendCalendar) ||
+        (isWeekendPerson && todayIsWeekendCalendar);
+      if (!dayMatch) return;
+      const v = arr(e.id)[day.day - 1] || "";
+      if (v !== "") return; // 이미 채워진 칸은 건드리지 않음
+      const code = extendedToday && e.extendedCode ? e.extendedCode : e.fixedCode;
+      arr(e.id)[day.day - 1] = code;
+      assigned++;
     });
-
-    if (ptEligible.length > 0 && ptTemplates.length > 0) {
-      const pNeed = {};
-      ptTemplates.forEach((t) => {
-        const n = bucket === "평일" ? t.wd : bucket === "금공휴일" ? t.fri : t.we;
-        pNeed[t.code] = Number(n) || 0;
-      });
-      const remain = new Set(ptEligible.map((e) => e.id));
-      for (const t of ptTemplates) {
-        while (pNeed[t.code] > 0) {
-          let bestId = null, bestU = Infinity;
-          for (const e of ptEligible) {
-            if (!remain.has(e.id)) continue;
-            const u = getU(e.id, t.code);
-            if (u < bestU) { bestU = u; bestId = e.id; }
-          }
-          if (!bestId) break;
-          arr(bestId)[day.day - 1] = t.code;
-          incU(bestId, t.code);
-          remain.delete(bestId);
-          pNeed[t.code]--;
-          assigned++;
-        }
-      }
-    }
   });
 
   let msg = `새로 배정한 근무 칸: ${assigned}건`;
@@ -509,7 +487,7 @@ function validateMonth(schedule, employees, tags, settings, days, key) {
   days.forEach((day) => {
     let ftAttend = 0, ptAttend = 0;
     employees.forEach((e) => {
-      if (e.status !== "재직") return;
+      if (!isActiveEmployee(e)) return;
       const v = schedule[key][e.id][day.day - 1] || "";
       const attend = v !== "" && !isOffTag(tags, v);
       if (e.type === "정직원" && attend) ftAttend++;
@@ -521,7 +499,7 @@ function validateMonth(schedule, employees, tags, settings, days, key) {
   });
 
   const warnList = [];
-  employees.filter((e) => e.type === "정직원" && e.status === "재직").forEach((e) => {
+  employees.filter((e) => e.type === "정직원" && isActiveEmployee(e)).forEach((e) => {
     let consec = 0, maxRun = 0;
     days.forEach((day) => {
       const v = schedule[key][e.id][day.day - 1] || "";
@@ -536,7 +514,7 @@ function validateMonth(schedule, employees, tags, settings, days, key) {
 
 function validateCombined(schedule, employees, tags, settings, monthsMeta) {
   const warnList = [];
-  employees.filter((e) => e.type === "정직원" && e.status === "재직").forEach((e) => {
+  employees.filter((e) => e.type === "정직원" && isActiveEmployee(e)).forEach((e) => {
     let consec = 0, maxRun = 0;
     monthsMeta.forEach(({ key, days }) => {
       days.forEach((day) => {
@@ -556,5 +534,5 @@ export {
   defaultSettings, defaultStoreData, reconcileSchedule,
   buildMonthDays, applyPersonalTags, assignRestDays, assignShiftCodes,
   validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT,
-  isOffTag, dowBucket, nextMonth, emptySchedule, isWeekendBucket,
+  isOffTag, dowBucket, nextMonth, emptySchedule, isWeekendBucket, isActiveEmployee,
 };

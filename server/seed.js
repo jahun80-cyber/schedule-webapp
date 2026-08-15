@@ -20,8 +20,8 @@ const DEFAULT_TAGS = [
 ];
 
 const DEFAULT_EMPLOYEES = [
-  { id: "e1", name: "직원1", type: "정직원", dayType: "전체가능", status: "재직" },
-  { id: "e2", name: "직원2", type: "정직원", dayType: "전체가능", status: "재직" },
+  { id: "e1", name: "직원1", type: "정직원", status: "재직" },
+  { id: "e2", name: "직원2", type: "정직원", status: "재직" },
 ];
 
 const DEFAULT_HOLIDAYS_2026 = [
@@ -47,11 +47,11 @@ const DEFAULT_FT_TEMPLATES = [
 ];
 
 const DEFAULT_PT_TEMPLATES = [
-  { code: "A(6)", start: "10:30", end: "17:00", wd: 1, fri: 1, we: 1 },
-  { code: "B(6)", start: "13:30", end: "20:00", wd: "", fri: "", we: "" },
-  { code: "C(6)", start: "14:00", end: "20:30", wd: "", fri: "", we: "" },
-  { code: "D(8)", start: "11:00", end: "20:00", wd: 1, fri: "", we: "" },
-  { code: "E(8)", start: "11:30", end: "20:30", wd: "", fri: 1, we: 1 },
+  { code: "A(6)", start: "10:30", end: "17:00" },
+  { code: "B(6)", start: "13:30", end: "20:00" },
+  { code: "C(6)", start: "14:00", end: "20:30" },
+  { code: "D(8)", start: "11:00", end: "20:00" },
+  { code: "E(8)", start: "11:30", end: "20:30" },
 ];
 
 function defaultSettings() {
