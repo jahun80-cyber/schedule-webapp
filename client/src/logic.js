@@ -86,6 +86,7 @@ function defaultStoreData() {
     personalTags: [],
     ftTemplates: DEFAULT_FT_TEMPLATES,
     ptTemplates: DEFAULT_PT_TEMPLATES,
+    ftThresholds: { weekday: [2, 3, 4], weekend: [2, 3, 4] },
     prefCode: "A",
   };
 }
@@ -363,7 +364,19 @@ function assignRestDays(schedule, employees, tags, settings, monthsMeta) {
 /* ============================================================
    핵심: 근무형태(근무조) 자동배정
    ============================================================ */
-function assignShiftCodes(schedule, employees, tags, settings, ftTemplates, ptTemplates, prefCode, monthsMeta) {
+function pickThresholdIndex(thresholds, value) {
+  let bestIdx = 0, bestDiff = Infinity;
+  (thresholds || []).forEach((t, i) => {
+    const diff = Math.abs(Number(value) - Number(t));
+    if (diff < bestDiff) { bestDiff = diff; bestIdx = i; }
+  });
+  return bestIdx;
+}
+
+function assignShiftCodes(schedule, employees, tags, settings, ftTemplates, ptTemplates, prefCode, monthsMeta, ftThresholds) {
+  const thresholds = ftThresholds || { weekday: [2, 3, 4], weekend: [2, 3, 4] };
+  const wdFields = ["wd2", "wd3", "wd4"];
+  const weFields = ["we2", "we3", "we4"];
   const next = { m1: { ...schedule.m1 }, m2: { ...schedule.m2 } };
   Object.keys(next.m1).forEach((id) => (next.m1[id] = [...schedule.m1[id]]));
   Object.keys(next.m2).forEach((id) => (next.m2[id] = [...schedule.m2[id]]));
@@ -394,14 +407,13 @@ function assignShiftCodes(schedule, employees, tags, settings, ftTemplates, ptTe
 
     if (ftEligible.length > 0 && ftTemplates.length > 0) {
       const attendingFT = ftAlreadyWorking + ftEligible.length;
-      const colN = Math.min(Math.max(attendingFT, 2), 4);
       const weekendB = dowBucket(settings, wd) === "주말" || isHoliday;
+      const bucketList = weekendB ? thresholds.weekend : thresholds.weekday;
+      const fieldList = weekendB ? weFields : wdFields;
+      const chosenField = fieldList[pickThresholdIndex(bucketList, attendingFT)];
       const needCnt = {};
       ftTemplates.forEach((t) => {
-        let n;
-        if (weekendB) n = colN === 2 ? t.we2 : colN === 3 ? t.we3 : t.we4;
-        else n = colN === 2 ? t.wd2 : colN === 3 ? t.wd3 : t.wd4;
-        needCnt[t.code] = Number(n) || 0;
+        needCnt[t.code] = Number(t[chosenField]) || 0;
       });
       ftEmps.forEach((e) => {
         const v = arr(e.id)[day.day - 1] || "";
@@ -534,5 +546,5 @@ export {
   defaultSettings, defaultStoreData, reconcileSchedule,
   buildMonthDays, applyPersonalTags, assignRestDays, assignShiftCodes,
   validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT,
-  isOffTag, dowBucket, nextMonth, emptySchedule, isWeekendBucket, isActiveEmployee,
+  isOffTag, dowBucket, nextMonth, emptySchedule, isWeekendBucket, isActiveEmployee, pickThresholdIndex,
 };

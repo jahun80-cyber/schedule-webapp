@@ -305,15 +305,36 @@ function TagsTab({ data, setData }) {
   const remove = (code) => setData((d) => ({ ...d, tags: d.tags.filter((t) => t.code !== code) }));
   const add = () => setData((d) => ({ ...d, tags: [...d.tags, { code: "새태그" + (d.tags.length + 1), category: "확정휴무", countsAsAttend: false, restType: "해당없음", desc: "" }] }));
 
+  const dragIndex = useRef(null);
+  const [overIndex, setOverIndex] = useState(null);
+
+  const onDragStart = (i) => { dragIndex.current = i; };
+  const onDragOver = (e, i) => { e.preventDefault(); setOverIndex(i); };
+  const onDrop = (i) => {
+    const from = dragIndex.current;
+    if (from === null || from === i) { setOverIndex(null); return; }
+    setData((d) => {
+      const arr = [...d.tags];
+      const [moved] = arr.splice(from, 1);
+      arr.splice(i, 0, moved);
+      return { ...d, tags: arr };
+    });
+    dragIndex.current = null;
+    setOverIndex(null);
+  };
+  const onDragEnd = () => { dragIndex.current = null; setOverIndex(null); };
+
   return (
     <div className="max-w-5xl">
       <SectionCard title="태그목록" icon={Tag} right={<GhostBtn onClick={add} icon={Plus}>태그 추가</GhostBtn>}>
         <p className="text-xs text-slate-500 mb-3">
           "매장출근카운트"를 끄면(아니오) 그 태그가 입력된 사람은 자동으로 출근인원 계산에서 제외됩니다.
+          왼쪽 ⠿ 를 눌러서 드래그하면 순서를 바꿀 수 있습니다.
         </p>
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+              <th className="py-2 w-6"></th>
               <th className="py-2 font-semibold">태그</th>
               <th className="py-2 font-semibold">분류</th>
               <th className="py-2 font-semibold">매장출근카운트</th>
@@ -323,8 +344,22 @@ function TagsTab({ data, setData }) {
             </tr>
           </thead>
           <tbody>
-            {tags.map((t) => (
-              <tr key={t.code} className="border-b border-slate-100">
+            {tags.map((t, i) => (
+              <tr
+                key={t.code}
+                onDragOver={(e) => onDragOver(e, i)}
+                onDrop={() => onDrop(i)}
+                className={`border-b border-slate-100 ${overIndex === i ? "bg-indigo-50" : ""}`}
+              >
+                <td
+                  draggable
+                  onDragStart={() => onDragStart(i)}
+                  onDragEnd={onDragEnd}
+                  className="py-1.5 text-slate-300 hover:text-slate-500 cursor-grab active:cursor-grabbing select-none text-center"
+                  title="드래그해서 순서 변경"
+                >
+                  ⠿
+                </td>
                 <td className="py-1.5 pr-2"><TextInput value={t.code} onChange={(v) => update(t.code, { code: v })} className="w-28" /></td>
                 <td className="py-1.5 pr-2">
                   <Select value={t.category} onChange={(v) => update(t.code, { category: v })}
@@ -422,10 +457,18 @@ function HolidaysTab({ data, setData }) {
    ============================================================ */
 function ShiftTemplatesTab({ data, setData }) {
   const { ftTemplates, ptTemplates, prefCode } = data;
+  const thresholds = data.ftThresholds || { weekday: [2, 3, 4], weekend: [2, 3, 4] };
 
   const updFt = (i, patch) => setData((d) => { const a = [...d.ftTemplates]; a[i] = { ...a[i], ...patch }; return { ...d, ftTemplates: a }; });
   const rmFt = (i) => setData((d) => ({ ...d, ftTemplates: d.ftTemplates.filter((_, idx) => idx !== i) }));
   const addFt = () => setData((d) => ({ ...d, ftTemplates: [...d.ftTemplates, { code: "", start: "", end: "", wd2: "", wd3: "", wd4: "", we2: "", we3: "", we4: "" }] }));
+
+  const updThreshold = (group, idx, val) => setData((d) => {
+    const cur = d.ftThresholds || { weekday: [2, 3, 4], weekend: [2, 3, 4] };
+    const arr = [...cur[group]];
+    arr[idx] = val;
+    return { ...d, ftThresholds: { ...cur, [group]: arr } };
+  });
 
   const updPt = (i, patch) => setData((d) => { const a = [...d.ptTemplates]; a[i] = { ...a[i], ...patch }; return { ...d, ptTemplates: a }; });
   const rmPt = (i) => setData((d) => ({ ...d, ptTemplates: d.ptTemplates.filter((_, idx) => idx !== i) }));
@@ -434,12 +477,33 @@ function ShiftTemplatesTab({ data, setData }) {
   return (
     <div className="max-w-6xl">
       <SectionCard title="정직원 근무형태" icon={ClipboardCheck} right={<GhostBtn onClick={addFt} icon={Plus}>추가</GhostBtn>}>
+        <p className="text-xs text-slate-500 mb-3">
+          "평일 몇 인" 기준 자체가 매장마다 다를 수 있어 아래 열 제목의 숫자를 직접 바꿀 수 있습니다 (예: 2/3/4인 → 3/4/5인).
+          출근인원이 이 셋 중 가장 가까운 기준에 맞춰 자동으로 그 열의 인원수를 사용합니다.
+        </p>
         <table className="text-sm w-full">
           <thead>
             <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
               <th className="py-2">코드</th><th>시작</th><th>종료</th>
-              <th>평일2인</th><th>평일3인</th><th>평일4인</th>
-              <th>주말2인</th><th>주말3인</th><th>주말4인</th><th></th>
+              <th>
+                평일 <NumberInput value={thresholds.weekday[0]} onChange={(v) => updThreshold("weekday", 0, v)} className="w-12 inline-block" />인
+              </th>
+              <th>
+                평일 <NumberInput value={thresholds.weekday[1]} onChange={(v) => updThreshold("weekday", 1, v)} className="w-12 inline-block" />인
+              </th>
+              <th>
+                평일 <NumberInput value={thresholds.weekday[2]} onChange={(v) => updThreshold("weekday", 2, v)} className="w-12 inline-block" />인
+              </th>
+              <th>
+                주말 <NumberInput value={thresholds.weekend[0]} onChange={(v) => updThreshold("weekend", 0, v)} className="w-12 inline-block" />인
+              </th>
+              <th>
+                주말 <NumberInput value={thresholds.weekend[1]} onChange={(v) => updThreshold("weekend", 1, v)} className="w-12 inline-block" />인
+              </th>
+              <th>
+                주말 <NumberInput value={thresholds.weekend[2]} onChange={(v) => updThreshold("weekend", 2, v)} className="w-12 inline-block" />인
+              </th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -495,6 +559,17 @@ function ShiftTemplatesTab({ data, setData }) {
 /* ============================================================
    스케줄 탭 (월별 그리드)
    ============================================================ */
+const STATUS_STYLE = {
+  NOT: "bg-red-100 text-red-700",
+  OK: "bg-green-100 text-green-700",
+  AVAILABLE: "bg-amber-100 text-amber-700",
+};
+function attendStatus(attend, required) {
+  if (attend < required) return "NOT";
+  if (attend > required) return "AVAILABLE";
+  return "OK";
+}
+
 function ScheduleGrid({ data, schedule, setSchedule, monthKey, days }) {
   const { employees, tags, settings } = data;
   const allCodes = useMemo(() => {
@@ -626,12 +701,23 @@ function ScheduleGrid({ data, schedule, setSchedule, monthKey, days }) {
               ))}
             </tr>
             <tr>
-              <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] font-semibold z-10">적정확인</td>
+              <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] font-semibold z-10">적정확인(정직원)</td>
               {days.map((day, i) => {
-                const ok = dayStats[i].ftAttend >= dayStats[i].ftReq && dayStats[i].ptAttend >= dayStats[i].ptReq;
+                const status = attendStatus(dayStats[i].ftAttend, dayStats[i].ftReq);
                 return (
-                  <td key={day.day} className={`border border-slate-200 px-1 py-1 text-[9px] text-center font-bold ${ok ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}>
-                    {ok ? "OK" : "NOT"}
+                  <td key={day.day} className={`border border-slate-200 px-1 py-1 text-[9px] text-center font-bold ${STATUS_STYLE[status]}`}>
+                    {status}
+                  </td>
+                );
+              })}
+            </tr>
+            <tr>
+              <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] font-semibold z-10">적정확인(파트타이머)</td>
+              {days.map((day, i) => {
+                const status = attendStatus(dayStats[i].ptAttend, dayStats[i].ptReq);
+                return (
+                  <td key={day.day} className={`border border-slate-200 px-1 py-1 text-[9px] text-center font-bold ${STATUS_STYLE[status]}`}>
+                    {status}
                   </td>
                 );
               })}
@@ -662,7 +748,7 @@ function ScheduleTab({ data, schedule, setSchedule, monthsMeta, monthKey }) {
   const runShiftCodes = () => {
     setRunning(true);
     setTimeout(() => {
-      const { schedule: result, message } = assignShiftCodes(schedule, data.employees, data.tags, data.settings, data.ftTemplates, data.ptTemplates, data.prefCode, monthsMeta);
+      const { schedule: result, message } = assignShiftCodes(schedule, data.employees, data.tags, data.settings, data.ftTemplates, data.ptTemplates, data.prefCode, monthsMeta, data.ftThresholds);
       setSchedule(result);
       setMsg(message);
       setRunning(false);

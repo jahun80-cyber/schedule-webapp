@@ -77,6 +77,7 @@ function defaultStoreConfig() {
     personalTags: [],
     ftTemplates: DEFAULT_FT_TEMPLATES,
     ptTemplates: DEFAULT_PT_TEMPLATES,
+    ftThresholds: { weekday: [2, 3, 4], weekend: [2, 3, 4] },
     prefCode: "A",
   };
 }
