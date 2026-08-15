@@ -1,11 +1,13 @@
 {
-  "name": "schedule-webapp-server",
+  "name": "schedule-webapp",
   "version": "1.0.0",
   "private": true,
-  "type": "commonjs",
-  "main": "index.js",
+  "workspaces": ["server", "client"],
   "scripts": {
-    "start": "node index.js"
-  },
-  "dependencies": {}
+    "install:all": "npm install --workspace=server && npm install --workspace=client",
+    "dev:server": "npm run start --workspace=server",
+    "dev:client": "npm run dev --workspace=client",
+    "build": "npm run build --workspace=client",
+    "start": "npm run start --workspace=server"
+  }
 }
