@@ -380,6 +380,7 @@ function TagsTab({ data, setData }) {
               <th className="py-2 font-semibold">매장출근카운트</th>
               <th className="py-2 font-semibold">휴무/휴일구분</th>
               <th className="py-2 font-semibold">연차추적</th>
+              <th className="py-2 font-semibold">연차종류</th>
               <th className="py-2 font-semibold">시간(H)</th>
               <th className="py-2 font-semibold">설명</th>
               <th className="py-2 w-8"></th>
@@ -416,14 +417,17 @@ function TagsTab({ data, setData }) {
                 <td className="py-1.5 pr-2 text-center">
                   <input
                     type="checkbox" checked={!!t.trackAsLeave}
-                    onChange={(ev) => update(t.id, { trackAsLeave: ev.target.checked })}
+                    onChange={(ev) => update(t.id, { trackAsLeave: ev.target.checked, leavePool: t.leavePool || "연차" })}
                     className="w-4 h-4 accent-indigo-600"
                   />
                 </td>
                 <td className="py-1.5 pr-2">
+                  {t.trackAsLeave ? <TextInput value={t.leavePool || "연차"} onChange={(v) => update(t.id, { leavePool: v })} className="w-28" placeholder="예: 리프레시/안식휴가" /> : <span className="text-[11px] text-slate-300">-</span>}
+                </td>
+                <td className="py-1.5 pr-2">
                   {t.trackAsLeave ? <NumberInput value={t.leaveHours ?? ""} onChange={(v) => update(t.id, { leaveHours: v })} className="w-16" /> : <span className="text-[11px] text-slate-300">-</span>}
                 </td>
-                <td className="py-1.5 pr-2"><TextInput value={t.desc} onChange={(v) => update(t.id, { desc: v })} className="w-48" /></td>
+                <td className="py-1.5 pr-2"><TextInput value={t.desc} onChange={(v) => update(t.id, { desc: v })} className="w-40" /></td>
                 <td><IconBtn onClick={() => remove(t.id)} title="삭제" danger /></td>
               </tr>
             ))}
@@ -431,7 +435,8 @@ function TagsTab({ data, setData }) {
         </table>
         <p className="text-xs text-slate-500 mt-3">
           "연차추적"을 켜고 시간(H)을 지정하면(예: 연차=8H, 반차=4H, 반반차=2H), [연차현황] 탭에서 이 태그가 입력된 날짜를 자동으로 집계해 보여줍니다.
-          안식휴가·리프레시휴가처럼 매장에서 쓰는 다른 휴가 태그도 새로 추가해서 켜두면 똑같이 자동 집계됩니다.
+          "연차종류"를 같은 이름으로 맞춰두면 같은 보유량으로 묶여서 계산됩니다 — 예를 들어 연차/반차/반반차는 "연차"로, 리프레시휴가·안식휴가는
+          새로 태그를 추가해서 "리프레시/안식휴가"라는 이름으로 묶어두면 [연차현황]에서 별도의 보유량으로 따로 관리됩니다.
         </p>
       </SectionCard>
     </div>
@@ -1052,6 +1057,12 @@ function ArchiveTab({ data, archive, setArchive }) {
 /* ============================================================
    연차현황 탭 - 태그 기반 자동 집계 (연차/반차/반반차/안식휴가 등)
    ============================================================ */
+function formatDaysHours(hours) {
+  const days = hours / 8;
+  const daysStr = Number.isInteger(days) ? String(days) : days.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+  return `${daysStr}일 (${hours}H)`;
+}
+
 function LeaveTab({ data, setData, schedule, archive, monthsMeta }) {
   const [year, setYear] = useState(data.settings?.year || new Date().getFullYear());
 
@@ -1061,12 +1072,21 @@ function LeaveTab({ data, setData, schedule, archive, monthsMeta }) {
   );
 
   const leaveTags = data.tags.filter((t) => t.trackAsLeave);
-  const grants = (data.annualLeaveGrants && data.annualLeaveGrants[year]) || {};
+  // 연차추적 태그들을 "연차종류"별로 묶기 (등장 순서 유지)
+  const pools = [];
+  leaveTags.forEach((t) => {
+    const poolName = t.leavePool || "연차";
+    if (!pools.includes(poolName)) pools.push(poolName);
+  });
 
-  const setGrant = (empId, val) => {
+  const grantsByYear = (data.annualLeaveGrants && data.annualLeaveGrants[year]) || {}; // { poolName: { empId: 일수 } }
+
+  const setGrant = (poolName, empId, val) => {
     setData((d) => {
       const cur = d.annualLeaveGrants || {};
-      const yearMap = { ...(cur[year] || {}), [empId]: val };
+      const yearMap = { ...(cur[year] || {}) };
+      const poolMap = { ...(yearMap[poolName] || {}), [empId]: val };
+      yearMap[poolName] = poolMap;
       return { ...d, annualLeaveGrants: { ...cur, [year]: yearMap } };
     });
   };
@@ -1094,57 +1114,66 @@ function LeaveTab({ data, setData, schedule, archive, monthsMeta }) {
         </div>
         <p className="text-xs text-slate-500 mt-2">
           현재 진행중인 스케줄(1·2개월차)과 [월별기록]에 저장해둔 기록을 합쳐서 자동으로 계산합니다.
+          보유량은 "일" 단위로 입력하면 1일=8시간 기준으로 환산되어, 반차·반반차를 섞어 써도 자동으로 정확히 계산됩니다.
+          연차종류(예: 연차 / 리프레시·안식휴가)는 [태그목록]에서 태그마다 지정합니다.
         </p>
       </SectionCard>
 
-      <SectionCard title={`${year}년 연차 사용 현황`} icon={PieChart}>
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
-              <th className="py-2">이름</th>
-              <th>보유(H)</th>
-              <th>사용(H)</th>
-              <th>잔여(H)</th>
-              <th>소진율</th>
-              {leaveTags.map((t) => <th key={t.id}>{t.code} 사용일</th>)}
-            </tr>
-          </thead>
-          <tbody>
-            {activeEmps.map((e) => {
-              const u = usage[e.id];
-              const usedHours = u?.totalHours || 0;
-              const grantHours = Number(grants[e.id]) || 0;
-              const remain = grantHours - usedHours;
-              const pct = grantHours > 0 ? Math.round((usedHours / grantHours) * 100) : 0;
-              return (
-                <tr key={e.id} className="border-b border-slate-100 align-top">
-                  <td className="py-2 font-medium whitespace-nowrap">{e.name}</td>
-                  <td className="py-2">
-                    <NumberInput value={grants[e.id] ?? ""} onChange={(v) => setGrant(e.id, v)} className="w-20" />
-                  </td>
-                  <td className="py-2">{usedHours}</td>
-                  <td className="py-2">{grantHours ? remain : "-"}</td>
-                  <td className="py-2">
-                    {grantHours > 0 ? (
-                      <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${pct >= 100 ? "bg-red-100 text-red-700" : pct >= 70 ? "bg-amber-100 text-amber-700" : "bg-green-100 text-green-700"}`}>
-                        {pct}%
-                      </span>
-                    ) : <span className="text-slate-300">-</span>}
-                  </td>
-                  {leaveTags.map((t) => {
-                    const dates = u?.byTag?.[t.code]?.dates || [];
-                    return (
-                      <td key={t.id} className="py-2 text-[11px] text-slate-600 max-w-[200px]">
-                        {dates.length === 0 ? <span className="text-slate-300">-</span> : dates.map((d) => d.slice(5).replace("-", "/")).join(", ")}
-                      </td>
-                    );
-                  })}
+      {pools.map((poolName) => {
+        const poolTags = leaveTags.filter((t) => (t.leavePool || "연차") === poolName);
+        const grants = grantsByYear[poolName] || {};
+        return (
+          <SectionCard key={poolName} title={`${year}년 "${poolName}" 사용 현황`} icon={PieChart}>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+                  <th className="py-2">이름</th>
+                  <th>보유(일)</th>
+                  <th>사용</th>
+                  <th>잔여</th>
+                  <th>소진율</th>
+                  {poolTags.map((t) => <th key={t.id}>{t.code} 사용일</th>)}
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </SectionCard>
+              </thead>
+              <tbody>
+                {activeEmps.map((e) => {
+                  const u = usage[e.id]?.byPool?.[poolName];
+                  const usedHours = u?.totalHours || 0;
+                  const grantDays = Number(grants[e.id]) || 0;
+                  const grantHours = grantDays * 8;
+                  const remainHours = grantHours - usedHours;
+                  const pct = grantHours > 0 ? Math.round((usedHours / grantHours) * 100) : 0;
+                  return (
+                    <tr key={e.id} className="border-b border-slate-100 align-top">
+                      <td className="py-2 font-medium whitespace-nowrap">{e.name}</td>
+                      <td className="py-2">
+                        <NumberInput value={grants[e.id] ?? ""} onChange={(v) => setGrant(poolName, e.id, v)} className="w-20" />
+                      </td>
+                      <td className="py-2 whitespace-nowrap">{formatDaysHours(usedHours)}</td>
+                      <td className="py-2 whitespace-nowrap">{grantDays ? formatDaysHours(remainHours) : "-"}</td>
+                      <td className="py-2">
+                        {grantHours > 0 ? (
+                          <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${pct >= 100 ? "bg-red-100 text-red-700" : pct >= 70 ? "bg-amber-100 text-amber-700" : "bg-green-100 text-green-700"}`}>
+                            {pct}%
+                          </span>
+                        ) : <span className="text-slate-300">-</span>}
+                      </td>
+                      {poolTags.map((t) => {
+                        const dates = u?.byTag?.[t.code]?.dates || [];
+                        return (
+                          <td key={t.id} className="py-2 text-[11px] text-slate-600 max-w-[200px]">
+                            {dates.length === 0 ? <span className="text-slate-300">-</span> : dates.map((d) => d.slice(5).replace("-", "/")).join(", ")}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </SectionCard>
+        );
+      })}
     </div>
   );
 }
