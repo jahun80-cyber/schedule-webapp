@@ -3,6 +3,7 @@ import {
   Settings, Users, Tag, CalendarDays, ClipboardList, CheckCircle2,
   PlayCircle, Plus, Trash2, Store, Loader2, AlertTriangle,
   Sparkles, Save, ClipboardCheck, LogOut, Lock, Download, Upload, Archive,
+  FileSpreadsheet, Copy, PieChart,
 } from "lucide-react";
 import { api, getPassword, setPassword, clearPassword, getRole, setRole } from "./api";
 import {
@@ -10,7 +11,7 @@ import {
   defaultStoreData,
   buildMonthDays, applyPersonalTags, assignRestDays, assignShiftCodes,
   validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT,
-  isOffTag, dowBucket, nextMonth, emptySchedule, reconcileSchedule, isActiveEmployee,
+  isOffTag, dowBucket, nextMonth, emptySchedule, reconcileSchedule, isActiveEmployee, computeLeaveUsage,
 } from "./logic";
 
 /* ============================================================
@@ -378,6 +379,8 @@ function TagsTab({ data, setData }) {
               <th className="py-2 font-semibold">분류</th>
               <th className="py-2 font-semibold">매장출근카운트</th>
               <th className="py-2 font-semibold">휴무/휴일구분</th>
+              <th className="py-2 font-semibold">연차추적</th>
+              <th className="py-2 font-semibold">시간(H)</th>
               <th className="py-2 font-semibold">설명</th>
               <th className="py-2 w-8"></th>
             </tr>
@@ -410,12 +413,26 @@ function TagsTab({ data, setData }) {
                 <td className="py-1.5 pr-2">
                   <Select value={t.restType} onChange={(v) => update(t.id, { restType: v })} options={["휴무", "휴일", "해당없음"]} />
                 </td>
-                <td className="py-1.5 pr-2"><TextInput value={t.desc} onChange={(v) => update(t.id, { desc: v })} className="w-56" /></td>
+                <td className="py-1.5 pr-2 text-center">
+                  <input
+                    type="checkbox" checked={!!t.trackAsLeave}
+                    onChange={(ev) => update(t.id, { trackAsLeave: ev.target.checked })}
+                    className="w-4 h-4 accent-indigo-600"
+                  />
+                </td>
+                <td className="py-1.5 pr-2">
+                  {t.trackAsLeave ? <NumberInput value={t.leaveHours ?? ""} onChange={(v) => update(t.id, { leaveHours: v })} className="w-16" /> : <span className="text-[11px] text-slate-300">-</span>}
+                </td>
+                <td className="py-1.5 pr-2"><TextInput value={t.desc} onChange={(v) => update(t.id, { desc: v })} className="w-48" /></td>
                 <td><IconBtn onClick={() => remove(t.id)} title="삭제" danger /></td>
               </tr>
             ))}
           </tbody>
         </table>
+        <p className="text-xs text-slate-500 mt-3">
+          "연차추적"을 켜고 시간(H)을 지정하면(예: 연차=8H, 반차=4H, 반반차=2H), [연차현황] 탭에서 이 태그가 입력된 날짜를 자동으로 집계해 보여줍니다.
+          안식휴가·리프레시휴가처럼 매장에서 쓰는 다른 휴가 태그도 새로 추가해서 켜두면 똑같이 자동 집계됩니다.
+        </p>
       </SectionCard>
     </div>
   );
@@ -1033,6 +1050,226 @@ function ArchiveTab({ data, archive, setArchive }) {
 }
 
 /* ============================================================
+   연차현황 탭 - 태그 기반 자동 집계 (연차/반차/반반차/안식휴가 등)
+   ============================================================ */
+function LeaveTab({ data, setData, schedule, archive, monthsMeta }) {
+  const [year, setYear] = useState(data.settings?.year || new Date().getFullYear());
+
+  const usage = useMemo(
+    () => computeLeaveUsage(year, data.employees, data.tags, schedule, archive || {}, monthsMeta),
+    [year, data.employees, data.tags, schedule, archive, monthsMeta]
+  );
+
+  const leaveTags = data.tags.filter((t) => t.trackAsLeave);
+  const grants = (data.annualLeaveGrants && data.annualLeaveGrants[year]) || {};
+
+  const setGrant = (empId, val) => {
+    setData((d) => {
+      const cur = d.annualLeaveGrants || {};
+      const yearMap = { ...(cur[year] || {}), [empId]: val };
+      return { ...d, annualLeaveGrants: { ...cur, [year]: yearMap } };
+    });
+  };
+
+  const activeEmps = data.employees.filter((e) => isActiveEmployee(e));
+
+  if (leaveTags.length === 0) {
+    return (
+      <div className="max-w-3xl">
+        <SectionCard title="연차 사용 현황" icon={PieChart}>
+          <p className="text-sm text-slate-500">
+            아직 "연차추적"이 켜진 태그가 없습니다. [태그목록] 탭에서 연차/반차/반반차 같은 태그의 "연차추적"을 켜고 시간(H)을 지정해주세요.
+          </p>
+        </SectionCard>
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-6xl">
+      <SectionCard title="연도 선택" icon={CalendarDays}>
+        <div className="flex items-center gap-1">
+          <span className="text-xs font-semibold text-slate-500">연도</span>
+          <NumberInput value={year} onChange={(v) => setYear(v || new Date().getFullYear())} className="w-24" />
+        </div>
+        <p className="text-xs text-slate-500 mt-2">
+          현재 진행중인 스케줄(1·2개월차)과 [월별기록]에 저장해둔 기록을 합쳐서 자동으로 계산합니다.
+        </p>
+      </SectionCard>
+
+      <SectionCard title={`${year}년 연차 사용 현황`} icon={PieChart}>
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+              <th className="py-2">이름</th>
+              <th>보유(H)</th>
+              <th>사용(H)</th>
+              <th>잔여(H)</th>
+              <th>소진율</th>
+              {leaveTags.map((t) => <th key={t.id}>{t.code} 사용일</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {activeEmps.map((e) => {
+              const u = usage[e.id];
+              const usedHours = u?.totalHours || 0;
+              const grantHours = Number(grants[e.id]) || 0;
+              const remain = grantHours - usedHours;
+              const pct = grantHours > 0 ? Math.round((usedHours / grantHours) * 100) : 0;
+              return (
+                <tr key={e.id} className="border-b border-slate-100 align-top">
+                  <td className="py-2 font-medium whitespace-nowrap">{e.name}</td>
+                  <td className="py-2">
+                    <NumberInput value={grants[e.id] ?? ""} onChange={(v) => setGrant(e.id, v)} className="w-20" />
+                  </td>
+                  <td className="py-2">{usedHours}</td>
+                  <td className="py-2">{grantHours ? remain : "-"}</td>
+                  <td className="py-2">
+                    {grantHours > 0 ? (
+                      <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${pct >= 100 ? "bg-red-100 text-red-700" : pct >= 70 ? "bg-amber-100 text-amber-700" : "bg-green-100 text-green-700"}`}>
+                        {pct}%
+                      </span>
+                    ) : <span className="text-slate-300">-</span>}
+                  </td>
+                  {leaveTags.map((t) => {
+                    const dates = u?.byTag?.[t.code]?.dates || [];
+                    return (
+                      <td key={t.id} className="py-2 text-[11px] text-slate-600 max-w-[200px]">
+                        {dates.length === 0 ? <span className="text-slate-300">-</span> : dates.map((d) => d.slice(5).replace("-", "/")).join(", ")}
+                      </td>
+                    );
+                  })}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </SectionCard>
+    </div>
+  );
+}
+
+/* ============================================================
+   시프티 코드 변환표 탭 - 우리 코드 ↔ 외부 시스템(시프티) 코드 매핑 + 변환 미리보기
+   ============================================================ */
+function ShiftyMapTab({ data, setData, schedule, archive, monthsMeta }) {
+  const map = data.shiftyCodeMap || [];
+  const updMap = (i, patch) => setData((d) => { const a = [...(d.shiftyCodeMap || [])]; a[i] = { ...a[i], ...patch }; return { ...d, shiftyCodeMap: a }; });
+  const rmMap = (i) => setData((d) => ({ ...d, shiftyCodeMap: (d.shiftyCodeMap || []).filter((_, idx) => idx !== i) }));
+  const addMap = () => setData((d) => ({ ...d, shiftyCodeMap: [...(d.shiftyCodeMap || []), { code: "", shiftyCode: "" }] }));
+
+  const [source, setSource] = useState("m1"); // m1 | m2 | archive
+  const [archiveYear, setArchiveYear] = useState(data.settings?.year || new Date().getFullYear());
+  const [archiveMonth, setArchiveMonth] = useState(new Date().getMonth() + 1);
+  const [copyMsg, setCopyMsg] = useState("");
+
+  const meta = source === "m1" || source === "m2" ? monthsMeta.find((m) => m.key === source) : null;
+  const archiveKey = `${archiveYear}-${String(archiveMonth).padStart(2, "0")}`;
+  const archiveEntry = source === "archive" ? (archive || {})[archiveKey] : null;
+
+  const days = source === "archive" ? (archiveEntry?.days || []) : (meta?.days || []);
+  const employeesList = source === "archive" ? (archiveEntry?.employeesSnapshot || []) : data.employees.filter((e) => isActiveEmployee(e));
+  const scheduleByEmp = source === "archive" ? (archiveEntry?.schedule || {}) : (schedule[source] || {});
+
+  const convert = (v) => {
+    if (!v) return "";
+    const m = map.find((x) => x.code === v);
+    return m ? m.shiftyCode : v;
+  };
+
+  const copyGrid = async () => {
+    const header = ["이름", ...days.map((d) => `${d.day}(${d.weekday})`)].join("\t");
+    const rows = employeesList.map((e) => {
+      const arr = scheduleByEmp[e.id] || [];
+      return [e.name, ...days.map((_, i) => convert(arr[i] || ""))].join("\t");
+    });
+    const text = [header, ...rows].join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopyMsg("복사되었습니다. 시프티 등 원하는 곳에 붙여넣으세요.");
+    } catch (e) {
+      setCopyMsg("복사에 실패했습니다. 표를 직접 드래그해서 복사해주세요.");
+    }
+    setTimeout(() => setCopyMsg(""), 3000);
+  };
+
+  return (
+    <div className="max-w-6xl">
+      <SectionCard title="코드 변환표" icon={FileSpreadsheet} right={<GhostBtn onClick={addMap} icon={Plus}>매핑 추가</GhostBtn>}>
+        <p className="text-xs text-slate-500 mb-3">우리 시스템 코드를 시프티(또는 다른 외부 시스템) 코드로 바꿔서 내보낼 때 쓸 대응표입니다. 매핑이 없는 코드는 원래 값 그대로 나갑니다.</p>
+        <table className="text-sm w-full">
+          <thead>
+            <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+              <th className="py-2 w-1/3">우리 코드</th>
+              <th className="py-2 w-1/3">시프티 코드</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {map.map((m, i) => (
+              <tr key={i} className="border-b border-slate-100">
+                <td className="py-1"><TextInput value={m.code} onChange={(v) => updMap(i, { code: v })} className="w-40" /></td>
+                <td><TextInput value={m.shiftyCode} onChange={(v) => updMap(i, { shiftyCode: v })} className="w-40" /></td>
+                <td><IconBtn onClick={() => rmMap(i)} danger /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </SectionCard>
+
+      <SectionCard
+        title="변환 미리보기"
+        icon={Copy}
+        right={<PrimaryBtn onClick={copyGrid} icon={Copy}>표 복사하기</PrimaryBtn>}
+      >
+        <div className="flex items-center gap-3 mb-3 flex-wrap">
+          <Select value={source} onChange={setSource} options={[{ value: "m1", label: "스케줄 1개월차" }, { value: "m2", label: "스케줄 2개월차" }, { value: "archive", label: "월별기록" }]} className="w-40" />
+          {source === "archive" && (
+            <>
+              <NumberInput value={archiveYear} onChange={(v) => setArchiveYear(v || new Date().getFullYear())} className="w-20" />
+              <Select value={archiveMonth} onChange={(v) => setArchiveMonth(Number(v))} options={Array.from({ length: 12 }, (_, i) => ({ value: i + 1, label: `${i + 1}월` }))} className="w-20" />
+            </>
+          )}
+          {copyMsg && <span className="text-xs text-indigo-600">{copyMsg}</span>}
+        </div>
+
+        {days.length === 0 ? (
+          <p className="text-sm text-slate-400 py-8 text-center">{source === "archive" ? "선택한 달의 저장된 기록이 없습니다." : "표시할 스케줄이 없습니다."}</p>
+        ) : (
+          <div className="overflow-x-auto border border-slate-200 rounded-lg">
+            <table className="text-xs border-collapse" style={{ tableLayout: "fixed" }}>
+              <thead>
+                <tr>
+                  <th style={{ minWidth: 120, maxWidth: 120 }} className="sticky left-0 bg-slate-100 border border-slate-200 px-2 py-1.5 text-left z-10">이름</th>
+                  {days.map((day) => (
+                    <th key={day.day} style={{ minWidth: 50, maxWidth: 50 }} className="border border-slate-200 px-1 py-1.5 font-semibold">
+                      {day.day}<br /><span className="font-normal">{day.weekday}</span>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {employeesList.map((e) => {
+                  const arr = scheduleByEmp[e.id] || [];
+                  return (
+                    <tr key={e.id}>
+                      <td className="sticky left-0 bg-white border border-slate-200 px-2 py-1 font-medium z-10">{e.name}</td>
+                      {days.map((day, i) => (
+                        <td key={day.day} className="border border-slate-200 px-1 py-1 text-center">{convert(arr[i] || "")}</td>
+                      ))}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </SectionCard>
+    </div>
+  );
+}
+
+/* ============================================================
    메인 앱
    ============================================================ */
 const TABS = [
@@ -1045,6 +1282,8 @@ const TABS = [
   { key: "m2", label: "스케줄 2개월차", icon: ClipboardList },
   { key: "summary", label: "2개월요약", icon: CheckCircle2 },
   { key: "archive", label: "월별기록", icon: Archive },
+  { key: "leave", label: "연차현황", icon: PieChart },
+  { key: "shifty", label: "시프티코드변환", icon: FileSpreadsheet },
 ];
 
 function groupedStoreOptions(storeList) {
@@ -1396,6 +1635,8 @@ function MainApp({ role, onLogout }) {
             )}
             {tab === "summary" && monthsMeta && <SummaryTab data={data} schedule={schedule} monthsMeta={monthsMeta} />}
             {tab === "archive" && <ArchiveTab data={data} archive={archive || {}} setArchive={setArchive} />}
+            {tab === "leave" && monthsMeta && <LeaveTab data={data} setData={setData} schedule={schedule} archive={archive || {}} monthsMeta={monthsMeta} />}
+            {tab === "shifty" && monthsMeta && <ShiftyMapTab data={data} setData={setData} schedule={schedule} archive={archive || {}} monthsMeta={monthsMeta} />}
           </div>
         </div>
       )}

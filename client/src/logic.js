@@ -9,10 +9,10 @@ const DEFAULT_TAGS = [
   { id: "tag_default_5", code: "B/F", category: "근무코드", countsAsAttend: true, restType: "해당없음", desc: "기본 근무코드" },
   { id: "tag_default_6", code: "휴무", category: "확정휴무", countsAsAttend: false, restType: "휴무", desc: "주 1회 필수 휴무" },
   { id: "tag_default_7", code: "휴일", category: "확정휴무", countsAsAttend: false, restType: "휴일", desc: "휴무 다음으로 배정되는 휴식일" },
-  { id: "tag_default_8", code: "연차", category: "확정휴무", countsAsAttend: false, restType: "해당없음", desc: "개인 연차" },
-  { id: "tag_default_9", code: "반차(오전)", category: "조정", countsAsAttend: false, restType: "해당없음", desc: "오전 반차" },
-  { id: "tag_default_10", code: "반차(오후)", category: "조정", countsAsAttend: false, restType: "해당없음", desc: "오후 반차" },
-  { id: "tag_default_11", code: "반반차", category: "조정", countsAsAttend: false, restType: "해당없음", desc: "반반차" },
+  { id: "tag_default_8", code: "연차", category: "확정휴무", countsAsAttend: false, restType: "해당없음", desc: "개인 연차", trackAsLeave: true, leaveHours: 8 },
+  { id: "tag_default_9", code: "반차(오전)", category: "조정", countsAsAttend: false, restType: "해당없음", desc: "오전 반차", trackAsLeave: true, leaveHours: 4 },
+  { id: "tag_default_10", code: "반차(오후)", category: "조정", countsAsAttend: false, restType: "해당없음", desc: "오후 반차", trackAsLeave: true, leaveHours: 4 },
+  { id: "tag_default_11", code: "반반차", category: "조정", countsAsAttend: false, restType: "해당없음", desc: "반반차", trackAsLeave: true, leaveHours: 2 },
   { id: "tag_default_12", code: "경조사", category: "확정휴무", countsAsAttend: false, restType: "해당없음", desc: "경조사 휴가" },
   { id: "tag_default_13", code: "예비군", category: "확정휴무", countsAsAttend: false, restType: "해당없음", desc: "예비군 훈련" },
   { id: "tag_default_14", code: "지원근무", category: "확정근무", countsAsAttend: false, restType: "해당없음", desc: "타매장 지원 (본 매장 인원에서 제외)" },
@@ -88,6 +88,8 @@ function defaultStoreData() {
     ptTemplates: DEFAULT_PT_TEMPLATES,
     ftThresholds: { weekday: [2, 3, 4], weekend: [2, 3, 4] },
     prefCode: "A",
+    annualLeaveGrants: {},
+    shiftyCodeMap: [],
   };
 }
 
@@ -553,6 +555,58 @@ function validateCombined(schedule, employees, tags, settings, monthsMeta) {
   return warnList;
 }
 
+/* ============================================================
+   연차 사용 현황 - 태그의 trackAsLeave/leaveHours를 기준으로,
+   현재 진행중인 스케줄(1·2개월차)과 저장된 월별기록(archive)을 합쳐서
+   그 해(year) 동안 각 직원이 어떤 태그를 언제 썼는지 자동 집계
+   ============================================================ */
+function computeLeaveUsage(year, employees, tags, schedule, archive, monthsMeta) {
+  const leaveTags = tags.filter((t) => t.trackAsLeave);
+  const leaveTagCodes = new Set(leaveTags.map((t) => t.code));
+
+  // 이번 해에 해당하는 월별 데이터 소스 모으기: 실시간(1·2개월차) 우선, 없으면 저장된 기록 사용
+  const sources = {}; // "YYYY-MM" -> { days, scheduleByEmp, employeesList }
+  (monthsMeta || []).forEach((m) => {
+    if (!m.days.length) return;
+    const key = m.days[0].dateStr.slice(0, 7);
+    sources[key] = { days: m.days, scheduleByEmp: schedule[m.key] || {}, employeesList: employees };
+  });
+  Object.keys(archive || {}).forEach((key) => {
+    if (sources[key]) return; // 실시간 데이터가 있으면 그걸 우선 사용
+    const ent = archive[key];
+    if (!ent) return;
+    sources[key] = { days: ent.days || [], scheduleByEmp: ent.schedule || {}, employeesList: ent.employeesSnapshot || [] };
+  });
+
+  const result = {}; // empId -> { name, byTag: { code: { hours, dates: [] } }, totalHours }
+  const yearPrefix = String(year) + "-";
+
+  Object.keys(sources).forEach((monthKey) => {
+    if (!monthKey.startsWith(yearPrefix)) return;
+    const src = sources[monthKey];
+    src.employeesList.forEach((e) => {
+      const arr = src.scheduleByEmp[e.id];
+      if (!arr) return;
+      src.days.forEach((day, i) => {
+        const v = arr[i];
+        if (!v || !leaveTagCodes.has(v)) return;
+        const tag = leaveTags.find((t) => t.code === v);
+        if (!result[e.id]) result[e.id] = { name: e.name, byTag: {}, totalHours: 0 };
+        if (!result[e.id].byTag[v]) result[e.id].byTag[v] = { hours: Number(tag.leaveHours) || 0, dates: [] };
+        result[e.id].byTag[v].dates.push(day.dateStr);
+        result[e.id].totalHours += Number(tag.leaveHours) || 0;
+      });
+    });
+  });
+
+  // 날짜 순 정렬
+  Object.values(result).forEach((r) => {
+    Object.values(r.byTag).forEach((b) => b.dates.sort());
+  });
+
+  return result;
+}
+
 export {
   WEEKDAYS, DOW_OPTIONS,
   DEFAULT_TAGS, DEFAULT_EMPLOYEES, DEFAULT_HOLIDAYS, DEFAULT_FT_TEMPLATES, DEFAULT_PT_TEMPLATES,
@@ -560,4 +614,5 @@ export {
   buildMonthDays, applyPersonalTags, assignRestDays, assignShiftCodes,
   validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT,
   isOffTag, dowBucket, nextMonth, emptySchedule, isWeekendBucket, isActiveEmployee, pickThresholdIndex, isAutoAssignable,
+  computeLeaveUsage,
 };
