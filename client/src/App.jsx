@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import {
   Settings, Users, Tag, CalendarDays, ClipboardList, CheckCircle2,
   PlayCircle, Plus, Trash2, Store, Loader2, AlertTriangle,
-  Sparkles, Save, ClipboardCheck, LogOut, Lock, Download, Upload,
+  Sparkles, Save, ClipboardCheck, LogOut, Lock, Download, Upload, Archive,
 } from "lucide-react";
 import { api, getPassword, setPassword, clearPassword, getRole, setRole } from "./api";
 import {
@@ -773,7 +773,7 @@ function ScheduleGrid({ data, schedule, setSchedule, monthKey, days }) {
   );
 }
 
-function ScheduleTab({ data, schedule, setSchedule, monthsMeta, monthKey }) {
+function ScheduleTab({ data, schedule, setSchedule, archive, setArchive, monthsMeta, monthKey }) {
   const meta = monthsMeta.find((m) => m.key === monthKey);
   const [running, setRunning] = useState(false);
   const [msg, setMsg] = useState(null);
@@ -809,6 +809,26 @@ function ScheduleTab({ data, schedule, setSchedule, monthsMeta, monthKey }) {
     setMsg(null);
   };
 
+  const archiveKey = meta.days.length ? meta.days[0].dateStr.slice(0, 7) : null;
+  const alreadyArchived = archive && archiveKey && !!archive[archiveKey];
+
+  const saveToArchive = () => {
+    if (!archiveKey) return;
+    if (alreadyArchived && !window.confirm(`${meta.label} 기록이 이미 저장되어 있습니다. 지금 내용으로 덮어쓸까요?`)) return;
+    const employeesSnapshot = data.employees.map((e) => ({ id: e.id, name: e.name, type: e.type }));
+    setArchive((prev) => ({
+      ...(prev || {}),
+      [archiveKey]: {
+        savedAt: new Date().toISOString(),
+        label: meta.label,
+        days: meta.days,
+        employeesSnapshot,
+        schedule: schedule[monthKey],
+      },
+    }));
+    setMsg(`${meta.label} 기록을 저장했습니다. 왼쪽 [월별기록] 탭에서 확인할 수 있습니다.`);
+  };
+
   const val = useMemo(() => validateMonth(schedule, data.employees, data.tags, data.settings, meta.days, monthKey), [schedule, data, meta, monthKey]);
 
   return (
@@ -817,6 +837,7 @@ function ScheduleTab({ data, schedule, setSchedule, monthsMeta, monthKey }) {
         <PrimaryBtn onClick={runRestDays} disabled={running} icon={PlayCircle}>1단계: 휴무/휴일 자동배정</PrimaryBtn>
         <PrimaryBtn onClick={runShiftCodes} disabled={running} icon={Sparkles}>2단계: 근무 자동배정</PrimaryBtn>
         <GhostBtn onClick={clearAll} icon={Trash2}>이 달 전체 지우기</GhostBtn>
+        <GhostBtn onClick={saveToArchive} icon={Archive}>{alreadyArchived ? "기록 다시 저장" : "기록으로 저장"}</GhostBtn>
         {running && <Loader2 className="animate-spin text-indigo-500" size={18} />}
       </div>
       {msg && (
@@ -903,6 +924,102 @@ function SummaryTab({ data, schedule, monthsMeta }) {
 }
 
 /* ============================================================
+   월별기록 탭 (최근 1년치 스냅샷 조회/수정)
+   ============================================================ */
+function last12Months() {
+  const arr = [];
+  const now = new Date();
+  for (let i = 0; i < 12; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    arr.push({ key, label: `${d.getFullYear()}년 ${d.getMonth() + 1}월` });
+  }
+  return arr;
+}
+
+function ArchiveTab({ data, archive, setArchive }) {
+  const months = useMemo(() => last12Months(), []);
+  const [selected, setSelected] = useState(months[0]?.key || "");
+  const entry = archive[selected];
+
+  const allCodes = useMemo(() => {
+    const set = new Set(["", ...data.tags.map((t) => t.code)]);
+    data.ftTemplates.forEach((t) => t.code && set.add(t.code));
+    data.ptTemplates.forEach((t) => t.code && set.add(t.code));
+    return Array.from(set);
+  }, [data]);
+
+  const setCell = (empId, dayIdx, value) => {
+    setArchive((prev) => {
+      const next = { ...prev };
+      const ent = { ...next[selected] };
+      const sched = { ...ent.schedule };
+      const arr = [...(sched[empId] || [])];
+      arr[dayIdx] = value;
+      sched[empId] = arr;
+      ent.schedule = sched;
+      next[selected] = ent;
+      return next;
+    });
+  };
+
+  return (
+    <div>
+      <SectionCard title="월 선택" icon={CalendarDays}>
+        <Select value={selected} onChange={setSelected} options={months.map((m) => ({ value: m.key, label: m.label }))} className="w-40" />
+        <p className="text-xs text-slate-500 mt-2">
+          [스케줄 1·2개월차] 화면에서 "기록으로 저장" 버튼을 누르면 그 시점의 스케줄이 여기에 남습니다. 최근 12개월까지 선택할 수 있습니다.
+        </p>
+      </SectionCard>
+
+      {!entry ? (
+        <div className="text-sm text-slate-400 py-16 text-center">이 달은 아직 저장된 기록이 없습니다.</div>
+      ) : (
+        <SectionCard
+          title={`${entry.label || selected} 기록`}
+          icon={Archive}
+          right={<span className="text-[11px] text-slate-400">저장 시각: {entry.savedAt ? new Date(entry.savedAt).toLocaleString("ko-KR") : "-"}</span>}
+        >
+          <div className="overflow-x-auto border border-slate-200 rounded-lg">
+            <table className="text-xs border-collapse" style={{ tableLayout: "fixed" }}>
+              <thead>
+                <tr>
+                  <th style={{ minWidth: 132, maxWidth: 132 }} className="sticky left-0 bg-slate-100 border border-slate-200 px-2 py-1.5 text-left z-10">이름</th>
+                  {entry.days.map((day) => (
+                    <th key={day.day} style={{ minWidth: 54, maxWidth: 54 }} className="border border-slate-200 px-1 py-1.5 font-semibold">
+                      {day.day}<br /><span className="font-normal">{day.weekday}</span>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {entry.employeesSnapshot.map((e) => (
+                  <tr key={e.id}>
+                    <td className="sticky left-0 bg-white border border-slate-200 px-2 py-1 font-medium z-10">{e.name}</td>
+                    {entry.days.map((day, i) => (
+                      <td key={day.day} className="border border-slate-200 p-0">
+                        <select
+                          value={(entry.schedule[e.id] || [])[i] || ""}
+                          onChange={(ev) => setCell(e.id, i, ev.target.value)}
+                          className="w-full h-full text-[10px] text-center border-none bg-transparent focus:outline-none focus:ring-1 focus:ring-indigo-400 py-1.5"
+                        >
+                          {allCodes.map((c) => <option key={c} value={c}>{c}</option>)}
+                        </select>
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-[11px] text-slate-400 mt-2">여기서 수정한 내용은 자동으로 저장됩니다.</p>
+        </SectionCard>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
    메인 앱
    ============================================================ */
 const TABS = [
@@ -914,6 +1031,7 @@ const TABS = [
   { key: "m1", label: "스케줄 1개월차", icon: ClipboardList },
   { key: "m2", label: "스케줄 2개월차", icon: ClipboardList },
   { key: "summary", label: "2개월요약", icon: CheckCircle2 },
+  { key: "archive", label: "월별기록", icon: Archive },
 ];
 
 function groupedStoreOptions(storeList) {
@@ -938,6 +1056,7 @@ function MainApp({ role, onLogout }) {
   const [currentStoreId, setCurrentStoreId] = useState(null);
   const [data, setDataRaw] = useState(null);
   const [schedule, setScheduleRaw] = useState(null);
+  const [archive, setArchiveRaw] = useState(null);
   const [tab, setTab] = useState("settings");
   const [loading, setLoading] = useState(true);
   const [saveState, setSaveState] = useState("idle"); // idle | saving | saved | error
@@ -958,13 +1077,14 @@ function MainApp({ role, onLogout }) {
   }, []);
 
   useEffect(() => {
-    if (!currentStoreId) { setDataRaw(null); setScheduleRaw(null); return; }
+    if (!currentStoreId) { setDataRaw(null); setScheduleRaw(null); setArchiveRaw(null); return; }
     (async () => {
       setLoading(true);
       try {
-        const [cfg, sched] = await Promise.all([
+        const [cfg, sched, arch] = await Promise.all([
           api.getConfig(currentStoreId),
           api.getSchedule(currentStoreId),
+          api.getArchive(currentStoreId).catch(() => ({})),
         ]);
         const finalData = cfg || defaultStoreData();
         setDataRaw(finalData);
@@ -973,6 +1093,7 @@ function MainApp({ role, onLogout }) {
         const days1 = buildMonthDays(s1.year, s1.startMonth, finalData.holidays, finalData.issueDays);
         const days2 = buildMonthDays(y2, m2, finalData.holidays, finalData.issueDays);
         setScheduleRaw(reconcileSchedule(sched, finalData.employees, days1, days2));
+        setArchiveRaw(arch || {});
       } catch (e) {
         console.error(e);
       }
@@ -1002,6 +1123,10 @@ function MainApp({ role, onLogout }) {
     setScheduleRaw((prev) => (typeof updater === "function" ? updater(prev) : updater));
     triggerSave();
   }, [triggerSave]);
+  const setArchive = useCallback((updater) => {
+    setArchiveRaw((prev) => (typeof updater === "function" ? updater(prev) : updater));
+    triggerSave();
+  }, [triggerSave]);
 
   const reloadStoreList = async () => {
     setStoreMissing(false);
@@ -1019,10 +1144,12 @@ function MainApp({ role, onLogout }) {
     saveTimer.current = setTimeout(async () => {
       setSaveState("saving");
       try {
-        await Promise.all([
+        const calls = [
           api.putConfig(currentStoreId, data),
           api.putSchedule(currentStoreId, schedule),
-        ]);
+        ];
+        if (archive) calls.push(api.putArchive(currentStoreId, archive));
+        await Promise.all(calls);
         setSaveState("saved");
         setStoreMissing(false);
       } catch (e) {
@@ -1032,7 +1159,7 @@ function MainApp({ role, onLogout }) {
     }, 600);
     return () => clearTimeout(saveTimer.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, schedule, currentStoreId]);
+  }, [data, schedule, archive, currentStoreId]);
 
   useEffect(() => {
     if (!data || !schedule || !monthsMeta) return;
@@ -1249,12 +1376,13 @@ function MainApp({ role, onLogout }) {
             {tab === "holidays" && <HolidaysTab data={data} setData={setData} />}
             {tab === "templates" && <ShiftTemplatesTab data={data} setData={setData} />}
             {tab === "m1" && monthsMeta && (
-              <ScheduleTab data={data} schedule={schedule} setSchedule={setSchedule} monthsMeta={monthsMeta} monthKey="m1" />
+              <ScheduleTab data={data} schedule={schedule} setSchedule={setSchedule} archive={archive} setArchive={setArchive} monthsMeta={monthsMeta} monthKey="m1" />
             )}
             {tab === "m2" && monthsMeta && (
-              <ScheduleTab data={data} schedule={schedule} setSchedule={setSchedule} monthsMeta={monthsMeta} monthKey="m2" />
+              <ScheduleTab data={data} schedule={schedule} setSchedule={setSchedule} archive={archive} setArchive={setArchive} monthsMeta={monthsMeta} monthKey="m2" />
             )}
             {tab === "summary" && monthsMeta && <SummaryTab data={data} schedule={schedule} monthsMeta={monthsMeta} />}
+            {tab === "archive" && <ArchiveTab data={data} archive={archive || {}} setArchive={setArchive} />}
           </div>
         </div>
       )}

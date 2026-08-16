@@ -157,13 +157,13 @@ async function handleApi(req, res, pathname, method) {
         db.stores.push({ id, name, group });
         const cfg = defaultStoreConfig();
         cfg.settings.storeName = name;
-        db.storeData[id] = { config: cfg, schedule: null };
+        db.storeData[id] = { config: cfg, schedule: null, archive: {} };
       });
       return sendJson(res, 200, { id, name, group });
     }
 
     // /api/stores/:id ...
-    const storeMatch = pathname.match(/^\/api\/stores\/([^/]+)(\/(config|schedule))?$/);
+    const storeMatch = pathname.match(/^\/api\/stores\/([^/]+)(\/(config|schedule|archive))?$/);
     if (storeMatch) {
       const id = decodeURIComponent(storeMatch[1]);
       const sub = storeMatch[3]; // undefined | 'config' | 'schedule'
@@ -202,6 +202,7 @@ async function handleApi(req, res, pathname, method) {
         const entry = db.storeData[id];
         if (!entry) return sendJson(res, 404, { error: "매장을 찾을 수 없습니다." });
         if (sub === "config") return sendJson(res, 200, entry.config || defaultStoreConfig());
+        if (sub === "archive") return sendJson(res, 200, entry.archive || {});
         return sendJson(res, 200, entry.schedule || null);
       }
 
