@@ -916,6 +916,23 @@ const TABS = [
   { key: "summary", label: "2개월요약", icon: CheckCircle2 },
 ];
 
+function groupedStoreOptions(storeList) {
+  const map = new Map();
+  storeList.forEach((s) => {
+    const g = (s.group || "").trim() || "미분류";
+    if (!map.has(g)) map.set(g, []);
+    map.get(g).push(s);
+  });
+  const entries = Array.from(map.entries());
+  entries.sort((a, b) => {
+    if (a[0] === "미분류") return 1;
+    if (b[0] === "미분류") return -1;
+    return a[0].localeCompare(b[0], "ko");
+  });
+  entries.forEach(([, list]) => list.sort((a, b) => a.name.localeCompare(b.name, "ko")));
+  return entries;
+}
+
 function MainApp({ role, onLogout }) {
   const [storeList, setStoreList] = useState(null);
   const [currentStoreId, setCurrentStoreId] = useState(null);
@@ -1031,8 +1048,9 @@ function MainApp({ role, onLogout }) {
   const createStore = async () => {
     const name = window.prompt("새 매장 이름을 입력하세요", "새 매장");
     if (!name) return;
+    const group = window.prompt("채널/그룹 (예: DS채널, DFS채널, FS/HAUS채널)\n비워두면 '미분류'로 들어갑니다.", "");
     try {
-      const created = await api.createStore(name);
+      const created = await api.createStore(name, group || "");
       setStoreList((prev) => [...prev, created]);
       setCurrentStoreId(created.id);
       setStoreMissing(false);
@@ -1044,9 +1062,10 @@ function MainApp({ role, onLogout }) {
     const cur = storeList.find((s) => s.id === currentStoreId);
     const name = window.prompt("매장 이름 수정", cur?.name || "");
     if (!name) return;
+    const group = window.prompt("채널/그룹 수정 (예: DS채널, DFS채널, FS/HAUS채널)\n비워두면 '미분류'로 들어갑니다.", cur?.group || "");
     try {
-      await api.renameStore(currentStoreId, name);
-      setStoreList((prev) => prev.map((s) => (s.id === currentStoreId ? { ...s, name } : s)));
+      await api.renameStore(currentStoreId, name, group ?? "");
+      setStoreList((prev) => prev.map((s) => (s.id === currentStoreId ? { ...s, name, group: group ?? "" } : s)));
       setData((d) => ({ ...d, settings: { ...d.settings, storeName: name } }));
     } catch (e) {
       if (e.status === 404) {
@@ -1138,9 +1157,13 @@ function MainApp({ role, onLogout }) {
             <select
               value={currentStoreId || ""}
               onChange={(e) => setCurrentStoreId(e.target.value)}
-              className="bg-slate-800 text-white text-sm rounded-md px-2 py-1.5 border border-slate-700 focus:outline-none"
+              className="bg-slate-800 text-white text-sm rounded-md px-2 py-1.5 border border-slate-700 focus:outline-none max-w-[220px]"
             >
-              {storeList.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              {groupedStoreOptions(storeList).map(([groupName, list]) => (
+                <optgroup key={groupName} label={groupName}>
+                  {list.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </optgroup>
+              ))}
             </select>
           )}
           {isAdmin && (

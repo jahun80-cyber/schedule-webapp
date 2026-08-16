@@ -150,15 +150,16 @@ async function handleApi(req, res, pathname, method) {
       if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
       const body = await readBody(req);
       const name = (body.name || "").trim();
+      const group = (body.group || "").trim();
       if (!name) return sendJson(res, 400, { error: "매장 이름을 입력하세요." });
       const id = "store_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7);
       await writeDb((db) => {
-        db.stores.push({ id, name });
+        db.stores.push({ id, name, group });
         const cfg = defaultStoreConfig();
         cfg.settings.storeName = name;
         db.storeData[id] = { config: cfg, schedule: null };
       });
-      return sendJson(res, 200, { id, name });
+      return sendJson(res, 200, { id, name, group });
     }
 
     // /api/stores/:id ...
@@ -174,7 +175,11 @@ async function handleApi(req, res, pathname, method) {
         let found = false;
         await writeDb((db) => {
           const s = db.stores.find((s) => s.id === id);
-          if (s && body.name) { s.name = body.name; found = true; }
+          if (s) {
+            if (body.name !== undefined && body.name !== "") s.name = body.name;
+            if (body.group !== undefined) s.group = body.group;
+            found = true;
+          }
         });
         if (!found) return sendJson(res, 404, { error: "매장을 찾을 수 없습니다." });
         return sendJson(res, 200, { ok: true });
