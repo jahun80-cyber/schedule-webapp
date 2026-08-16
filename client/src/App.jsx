@@ -1115,6 +1115,8 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
     if (!archiveKey) return;
     if (alreadyArchived && !window.confirm(`${meta.label} 기록이 이미 저장되어 있습니다. 지금 내용으로 덮어쓸까요?`)) return;
     const employeesSnapshot = data.employees.map((e) => ({ id: e.id, name: e.name, type: e.type }));
+    const memoKey = monthKey === "m1" ? "m1Memo" : "m2Memo";
+    const memoRowLabels = data.memoRowLabels || [];
     setArchive((prev) => ({
       ...(prev || {}),
       [archiveKey]: {
@@ -1123,6 +1125,8 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
         days: meta.days,
         employeesSnapshot,
         schedule: schedule[monthKey],
+        memoRowLabels,
+        memo: schedule[memoKey] || {},
       },
     }));
     setMsg(`${meta.label} 기록을 저장했습니다. 왼쪽 [월별기록] 탭에서 확인할 수 있습니다.`);
@@ -1285,6 +1289,20 @@ function ArchiveTab({ data, archive, setArchive }) {
     });
   };
 
+  const setArchiveMemoCell = (rowId, dayIdx, value) => {
+    setArchive((prev) => {
+      const next = { ...prev };
+      const ent = { ...next[selected] };
+      const memo = { ...(ent.memo || {}) };
+      const arr = [...(memo[rowId] || [])];
+      arr[dayIdx] = value;
+      memo[rowId] = arr;
+      ent.memo = memo;
+      next[selected] = ent;
+      return next;
+    });
+  };
+
   return (
     <div>
       <SectionCard title="연도 · 월 선택" icon={CalendarDays}>
@@ -1327,6 +1345,19 @@ function ArchiveTab({ data, archive, setArchive }) {
                     </th>
                   ))}
                 </tr>
+                {(entry.memoRowLabels || []).map((row) => (
+                  <tr key={row.id}>
+                    <td className="sticky left-0 bg-amber-50 border border-slate-200 px-2 py-1 text-[10px] text-amber-700 font-semibold z-10">{row.label}</td>
+                    {entry.days.map((day, i) => (
+                      <td key={day.day} className="border border-slate-200 p-0 bg-amber-50/40 align-top">
+                        <AutoGrowTextarea
+                          value={(entry.memo?.[row.id] || [])[i] || ""}
+                          onChange={(v) => setArchiveMemoCell(row.id, i, v)}
+                        />
+                      </td>
+                    ))}
+                  </tr>
+                ))}
               </thead>
               <tbody>
                 {entry.employeesSnapshot.map((e) => (
