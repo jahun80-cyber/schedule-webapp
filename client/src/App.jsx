@@ -10,6 +10,7 @@ import {
   WEEKDAYS, DOW_OPTIONS,
   defaultStoreData,
   buildMonthDays, applyPersonalTags, assignRestDays, assignShiftCodes,
+  applyFixedRestSchedules, normalizeFtTemplates,
   validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT,
   isOffTag, dowBucket, nextMonth, emptySchedule, reconcileSchedule, isActiveEmployee, computeLeaveUsage,
 } from "./logic";
@@ -448,6 +449,7 @@ function TagsTab({ data, setData }) {
    ============================================================ */
 function HolidaysTab({ data, setData }) {
   const { holidays, issueDays, personalTags, employees, tags } = data;
+  const fixedRestSchedules = data.fixedRestSchedules || [];
 
   const updHol = (i, patch) => setData((d) => { const arr = [...d.holidays]; arr[i] = { ...arr[i], ...patch }; return { ...d, holidays: arr }; });
   const rmHol = (i) => setData((d) => ({ ...d, holidays: d.holidays.filter((_, idx) => idx !== i) }));
@@ -460,6 +462,19 @@ function HolidaysTab({ data, setData }) {
   const updPt = (i, patch) => setData((d) => { const arr = [...d.personalTags]; arr[i] = { ...arr[i], ...patch }; return { ...d, personalTags: arr }; });
   const rmPt = (i) => setData((d) => ({ ...d, personalTags: d.personalTags.filter((_, idx) => idx !== i) }));
   const addPt = () => setData((d) => ({ ...d, personalTags: [...d.personalTags, { start: "", end: "", empName: employees[0]?.name || "", tagCode: tags[0]?.code || "" }] }));
+
+  const updFixed = (i, patch) => setData((d) => { const arr = [...(d.fixedRestSchedules || [])]; arr[i] = { ...arr[i], ...patch }; return { ...d, fixedRestSchedules: arr }; });
+  const rmFixed = (i) => setData((d) => ({ ...d, fixedRestSchedules: (d.fixedRestSchedules || []).filter((_, idx) => idx !== i) }));
+  const addFixed = () => setData((d) => ({ ...d, fixedRestSchedules: [...(d.fixedRestSchedules || []), { start: "", end: "", empName: employees.find((e) => e.type === "정직원")?.name || "", weekdays: [] }] }));
+  const toggleFixedWeekday = (i, wd) => setData((d) => {
+    const arr = [...(d.fixedRestSchedules || [])];
+    const cur = arr[i].weekdays || [];
+    const next = cur.includes(wd) ? cur.filter((x) => x !== wd) : [...cur, wd];
+    arr[i] = { ...arr[i], weekdays: next };
+    return { ...d, fixedRestSchedules: arr };
+  });
+
+  const ftEmployeeNames = employees.filter((e) => e.type === "정직원").map((e) => e.name);
 
   return (
     <div className="max-w-5xl">
@@ -509,6 +524,34 @@ function HolidaysTab({ data, setData }) {
           ))}
         </div>
       </SectionCard>
+
+      <SectionCard title="고정휴무 설정 (정직원)" icon={CalendarDays} right={<GhostBtn onClick={addFixed} icon={Plus}>고정휴무 추가</GhostBtn>}>
+        <p className="text-xs text-slate-500 mb-3">
+          매주 정해진 요일에 쉬는 직원을 위한 설정입니다. 개인 지정 태그(요청·이슈)가 항상 먼저 반영되고, 남은 칸에 여기서 지정한 요일이 자동으로 휴무/휴일로 채워집니다.
+          기간을 나눠서 여러 개 등록하면 월별로 다른 요일 패턴도 반영할 수 있습니다 (예: 이번 달은 월·화, 다음 달은 수·목).
+          이 설정이 적용되는 직원은 나머지 로테이션 배정 대상에서 자동으로 제외됩니다.
+        </p>
+        <div className="space-y-2">
+          {fixedRestSchedules.map((f, i) => (
+            <div key={i} className="flex items-center gap-2 flex-wrap border border-slate-200 rounded-md px-3 py-2">
+              <DateInput value={f.start} onChange={(v) => updFixed(i, { start: v })} />
+              <span className="text-slate-400 text-xs">~</span>
+              <DateInput value={f.end} onChange={(v) => updFixed(i, { end: v })} />
+              <Select value={f.empName} onChange={(v) => updFixed(i, { empName: v })} options={ftEmployeeNames} className="w-28" />
+              <div className="flex items-center gap-1.5 ml-1">
+                {WEEKDAYS.map((wd) => (
+                  <label key={wd} className={`text-[11px] px-2 py-1 rounded cursor-pointer select-none ${(f.weekdays || []).includes(wd) ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-500"}`}>
+                    <input type="checkbox" className="hidden" checked={(f.weekdays || []).includes(wd)} onChange={() => toggleFixedWeekday(i, wd)} />
+                    {wd}
+                  </label>
+                ))}
+              </div>
+              <IconBtn onClick={() => rmFixed(i)} title="삭제" danger />
+            </div>
+          ))}
+          {fixedRestSchedules.length === 0 && <p className="text-xs text-slate-400">등록된 고정휴무가 없습니다.</p>}
+        </div>
+      </SectionCard>
     </div>
   );
 }
@@ -522,7 +565,16 @@ function ShiftTemplatesTab({ data, setData }) {
 
   const updFt = (i, patch) => setData((d) => { const a = [...d.ftTemplates]; a[i] = { ...a[i], ...patch }; return { ...d, ftTemplates: a }; });
   const rmFt = (i) => setData((d) => ({ ...d, ftTemplates: d.ftTemplates.filter((_, idx) => idx !== i) }));
-  const addFt = () => setData((d) => ({ ...d, ftTemplates: [...d.ftTemplates, { code: "", start: "", end: "", wd2: "", wd3: "", wd4: "", we2: "", we3: "", we4: "" }] }));
+  const addFt = () => setData((d) => {
+    const th = d.ftThresholds || { weekday: [2, 3, 4], weekend: [2, 3, 4] };
+    return {
+      ...d,
+      ftTemplates: [...d.ftTemplates, {
+        code: "", start: "", end: "",
+        wdCounts: th.weekday.map(() => ""), weCounts: th.weekend.map(() => ""),
+      }],
+    };
+  });
 
   const updThreshold = (group, idx, val) => setData((d) => {
     const cur = d.ftThresholds || { weekday: [2, 3, 4], weekend: [2, 3, 4] };
@@ -531,67 +583,115 @@ function ShiftTemplatesTab({ data, setData }) {
     return { ...d, ftThresholds: { ...cur, [group]: arr } };
   });
 
+  const addCol = (group) => setData((d) => {
+    const cur = d.ftThresholds || { weekday: [2, 3, 4], weekend: [2, 3, 4] };
+    const last = cur[group][cur[group].length - 1];
+    const newArr = [...cur[group], (Number(last) || 0) + 1];
+    const countsKey = group === "weekday" ? "wdCounts" : "weCounts";
+    return {
+      ...d,
+      ftThresholds: { ...cur, [group]: newArr },
+      ftTemplates: d.ftTemplates.map((t) => ({ ...t, [countsKey]: [...(t[countsKey] || []), ""] })),
+    };
+  });
+
+  const removeCol = (group, idx) => setData((d) => {
+    const cur = d.ftThresholds || { weekday: [2, 3, 4], weekend: [2, 3, 4] };
+    if (cur[group].length <= 1) return d;
+    const newArr = cur[group].filter((_, i) => i !== idx);
+    const countsKey = group === "weekday" ? "wdCounts" : "weCounts";
+    return {
+      ...d,
+      ftThresholds: { ...cur, [group]: newArr },
+      ftTemplates: d.ftTemplates.map((t) => ({ ...t, [countsKey]: (t[countsKey] || []).filter((_, i) => i !== idx) })),
+    };
+  });
+
+  const updCount = (templateIdx, countsKey, colIdx, val) => setData((d) => {
+    const a = [...d.ftTemplates];
+    const counts = [...(a[templateIdx][countsKey] || [])];
+    counts[colIdx] = val;
+    a[templateIdx] = { ...a[templateIdx], [countsKey]: counts };
+    return { ...d, ftTemplates: a };
+  });
+
   const updPt = (i, patch) => setData((d) => { const a = [...d.ptTemplates]; a[i] = { ...a[i], ...patch }; return { ...d, ptTemplates: a }; });
   const rmPt = (i) => setData((d) => ({ ...d, ptTemplates: d.ptTemplates.filter((_, idx) => idx !== i) }));
   const addPt = () => setData((d) => ({ ...d, ptTemplates: [...d.ptTemplates, { code: "", start: "", end: "" }] }));
 
   return (
     <div className="max-w-6xl">
-      <SectionCard title="정직원 근무형태" icon={ClipboardCheck} right={<GhostBtn onClick={addFt} icon={Plus}>추가</GhostBtn>}>
+      <SectionCard title="정직원 근무형태" icon={ClipboardCheck} right={<GhostBtn onClick={addFt} icon={Plus}>근무코드 추가</GhostBtn>}>
         <p className="text-xs text-slate-500 mb-3">
-          "평일 몇 인" 기준 자체가 매장마다 다를 수 있어 아래 열 제목의 숫자를 직접 바꿀 수 있습니다 (예: 2/3/4인 → 3/4/5인).
-          출근인원이 이 셋 중 가장 가까운 기준에 맞춰 자동으로 그 열의 인원수를 사용합니다.
+          "평일/주말 몇 인" 기준 칸 개수는 매장마다 다를 수 있어 자유롭게 늘리고 줄일 수 있습니다. 출근인원이 여러 기준 중 가장 가까운 값에 맞춰 그 열의 인원수를 자동으로 사용합니다.
         </p>
-        <table className="text-sm border-collapse" style={{ tableLayout: "fixed", width: "100%" }}>
-          <thead>
-            <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
-              <th className="py-2" style={{ width: 90 }}>코드</th>
-              <th style={{ width: 90 }}>시작</th>
-              <th style={{ width: 90 }}>종료</th>
-              {[0, 1, 2].map((idx) => (
-                <th key={"wd" + idx} className="text-center align-bottom pb-2" style={{ width: 78 }}>
-                  <div className="text-[10px] text-slate-400 mb-1">평일</div>
-                  <div className="flex items-center justify-center gap-1">
-                    <NumberInput value={thresholds.weekday[idx]} onChange={(v) => updThreshold("weekday", idx, v)} className="w-11 px-1 text-center" />
-                    <span className="text-[11px] text-slate-400">인</span>
-                  </div>
-                </th>
-              ))}
-              {[0, 1, 2].map((idx) => (
-                <th key={"we" + idx} className="text-center align-bottom pb-2" style={{ width: 78 }}>
-                  <div className="text-[10px] text-slate-400 mb-1">주말</div>
-                  <div className="flex items-center justify-center gap-1">
-                    <NumberInput value={thresholds.weekend[idx]} onChange={(v) => updThreshold("weekend", idx, v)} className="w-11 px-1 text-center" />
-                    <span className="text-[11px] text-slate-400">인</span>
-                  </div>
-                </th>
-              ))}
-              <th style={{ width: 32 }}></th>
-            </tr>
-          </thead>
-          <tbody>
-            {ftTemplates.map((t, i) => (
-              <tr key={i} className="border-b border-slate-100">
-                <td className="py-1.5 pr-1"><TextInput value={t.code} onChange={(v) => updFt(i, { code: v })} className="w-20" /></td>
-                <td className="pr-1"><TextInput value={t.start} onChange={(v) => updFt(i, { start: v })} className="w-20" /></td>
-                <td className="pr-1"><TextInput value={t.end} onChange={(v) => updFt(i, { end: v })} className="w-20" /></td>
-                <td className="text-center"><NumberInput value={t.wd2} onChange={(v) => updFt(i, { wd2: v })} className="w-14 text-center" /></td>
-                <td className="text-center"><NumberInput value={t.wd3} onChange={(v) => updFt(i, { wd3: v })} className="w-14 text-center" /></td>
-                <td className="text-center"><NumberInput value={t.wd4} onChange={(v) => updFt(i, { wd4: v })} className="w-14 text-center" /></td>
-                <td className="text-center"><NumberInput value={t.we2} onChange={(v) => updFt(i, { we2: v })} className="w-14 text-center" /></td>
-                <td className="text-center"><NumberInput value={t.we3} onChange={(v) => updFt(i, { we3: v })} className="w-14 text-center" /></td>
-                <td className="text-center"><NumberInput value={t.we4} onChange={(v) => updFt(i, { we4: v })} className="w-14 text-center" /></td>
-                <td className="text-center"><IconBtn onClick={() => rmFt(i)} danger /></td>
+        <div className="flex items-center gap-3 mb-3">
+          <GhostBtn onClick={() => addCol("weekday")} icon={Plus}>평일 칸 추가</GhostBtn>
+          <GhostBtn onClick={() => addCol("weekend")} icon={Plus}>주말 칸 추가</GhostBtn>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="text-sm border-collapse">
+            <thead>
+              <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+                <th className="py-2" style={{ width: 90 }}>코드</th>
+                <th style={{ width: 90 }}>시작</th>
+                <th style={{ width: 90 }}>종료</th>
+                {thresholds.weekday.map((val, idx) => (
+                  <th key={"wd" + idx} className="text-center align-bottom pb-2" style={{ width: 84 }}>
+                    <div className="text-[10px] text-slate-400 mb-1 flex items-center justify-center gap-1">
+                      평일
+                      {thresholds.weekday.length > 1 && (
+                        <button onClick={() => removeCol("weekday", idx)} className="text-slate-300 hover:text-red-500" title="이 칸 삭제">✕</button>
+                      )}
+                    </div>
+                    <div className="flex items-center justify-center gap-1">
+                      <NumberInput value={val} onChange={(v) => updThreshold("weekday", idx, v)} className="w-11 px-1 text-center" />
+                      <span className="text-[11px] text-slate-400">인</span>
+                    </div>
+                  </th>
+                ))}
+                {thresholds.weekend.map((val, idx) => (
+                  <th key={"we" + idx} className="text-center align-bottom pb-2" style={{ width: 84 }}>
+                    <div className="text-[10px] text-slate-400 mb-1 flex items-center justify-center gap-1">
+                      주말
+                      {thresholds.weekend.length > 1 && (
+                        <button onClick={() => removeCol("weekend", idx)} className="text-slate-300 hover:text-red-500" title="이 칸 삭제">✕</button>
+                      )}
+                    </div>
+                    <div className="flex items-center justify-center gap-1">
+                      <NumberInput value={val} onChange={(v) => updThreshold("weekend", idx, v)} className="w-11 px-1 text-center" />
+                      <span className="text-[11px] text-slate-400">인</span>
+                    </div>
+                  </th>
+                ))}
+                <th style={{ width: 32 }}></th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {ftTemplates.map((t, i) => (
+                <tr key={i} className="border-b border-slate-100">
+                  <td className="py-1.5 pr-1"><TextInput value={t.code} onChange={(v) => updFt(i, { code: v })} className="w-20" /></td>
+                  <td className="pr-1"><TextInput value={t.start} onChange={(v) => updFt(i, { start: v })} className="w-20" /></td>
+                  <td className="pr-1"><TextInput value={t.end} onChange={(v) => updFt(i, { end: v })} className="w-20" /></td>
+                  {(t.wdCounts || []).map((c, colIdx) => (
+                    <td key={"wdc" + colIdx} className="text-center"><NumberInput value={c} onChange={(v) => updCount(i, "wdCounts", colIdx, v)} className="w-14 text-center" /></td>
+                  ))}
+                  {(t.weCounts || []).map((c, colIdx) => (
+                    <td key={"wec" + colIdx} className="text-center"><NumberInput value={c} onChange={(v) => updCount(i, "weCounts", colIdx, v)} className="w-14 text-center" /></td>
+                  ))}
+                  <td className="text-center"><IconBtn onClick={() => rmFt(i)} danger /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
         <div className="mt-4 flex items-center gap-2">
           <span className="text-xs font-semibold text-slate-500">쉬기 전날 우선 근무형태</span>
           <TextInput value={prefCode} onChange={(v) => setData((d) => ({ ...d, prefCode: v }))} className="w-20" />
           <span className="text-[11px] text-slate-400">(비워두면 사용 안 함)</span>
         </div>
       </SectionCard>
+
 
       <SectionCard title="파트타이머 근무형태 (코드 정의)" icon={ClipboardCheck} right={<GhostBtn onClick={addPt} icon={Plus}>추가</GhostBtn>}>
         <p className="text-xs text-slate-500 mb-3">
@@ -804,9 +904,10 @@ function ScheduleTab({ data, schedule, setSchedule, archive, setArchive, monthsM
     setRunning(true);
     setTimeout(() => {
       const { schedule: withPersonal, applied } = applyPersonalTags(schedule, data.employees, data.personalTags, monthsMeta);
-      const { schedule: result, message } = assignRestDays(withPersonal, data.employees, data.tags, data.settings, monthsMeta);
+      const { schedule: withFixed, applied: fixedApplied } = applyFixedRestSchedules(withPersonal, data.employees, data.fixedRestSchedules, monthsMeta);
+      const { schedule: result, message } = assignRestDays(withFixed, data.employees, data.tags, data.settings, monthsMeta, data.fixedRestSchedules);
       setSchedule(result);
-      setMsg(`개인 지정 태그로 채운 칸: ${applied}건 · ${message}`);
+      setMsg(`개인 지정 태그로 채운 칸: ${applied}건 · 고정휴무로 채운 칸: ${fixedApplied}건 · ${message}`);
       setRunning(false);
     }, 30);
   };
@@ -1372,6 +1473,8 @@ function MainApp({ role, onLogout }) {
           api.getMeta(currentStoreId).catch(() => ({ updatedAt: 0 })),
         ]);
         const finalData = cfg || defaultStoreData();
+        finalData.ftTemplates = normalizeFtTemplates(finalData.ftTemplates);
+        finalData.fixedRestSchedules = finalData.fixedRestSchedules || [];
         setDataRaw(finalData);
         const s1 = finalData.settings;
         const { year: y2, month: m2 } = nextMonth(s1.year, s1.startMonth);

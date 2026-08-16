@@ -49,11 +49,11 @@ const DEFAULT_HOLIDAYS = [
 ];
 
 const DEFAULT_FT_TEMPLATES = [
-  { code: "A", start: "09:30", end: "19:00", wd2: "", wd3: 1, wd4: 2, we2: "", we3: 1, we4: 2 },
-  { code: "B", start: "10:30", end: "20:00", wd2: "", wd3: 2, wd4: 2, we2: "", we3: "", we4: "" },
-  { code: "C", start: "11:00", end: "20:30", wd2: "", wd3: "", wd4: "", we2: "", we3: 2, we4: 2 },
-  { code: "A/F", start: "10:00", end: "20:00", wd2: 2, wd3: "", wd4: "", we2: "", we3: "", we4: "" },
-  { code: "B/F", start: "10:00", end: "20:30", wd2: "", wd3: "", wd4: "", we2: 2, we3: "", we4: "" },
+  { code: "A", start: "09:30", end: "19:00", wdCounts: ["", 1, 2], weCounts: ["", 1, 2] },
+  { code: "B", start: "10:30", end: "20:00", wdCounts: ["", 2, 2], weCounts: ["", "", ""] },
+  { code: "C", start: "11:00", end: "20:30", wdCounts: ["", "", ""], weCounts: ["", 2, 2] },
+  { code: "A/F", start: "10:00", end: "20:00", wdCounts: [2, "", ""], weCounts: ["", "", ""] },
+  { code: "B/F", start: "10:00", end: "20:30", wdCounts: ["", "", ""], weCounts: [2, "", ""] },
 ];
 
 const DEFAULT_PT_TEMPLATES = [
@@ -90,6 +90,7 @@ function defaultStoreData() {
     prefCode: "A",
     annualLeaveGrants: {},
     shiftyCodeMap: [],
+    fixedRestSchedules: [],
   };
 }
 
@@ -176,6 +177,15 @@ function emptySchedule(employees, days1, days2) {
 }
 
 // 기존 스케줄을 새 달력 길이에 맞춰 보존 이관 (직원 추가/월 변경 대응)
+// 예전 방식(wd2/wd3/wd4 고정 3칸)으로 저장된 데이터를 배열 방식(wdCounts/weCounts)으로 자동 변환
+function normalizeFtTemplates(ftTemplates) {
+  return (ftTemplates || []).map((t) => {
+    if (Array.isArray(t.wdCounts) && Array.isArray(t.weCounts)) return t;
+    const { wd2, wd3, wd4, we2, we3, we4, ...rest } = t;
+    return { ...rest, wdCounts: [wd2 ?? "", wd3 ?? "", wd4 ?? ""], weCounts: [we2 ?? "", we3 ?? "", we4 ?? ""] };
+  });
+}
+
 function reconcileSchedule(oldSched, employees, days1, days2) {
   const fresh = emptySchedule(employees, days1, days2);
   if (!oldSched) return fresh;
@@ -223,7 +233,44 @@ function buildTimeline(monthsMeta) {
   return timeline;
 }
 
-function assignRestDays(schedule, employees, tags, settings, monthsMeta) {
+// 고정휴무: 개인지정태그(요청/이슈) 다음으로, 설정해둔 요일에 맞춰 휴무/휴일을 미리 채움
+// (같은 주 안에서 요일 순서가 빠른 쪽 = 휴무, 나머지 = 휴일)
+function applyFixedRestSchedules(schedule, employees, fixedRestSchedules, monthsMeta) {
+  let applied = 0;
+  const next = { m1: { ...schedule.m1 }, m2: { ...schedule.m2 } };
+  Object.keys(next.m1).forEach((id) => (next.m1[id] = [...schedule.m1[id]]));
+  Object.keys(next.m2).forEach((id) => (next.m2[id] = [...schedule.m2[id]]));
+
+  const timeline = buildTimeline(monthsMeta);
+
+  (fixedRestSchedules || []).forEach((f) => {
+    if (!f.start || !f.end || !f.empName || !f.weekdays || f.weekdays.length === 0) return;
+    const emp = employees.find((e) => e.name === f.empName);
+    if (!emp) return;
+    const sortedWds = WEEKDAYS.filter((wd) => f.weekdays.includes(wd)); // 월~일 순서로 정렬
+
+    timeline.forEach(({ key, day }) => {
+      if (day.dateStr < f.start || day.dateStr > f.end) return;
+      const wdIdx = sortedWds.indexOf(day.weekday);
+      if (wdIdx === -1) return;
+      const arr = next[key][emp.id];
+      if (arr && !arr[day.day - 1]) {
+        arr[day.day - 1] = wdIdx === 0 ? "휴무" : "휴일";
+        applied++;
+      }
+    });
+  });
+
+  return { schedule: next, applied };
+}
+
+function isFixedRestCovered(fixedRestSchedules, empName, dateStr) {
+  return (fixedRestSchedules || []).some(
+    (f) => f.empName === empName && f.start && f.end && dateStr >= f.start && dateStr <= f.end && (f.weekdays || []).length > 0
+  );
+}
+
+function assignRestDays(schedule, employees, tags, settings, monthsMeta, fixedRestSchedules) {
   const next = { m1: { ...schedule.m1 }, m2: { ...schedule.m2 } };
   Object.keys(next.m1).forEach((id) => (next.m1[id] = [...schedule.m1[id]]));
   Object.keys(next.m2).forEach((id) => (next.m2[id] = [...schedule.m2[id]]));
@@ -255,6 +302,9 @@ function assignRestDays(schedule, employees, tags, settings, monthsMeta) {
     ftEmps.forEach((e) => (cellsToday[e.id] = next[key][e.id][day.day - 1] || ""));
     const isBlank = {};
     ftEmps.forEach((e) => (isBlank[e.id] = cellsToday[e.id] === ""));
+    // 고정휴무가 적용되는 사람은 그날 이 로테이션 배정의 후보에서 제외 (이미 고정 패턴대로 확정됨)
+    const isFixedToday = {};
+    ftEmps.forEach((e) => (isFixedToday[e.id] = isFixedRestCovered(fixedRestSchedules, e.name, day.dateStr)));
 
     let alreadyOff = 0;
     ftEmps.forEach((e) => { if (!isBlank[e.id] && isOffTag(tags, cellsToday[e.id])) alreadyOff++; });
@@ -276,7 +326,7 @@ function assignRestDays(schedule, employees, tags, settings, monthsMeta) {
     while (true) {
       let bestId = null, bestStreak = -1;
       ftEmps.forEach((e) => {
-        if (isBlank[e.id] && !selected.has(e.id) && streak[e.id] >= 3 && streak[e.id] > bestStreak) {
+        if (isBlank[e.id] && !isFixedToday[e.id] && !selected.has(e.id) && streak[e.id] >= 3 && streak[e.id] > bestStreak) {
           bestStreak = streak[e.id]; bestId = e.id;
         }
       });
@@ -287,7 +337,7 @@ function assignRestDays(schedule, employees, tags, settings, monthsMeta) {
     while (true) {
       let bestId = null, bestStreak = -1;
       ftEmps.forEach((e) => {
-        if (isBlank[e.id] && !selected.has(e.id) && streak[e.id] >= 3 && streak[e.id] > bestStreak) {
+        if (isBlank[e.id] && !isFixedToday[e.id] && !selected.has(e.id) && streak[e.id] >= 3 && streak[e.id] > bestStreak) {
           bestStreak = streak[e.id]; bestId = e.id;
         }
       });
@@ -298,7 +348,7 @@ function assignRestDays(schedule, employees, tags, settings, monthsMeta) {
     while (true) {
       let bestId = null, bestRest = Infinity;
       ftEmps.forEach((e) => {
-        if (isBlank[e.id] && !selected.has(e.id) && streak[e.id] >= 1 && restCount[e.id] < bestRest) {
+        if (isBlank[e.id] && !isFixedToday[e.id] && !selected.has(e.id) && streak[e.id] >= 1 && restCount[e.id] < bestRest) {
           bestRest = restCount[e.id]; bestId = e.id;
         }
       });
@@ -385,8 +435,6 @@ function pickThresholdIndex(thresholds, value) {
 
 function assignShiftCodes(schedule, employees, tags, settings, ftTemplates, ptTemplates, prefCode, monthsMeta, ftThresholds) {
   const thresholds = ftThresholds || { weekday: [2, 3, 4], weekend: [2, 3, 4] };
-  const wdFields = ["wd2", "wd3", "wd4"];
-  const weFields = ["we2", "we3", "we4"];
   const next = { m1: { ...schedule.m1 }, m2: { ...schedule.m2 } };
   Object.keys(next.m1).forEach((id) => (next.m1[id] = [...schedule.m1[id]]));
   Object.keys(next.m2).forEach((id) => (next.m2[id] = [...schedule.m2[id]]));
@@ -424,11 +472,11 @@ function assignShiftCodes(schedule, employees, tags, settings, ftTemplates, ptTe
       const attendingFT = ftAlreadyWorking + ftEligible.length;
       const weekendB = dowBucket(settings, wd) === "주말" || isHoliday;
       const bucketList = weekendB ? thresholds.weekend : thresholds.weekday;
-      const fieldList = weekendB ? weFields : wdFields;
-      const chosenField = fieldList[pickThresholdIndex(bucketList, attendingFT)];
+      const colIdx = pickThresholdIndex(bucketList, attendingFT);
       const needCnt = {};
       ftTemplates.forEach((t) => {
-        needCnt[t.code] = Number(t[chosenField]) || 0;
+        const countsArr = weekendB ? (t.weCounts || []) : (t.wdCounts || []);
+        needCnt[t.code] = Number(countsArr[colIdx]) || 0;
       });
       ftAllActive.forEach((e) => {
         const v = arr(e.id)[day.day - 1] || "";
@@ -607,8 +655,9 @@ function computeLeaveUsage(year, tags, archive) {
 export {
   WEEKDAYS, DOW_OPTIONS,
   DEFAULT_TAGS, DEFAULT_EMPLOYEES, DEFAULT_HOLIDAYS, DEFAULT_FT_TEMPLATES, DEFAULT_PT_TEMPLATES,
-  defaultSettings, defaultStoreData, reconcileSchedule,
+  defaultSettings, defaultStoreData, reconcileSchedule, normalizeFtTemplates,
   buildMonthDays, applyPersonalTags, assignRestDays, assignShiftCodes,
+  applyFixedRestSchedules, isFixedRestCovered,
   validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT,
   isOffTag, dowBucket, nextMonth, emptySchedule, isWeekendBucket, isActiveEmployee, pickThresholdIndex, isAutoAssignable,
   computeLeaveUsage,

@@ -39,11 +39,11 @@ const DEFAULT_HOLIDAYS_2026 = [
 ];
 
 const DEFAULT_FT_TEMPLATES = [
-  { code: "A", start: "09:30", end: "19:00", wd2: "", wd3: 1, wd4: 2, we2: "", we3: 1, we4: 2 },
-  { code: "B", start: "10:30", end: "20:00", wd2: "", wd3: 2, wd4: 2, we2: "", we3: "", we4: "" },
-  { code: "C", start: "11:00", end: "20:30", wd2: "", wd3: "", wd4: "", we2: "", we3: 2, we4: 2 },
-  { code: "A/F", start: "10:00", end: "20:00", wd2: 2, wd3: "", wd4: "", we2: "", we3: "", we4: "" },
-  { code: "B/F", start: "10:00", end: "20:30", wd2: "", wd3: "", wd4: "", we2: 2, we3: "", we4: "" },
+  { code: "A", start: "09:30", end: "19:00", wdCounts: ["", 1, 2], weCounts: ["", 1, 2] },
+  { code: "B", start: "10:30", end: "20:00", wdCounts: ["", 2, 2], weCounts: ["", "", ""] },
+  { code: "C", start: "11:00", end: "20:30", wdCounts: ["", "", ""], weCounts: ["", 2, 2] },
+  { code: "A/F", start: "10:00", end: "20:00", wdCounts: [2, "", ""], weCounts: ["", "", ""] },
+  { code: "B/F", start: "10:00", end: "20:30", wdCounts: ["", "", ""], weCounts: [2, "", ""] },
 ];
 
 const DEFAULT_PT_TEMPLATES = [
@@ -81,6 +81,7 @@ function defaultStoreConfig() {
     prefCode: "A",
     annualLeaveGrants: {},
     shiftyCodeMap: [],
+    fixedRestSchedules: [],
   };
 }
 
