@@ -10,7 +10,8 @@ import {
   WEEKDAYS, DOW_OPTIONS,
   defaultStoreData,
   buildMonthDays, applyPersonalTags, assignRestDays, assignShiftCodes,
-  applyFixedRestSchedules, normalizeFtTemplates,
+  applyFixedRestSchedules, normalizeFtTemplates, DAY_PAIR_OPTIONS,
+  emptyMemoRows, reconcileMemoRows,
   validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT,
   isOffTag, dowBucket, nextMonth, emptySchedule, reconcileSchedule, isActiveEmployee, computeLeaveUsage,
 } from "./logic";
@@ -465,12 +466,12 @@ function HolidaysTab({ data, setData }) {
 
   const updFixed = (i, patch) => setData((d) => { const arr = [...(d.fixedRestSchedules || [])]; arr[i] = { ...arr[i], ...patch }; return { ...d, fixedRestSchedules: arr }; });
   const rmFixed = (i) => setData((d) => ({ ...d, fixedRestSchedules: (d.fixedRestSchedules || []).filter((_, idx) => idx !== i) }));
-  const addFixed = () => setData((d) => ({ ...d, fixedRestSchedules: [...(d.fixedRestSchedules || []), { start: "", end: "", empName: employees.find((e) => e.type === "정직원")?.name || "", weekdays: [] }] }));
-  const toggleFixedWeekday = (i, wd) => setData((d) => {
+  const addFixed = () => setData((d) => ({ ...d, fixedRestSchedules: [...(d.fixedRestSchedules || []), { start: "", end: "", dayPair: DAY_PAIR_OPTIONS[0], empNames: [] }] }));
+  const toggleFixedEmp = (i, name) => setData((d) => {
     const arr = [...(d.fixedRestSchedules || [])];
-    const cur = arr[i].weekdays || [];
-    const next = cur.includes(wd) ? cur.filter((x) => x !== wd) : [...cur, wd];
-    arr[i] = { ...arr[i], weekdays: next };
+    const cur = arr[i].empNames || [];
+    const next = cur.includes(name) ? cur.filter((x) => x !== name) : [...cur, name];
+    arr[i] = { ...arr[i], empNames: next };
     return { ...d, fixedRestSchedules: arr };
   });
 
@@ -527,26 +528,30 @@ function HolidaysTab({ data, setData }) {
 
       <SectionCard title="고정휴무 설정 (정직원)" icon={CalendarDays} right={<GhostBtn onClick={addFixed} icon={Plus}>고정휴무 추가</GhostBtn>}>
         <p className="text-xs text-slate-500 mb-3">
-          매주 정해진 요일에 쉬는 직원을 위한 설정입니다. 개인 지정 태그(요청·이슈)가 항상 먼저 반영되고, 남은 칸에 여기서 지정한 요일이 자동으로 휴무/휴일로 채워집니다.
-          기간을 나눠서 여러 개 등록하면 월별로 다른 요일 패턴도 반영할 수 있습니다 (예: 이번 달은 월·화, 다음 달은 수·목).
-          이 설정이 적용되는 직원은 나머지 로테이션 배정 대상에서 자동으로 제외됩니다.
+          매주 같은 요일쌍으로 쉬는 직원들을 한 번에 지정합니다 (예: 월화 고정휴무 5명). 개인 지정 태그(요청·이슈)가 항상 먼저 반영되고,
+          남은 칸에 여기서 지정한 요일이 자동으로 휴무/휴일로 채워집니다. 기간을 나눠서 여러 개 등록하면 월별로 다른 패턴도 반영할 수 있습니다.
+          여기 지정된 직원은 나머지 로테이션 배정 대상에서 자동으로 제외됩니다.
         </p>
         <div className="space-y-2">
           {fixedRestSchedules.map((f, i) => (
-            <div key={i} className="flex items-center gap-2 flex-wrap border border-slate-200 rounded-md px-3 py-2">
-              <DateInput value={f.start} onChange={(v) => updFixed(i, { start: v })} />
-              <span className="text-slate-400 text-xs">~</span>
-              <DateInput value={f.end} onChange={(v) => updFixed(i, { end: v })} />
-              <Select value={f.empName} onChange={(v) => updFixed(i, { empName: v })} options={ftEmployeeNames} className="w-28" />
-              <div className="flex items-center gap-1.5 ml-1">
-                {WEEKDAYS.map((wd) => (
-                  <label key={wd} className={`text-[11px] px-2 py-1 rounded cursor-pointer select-none ${(f.weekdays || []).includes(wd) ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-500"}`}>
-                    <input type="checkbox" className="hidden" checked={(f.weekdays || []).includes(wd)} onChange={() => toggleFixedWeekday(i, wd)} />
-                    {wd}
+            <div key={i} className="border border-slate-200 rounded-md px-3 py-2">
+              <div className="flex items-center gap-2 flex-wrap mb-2">
+                <DateInput value={f.start} onChange={(v) => updFixed(i, { start: v })} />
+                <span className="text-slate-400 text-xs">~</span>
+                <DateInput value={f.end} onChange={(v) => updFixed(i, { end: v })} />
+                <span className="text-xs text-slate-400 ml-1">구분</span>
+                <Select value={f.dayPair} onChange={(v) => updFixed(i, { dayPair: v })} options={DAY_PAIR_OPTIONS} className="w-24" />
+                <IconBtn onClick={() => rmFixed(i)} title="삭제" danger />
+              </div>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-xs text-slate-400 mr-1">인원</span>
+                {ftEmployeeNames.map((name) => (
+                  <label key={name} className={`text-[11px] px-2 py-1 rounded cursor-pointer select-none ${(f.empNames || []).includes(name) ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-500"}`}>
+                    <input type="checkbox" className="hidden" checked={(f.empNames || []).includes(name)} onChange={() => toggleFixedEmp(i, name)} />
+                    {name}
                   </label>
                 ))}
               </div>
-              <IconBtn onClick={() => rmFixed(i)} title="삭제" danger />
             </div>
           ))}
           {fixedRestSchedules.length === 0 && <p className="text-xs text-slate-400">등록된 고정휴무가 없습니다.</p>}
@@ -736,8 +741,11 @@ function attendStatus2(attend, required) {
   return attend < required ? "NOT" : "OK";
 }
 
-function ScheduleGrid({ data, schedule, setSchedule, monthKey, days }) {
+function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days }) {
   const { employees, tags, settings } = data;
+  const memoRowLabels = data.memoRowLabels || [];
+  const memoKey = monthKey === "m1" ? "m1Memo" : "m2Memo";
+
   const allCodes = useMemo(() => {
     const set = new Set(["", ...tags.map((t) => t.code)]);
     data.ftTemplates.forEach((t) => t.code && set.add(t.code));
@@ -773,6 +781,33 @@ function ScheduleGrid({ data, schedule, setSchedule, monthKey, days }) {
     });
   };
 
+  const setMemoCell = (rowId, dayIdx, value) => {
+    setSchedule((prev) => {
+      const next = { ...prev, [memoKey]: { ...(prev[memoKey] || {}) } };
+      const arr = [...(next[memoKey][rowId] || [])];
+      arr[dayIdx] = value;
+      next[memoKey][rowId] = arr;
+      return next;
+    });
+  };
+
+  const addMemoRow = () => {
+    const label = window.prompt("추가할 줄 이름을 입력하세요 (예: STORE MEMO, 도슨트, 연차, 시프트)");
+    if (!label) return;
+    const id = "memo_" + Date.now();
+    setData((d) => ({ ...d, memoRowLabels: [...(d.memoRowLabels || []), { id, label }] }));
+    // m1Memo/m2Memo 배열은 memoRowLabels 변경을 감지하는 재정합 로직이 자동으로 두 달 길이에 맞춰 만들어줌
+  };
+  const removeMemoRow = (id) => {
+    if (!window.confirm("이 줄을 삭제할까요? 입력해둔 내용도 함께 사라집니다.")) return;
+    setData((d) => ({ ...d, memoRowLabels: (d.memoRowLabels || []).filter((r) => r.id !== id) }));
+    setSchedule((prev) => {
+      const m1Memo = { ...(prev.m1Memo || {}) }; delete m1Memo[id];
+      const m2Memo = { ...(prev.m2Memo || {}) }; delete m2Memo[id];
+      return { ...prev, m1Memo, m2Memo };
+    });
+  };
+
   const cellW = 54;
   const nameW = 132;
 
@@ -781,9 +816,12 @@ function ScheduleGrid({ data, schedule, setSchedule, monthKey, days }) {
     if (day.holidayName) { color = "#dc2626"; }
     else if (day.issueName) { color = "#059669"; }
     else if (day.weekday === "토") { color = "#2563eb"; }
+    else if (day.weekday === "일") { color = "#dc2626"; }
     if (day.weekday === "토" || day.weekday === "일" || day.holidayName) bg = "#fef2f2";
     return { background: bg, color, minWidth: cellW, maxWidth: cellW };
   };
+
+  const cellTextColor = (v) => (v === "휴무" ? "#2563eb" : v === "휴일" ? "#dc2626" : undefined);
 
   return (
     <div>
@@ -791,6 +829,7 @@ function ScheduleGrid({ data, schedule, setSchedule, monthKey, days }) {
         <div><span className="text-slate-500">적용 연도월:</span> <b>{days.length ? `${days[0].dateStr.slice(0, 7)}` : "-"}</b></div>
         <div><span className="text-slate-500">이번달 휴무목표(토요일수):</span> <b className="text-indigo-600">{satT}</b></div>
         <div><span className="text-slate-500">이번달 휴일목표(일요일+공휴일수):</span> <b className="text-indigo-600">{sunHolT}</b></div>
+        <GhostBtn onClick={addMemoRow} icon={Plus}>메모 줄 추가</GhostBtn>
       </div>
 
       <div className="overflow-x-auto border border-slate-200 rounded-lg">
@@ -820,40 +859,68 @@ function ScheduleGrid({ data, schedule, setSchedule, monthKey, days }) {
                 </td>
               ))}
             </tr>
+            {memoRowLabels.map((row) => (
+              <tr key={row.id}>
+                <td className="sticky left-0 bg-amber-50 border border-slate-200 px-2 py-1 text-[10px] text-amber-700 font-semibold z-10">
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="truncate">{row.label}</span>
+                    <button onClick={() => removeMemoRow(row.id)} className="text-amber-300 hover:text-red-500 flex-shrink-0" title="이 줄 삭제">✕</button>
+                  </div>
+                </td>
+                {days.map((day, i) => (
+                  <td key={day.day} className="border border-slate-200 p-0 bg-amber-50/40">
+                    <input
+                      type="text"
+                      value={(schedule[memoKey]?.[row.id] || [])[i] || ""}
+                      onChange={(ev) => setMemoCell(row.id, i, ev.target.value)}
+                      className="w-full text-[9px] text-center border-none bg-transparent focus:outline-none focus:ring-1 focus:ring-amber-400 py-1"
+                    />
+                  </td>
+                ))}
+              </tr>
+            ))}
           </thead>
           <tbody>
             <tr><td colSpan={days.length + 1} className="bg-indigo-50 text-indigo-700 font-bold text-[11px] px-2 py-1 sticky left-0">정직원</td></tr>
             {ftList.map((e) => (
               <tr key={e.id}>
                 <td className="sticky left-0 bg-white border border-slate-200 px-2 py-1 font-medium z-10">{e.name}</td>
-                {days.map((day, i) => (
-                  <td key={day.day} className="border border-slate-200 p-0">
-                    <select
-                      value={schedule[monthKey][e.id]?.[i] || ""}
-                      onChange={(ev) => setCell(e.id, i, ev.target.value)}
-                      className="w-full h-full text-[10px] text-center border-none bg-transparent focus:outline-none focus:ring-1 focus:ring-indigo-400 py-1.5"
-                    >
-                      {allCodes.map((c) => <option key={c} value={c}>{c}</option>)}
-                    </select>
-                  </td>
-                ))}
+                {days.map((day, i) => {
+                  const v = schedule[monthKey][e.id]?.[i] || "";
+                  return (
+                    <td key={day.day} className="border border-slate-200 p-0">
+                      <select
+                        value={v}
+                        onChange={(ev) => setCell(e.id, i, ev.target.value)}
+                        style={{ color: cellTextColor(v) }}
+                        className="w-full h-full text-[10px] text-center border-none bg-transparent focus:outline-none focus:ring-1 focus:ring-indigo-400 py-1.5 font-semibold"
+                      >
+                        {allCodes.map((c) => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                    </td>
+                  );
+                })}
               </tr>
             ))}
             <tr><td colSpan={days.length + 1} className="bg-amber-50 text-amber-700 font-bold text-[11px] px-2 py-1 sticky left-0">파트타이머</td></tr>
             {ptList.map((e) => (
               <tr key={e.id}>
                 <td className="sticky left-0 bg-white border border-slate-200 px-2 py-1 font-medium z-10">{e.name}</td>
-                {days.map((day, i) => (
-                  <td key={day.day} className="border border-slate-200 p-0">
-                    <select
-                      value={schedule[monthKey][e.id]?.[i] || ""}
-                      onChange={(ev) => setCell(e.id, i, ev.target.value)}
-                      className="w-full h-full text-[10px] text-center border-none bg-transparent focus:outline-none focus:ring-1 focus:ring-indigo-400 py-1.5"
-                    >
-                      {allCodes.map((c) => <option key={c} value={c}>{c}</option>)}
-                    </select>
-                  </td>
-                ))}
+                {days.map((day, i) => {
+                  const v = schedule[monthKey][e.id]?.[i] || "";
+                  return (
+                    <td key={day.day} className="border border-slate-200 p-0">
+                      <select
+                        value={v}
+                        onChange={(ev) => setCell(e.id, i, ev.target.value)}
+                        style={{ color: cellTextColor(v) }}
+                        className="w-full h-full text-[10px] text-center border-none bg-transparent focus:outline-none focus:ring-1 focus:ring-indigo-400 py-1.5 font-semibold"
+                      >
+                        {allCodes.map((c) => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                    </td>
+                  );
+                })}
               </tr>
             ))}
           </tbody>
@@ -895,7 +962,7 @@ function ScheduleGrid({ data, schedule, setSchedule, monthKey, days }) {
   );
 }
 
-function ScheduleTab({ data, schedule, setSchedule, archive, setArchive, monthsMeta, monthKey }) {
+function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive, monthsMeta, monthKey }) {
   const meta = monthsMeta.find((m) => m.key === monthKey);
   const [running, setRunning] = useState(false);
   const [msg, setMsg] = useState(null);
@@ -974,7 +1041,7 @@ function ScheduleTab({ data, schedule, setSchedule, archive, setArchive, monthsM
           연속근무 상한 초과: {val.warnList.length === 0 ? "없음" : val.warnList.join(", ")}
         </span>
       </div>
-      <ScheduleGrid data={data} schedule={schedule} setSchedule={setSchedule} monthKey={monthKey} days={meta.days} />
+      <ScheduleGrid data={data} setData={setData} schedule={schedule} setSchedule={setSchedule} monthKey={monthKey} days={meta.days} />
     </div>
   );
 }
@@ -984,9 +1051,14 @@ function ScheduleTab({ data, schedule, setSchedule, archive, setArchive, monthsM
    ============================================================ */
 function SummaryTab({ data, schedule, monthsMeta }) {
   const active = data.employees.filter((e) => e.type === "정직원" && isActiveEmployee(e));
-  const target =
-    satTarget(monthsMeta[0].days) + sunHolTarget(monthsMeta[0].days) +
-    satTarget(monthsMeta[1].days) + sunHolTarget(monthsMeta[1].days);
+  const monthTargets = monthsMeta.map((m) => ({
+    label: m.label,
+    humu: satTarget(m.days),
+    hyuil: sunHolTarget(m.days),
+  }));
+  const targetHumu = monthTargets.reduce((s, m) => s + m.humu, 0);
+  const targetHyuil = monthTargets.reduce((s, m) => s + m.hyuil, 0);
+  const target = targetHumu + targetHyuil;
 
   const combinedWarn = validateCombined(schedule, data.employees, data.tags, data.settings, monthsMeta);
 
@@ -998,15 +1070,31 @@ function SummaryTab({ data, schedule, monthsMeta }) {
         if (v === "휴일") counts[key].hyuil++;
       });
     });
-    const total = counts.m1.humu + counts.m1.hyuil + counts.m2.humu + counts.m2.hyuil;
-    return { ...e, counts, total, diff: total - target };
+    const totalHumu = counts.m1.humu + counts.m2.humu;
+    const totalHyuil = counts.m1.hyuil + counts.m2.hyuil;
+    const total = totalHumu + totalHyuil;
+    return {
+      ...e, counts, total,
+      diffHumu: totalHumu - targetHumu,
+      diffHyuil: totalHyuil - targetHyuil,
+      diff: total - target,
+    };
   });
 
   return (
-    <div className="max-w-4xl">
+    <div className="max-w-5xl">
       <SectionCard title="2개월 목표" icon={CheckCircle2}>
-        <div className="text-sm">
+        <div className="text-sm mb-3">
           2개월 목표 합계 (인당 배정일수): <b className="text-indigo-600 text-lg">{target}일</b>
+          <span className="text-slate-400 ml-2">(휴무 {targetHumu}일 + 휴일 {targetHyuil}일)</span>
+        </div>
+        <div className="flex gap-4 flex-wrap">
+          {monthTargets.map((m, i) => (
+            <div key={i} className="bg-slate-50 border border-slate-200 rounded-md px-4 py-2 text-sm">
+              <div className="font-semibold text-slate-700">{m.label}</div>
+              <div className="text-slate-500 text-xs mt-1">휴무 <b className="text-indigo-600">{m.humu}일</b> · 휴일 <b className="text-indigo-600">{m.hyuil}일</b></div>
+            </div>
+          ))}
         </div>
       </SectionCard>
       <SectionCard title="인당 휴무/휴일 현황" icon={ClipboardList}>
@@ -1015,6 +1103,7 @@ function SummaryTab({ data, schedule, monthsMeta }) {
             <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
               <th className="py-2">이름</th><th>구분</th>
               <th>1개월 휴무</th><th>1개월 휴일</th><th>2개월 휴무</th><th>2개월 휴일</th>
+              <th>목표대비휴무</th><th>목표대비휴일</th>
               <th>총합계</th><th>목표대비</th><th>검증</th>
             </tr>
           </thead>
@@ -1027,6 +1116,8 @@ function SummaryTab({ data, schedule, monthsMeta }) {
                 <td className="text-center">{r.counts.m1.hyuil}</td>
                 <td className="text-center">{r.counts.m2.humu}</td>
                 <td className="text-center">{r.counts.m2.hyuil}</td>
+                <td className="text-center">{r.diffHumu}</td>
+                <td className="text-center">{r.diffHyuil}</td>
                 <td className="text-center font-bold">{r.total}</td>
                 <td className="text-center">{r.diff}</td>
                 <td className="text-center">
@@ -1475,12 +1566,15 @@ function MainApp({ role, onLogout }) {
         const finalData = cfg || defaultStoreData();
         finalData.ftTemplates = normalizeFtTemplates(finalData.ftTemplates);
         finalData.fixedRestSchedules = finalData.fixedRestSchedules || [];
+        finalData.memoRowLabels = finalData.memoRowLabels || [];
         setDataRaw(finalData);
         const s1 = finalData.settings;
         const { year: y2, month: m2 } = nextMonth(s1.year, s1.startMonth);
         const days1 = buildMonthDays(s1.year, s1.startMonth, finalData.holidays, finalData.issueDays);
         const days2 = buildMonthDays(y2, m2, finalData.holidays, finalData.issueDays);
-        setScheduleRaw(reconcileSchedule(sched, finalData.employees, days1, days2));
+        const empSched = reconcileSchedule(sched, finalData.employees, days1, days2);
+        const memoSched = reconcileMemoRows(sched, finalData.memoRowLabels, days1, days2);
+        setScheduleRaw({ ...empSched, m1Memo: memoSched.m1Memo, m2Memo: memoSched.m2Memo });
         setArchiveRaw(arch || {});
         knownUpdatedAt.current = meta?.updatedAt || 0;
       } catch (e) {
@@ -1587,11 +1681,20 @@ function MainApp({ role, onLogout }) {
     const need = data.employees.some((e) => !schedule.m1[e.id] || !schedule.m2[e.id] ||
       schedule.m1[e.id].length !== monthsMeta[0].days.length ||
       schedule.m2[e.id].length !== monthsMeta[1].days.length);
-    if (need) {
-      setScheduleRaw((prev) => reconcileSchedule(prev, data.employees, monthsMeta[0].days, monthsMeta[1].days));
+    const memoNeed = (data.memoRowLabels || []).some((r) =>
+      !schedule.m1Memo?.[r.id] || !schedule.m2Memo?.[r.id] ||
+      schedule.m1Memo[r.id].length !== monthsMeta[0].days.length ||
+      schedule.m2Memo[r.id].length !== monthsMeta[1].days.length
+    );
+    if (need || memoNeed) {
+      setScheduleRaw((prev) => {
+        const empSched = reconcileSchedule(prev, data.employees, monthsMeta[0].days, monthsMeta[1].days);
+        const memoSched = reconcileMemoRows(prev, data.memoRowLabels, monthsMeta[0].days, monthsMeta[1].days);
+        return { ...empSched, m1Memo: memoSched.m1Memo, m2Memo: memoSched.m2Memo };
+      });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data?.employees, data?.settings?.year, data?.settings?.startMonth]);
+  }, [data?.employees, data?.settings?.year, data?.settings?.startMonth, data?.memoRowLabels]);
 
   const createStore = async () => {
     const name = window.prompt("새 매장 이름을 입력하세요", "새 매장");
@@ -1807,10 +1910,10 @@ function MainApp({ role, onLogout }) {
             {tab === "holidays" && <HolidaysTab data={data} setData={setData} />}
             {tab === "templates" && <ShiftTemplatesTab data={data} setData={setData} />}
             {tab === "m1" && monthsMeta && (
-              <ScheduleTab data={data} schedule={schedule} setSchedule={setSchedule} archive={archive} setArchive={setArchive} monthsMeta={monthsMeta} monthKey="m1" />
+              <ScheduleTab data={data} setData={setData} schedule={schedule} setSchedule={setSchedule} archive={archive} setArchive={setArchive} monthsMeta={monthsMeta} monthKey="m1" />
             )}
             {tab === "m2" && monthsMeta && (
-              <ScheduleTab data={data} schedule={schedule} setSchedule={setSchedule} archive={archive} setArchive={setArchive} monthsMeta={monthsMeta} monthKey="m2" />
+              <ScheduleTab data={data} setData={setData} schedule={schedule} setSchedule={setSchedule} archive={archive} setArchive={setArchive} monthsMeta={monthsMeta} monthKey="m2" />
             )}
             {tab === "summary" && monthsMeta && <SummaryTab data={data} schedule={schedule} monthsMeta={monthsMeta} />}
             {tab === "archive" && <ArchiveTab data={data} archive={archive || {}} setArchive={setArchive} />}

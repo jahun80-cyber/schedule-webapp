@@ -198,6 +198,28 @@ function reconcileSchedule(oldSched, employees, days1, days2) {
   return fresh;
 }
 
+// 스케줄 화면 위쪽 "특이건(STORE MEMO, 도슨트, 연차 등)" 수기입력 행 - 직원과 별개로 자유롭게 추가/삭제
+function emptyMemoRows(memoRowLabels, days1, days2) {
+  const m1Memo = {}, m2Memo = {};
+  (memoRowLabels || []).forEach((r) => {
+    m1Memo[r.id] = Array(days1.length).fill("");
+    m2Memo[r.id] = Array(days2.length).fill("");
+  });
+  return { m1Memo, m2Memo };
+}
+
+function reconcileMemoRows(oldMemo, memoRowLabels, days1, days2) {
+  const fresh = emptyMemoRows(memoRowLabels, days1, days2);
+  if (!oldMemo) return fresh;
+  (memoRowLabels || []).forEach((r) => {
+    const old1 = (oldMemo.m1Memo && oldMemo.m1Memo[r.id]) || [];
+    const old2 = (oldMemo.m2Memo && oldMemo.m2Memo[r.id]) || [];
+    for (let i = 0; i < days1.length && i < old1.length; i++) fresh.m1Memo[r.id][i] = old1[i] || "";
+    for (let i = 0; i < days2.length && i < old2.length; i++) fresh.m2Memo[r.id][i] = old2[i] || "";
+  });
+  return fresh;
+}
+
 /* ============================================================
    핵심: 휴무/휴일 자동배정 (하루씩 순서대로 훑는 엔진)
    ============================================================ */
@@ -233,8 +255,19 @@ function buildTimeline(monthsMeta) {
   return timeline;
 }
 
-// 고정휴무: 개인지정태그(요청/이슈) 다음으로, 설정해둔 요일에 맞춰 휴무/휴일을 미리 채움
-// (같은 주 안에서 요일 순서가 빠른 쪽 = 휴무, 나머지 = 휴일)
+// 고정휴무 요일쌍 프리셋 (구분 드롭다운에서 선택) - 첫번째 요일=휴무, 두번째 요일=휴일
+const DAY_PAIR_MAP = {
+  "월화": ["월", "화"],
+  "화수": ["화", "수"],
+  "수목": ["수", "목"],
+  "목금": ["목", "금"],
+  "금토": ["금", "토"],
+  "일월": ["일", "월"],
+};
+const DAY_PAIR_OPTIONS = Object.keys(DAY_PAIR_MAP);
+
+// 고정휴무: 개인지정태그(요청/이슈) 다음으로, 설정해둔 요일쌍에 맞춰 휴무/휴일을 미리 채움
+// 한 항목에 여러 명을 한꺼번에 지정할 수 있음 (날짜 + 구분(요일쌍) + 인원 다중선택)
 function applyFixedRestSchedules(schedule, employees, fixedRestSchedules, monthsMeta) {
   let applied = 0;
   const next = { m1: { ...schedule.m1 }, m2: { ...schedule.m2 } };
@@ -244,20 +277,22 @@ function applyFixedRestSchedules(schedule, employees, fixedRestSchedules, months
   const timeline = buildTimeline(monthsMeta);
 
   (fixedRestSchedules || []).forEach((f) => {
-    if (!f.start || !f.end || !f.empName || !f.weekdays || f.weekdays.length === 0) return;
-    const emp = employees.find((e) => e.name === f.empName);
-    if (!emp) return;
-    const sortedWds = WEEKDAYS.filter((wd) => f.weekdays.includes(wd)); // 월~일 순서로 정렬
+    const sortedWds = DAY_PAIR_MAP[f.dayPair];
+    if (!f.start || !f.end || !sortedWds || !f.empNames || f.empNames.length === 0) return;
 
-    timeline.forEach(({ key, day }) => {
-      if (day.dateStr < f.start || day.dateStr > f.end) return;
-      const wdIdx = sortedWds.indexOf(day.weekday);
-      if (wdIdx === -1) return;
-      const arr = next[key][emp.id];
-      if (arr && !arr[day.day - 1]) {
-        arr[day.day - 1] = wdIdx === 0 ? "휴무" : "휴일";
-        applied++;
-      }
+    f.empNames.forEach((empName) => {
+      const emp = employees.find((e) => e.name === empName);
+      if (!emp) return;
+      timeline.forEach(({ key, day }) => {
+        if (day.dateStr < f.start || day.dateStr > f.end) return;
+        const wdIdx = sortedWds.indexOf(day.weekday);
+        if (wdIdx === -1) return;
+        const arr = next[key][emp.id];
+        if (arr && !arr[day.day - 1]) {
+          arr[day.day - 1] = wdIdx === 0 ? "휴무" : "휴일";
+          applied++;
+        }
+      });
     });
   });
 
@@ -266,7 +301,8 @@ function applyFixedRestSchedules(schedule, employees, fixedRestSchedules, months
 
 function isFixedRestCovered(fixedRestSchedules, empName, dateStr) {
   return (fixedRestSchedules || []).some(
-    (f) => f.empName === empName && f.start && f.end && dateStr >= f.start && dateStr <= f.end && (f.weekdays || []).length > 0
+    (f) => f.dayPair && DAY_PAIR_MAP[f.dayPair] && (f.empNames || []).includes(empName) &&
+      f.start && f.end && dateStr >= f.start && dateStr <= f.end
   );
 }
 
@@ -658,7 +694,8 @@ export {
   DEFAULT_TAGS, DEFAULT_EMPLOYEES, DEFAULT_HOLIDAYS, DEFAULT_FT_TEMPLATES, DEFAULT_PT_TEMPLATES,
   defaultSettings, defaultStoreData, reconcileSchedule, normalizeFtTemplates,
   buildMonthDays, applyPersonalTags, assignRestDays, assignShiftCodes,
-  applyFixedRestSchedules, isFixedRestCovered,
+  applyFixedRestSchedules, isFixedRestCovered, DAY_PAIR_MAP, DAY_PAIR_OPTIONS,
+  emptyMemoRows, reconcileMemoRows,
   validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT,
   isOffTag, dowBucket, nextMonth, emptySchedule, isWeekendBucket, isActiveEmployee, pickThresholdIndex, isAutoAssignable,
   computeLeaveUsage,

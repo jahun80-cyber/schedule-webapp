@@ -82,6 +82,7 @@ function defaultStoreConfig() {
     annualLeaveGrants: {},
     shiftyCodeMap: [],
     fixedRestSchedules: [],
+    memoRowLabels: [],
   };
 }
 
