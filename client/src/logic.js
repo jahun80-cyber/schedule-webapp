@@ -560,35 +560,26 @@ function validateCombined(schedule, employees, tags, settings, monthsMeta) {
    현재 진행중인 스케줄(1·2개월차)과 저장된 월별기록(archive)을 합쳐서
    그 해(year) 동안 각 직원이 어떤 태그를 언제 썼는지 자동 집계
    ============================================================ */
-function computeLeaveUsage(year, employees, tags, schedule, archive, monthsMeta) {
+function computeLeaveUsage(year, tags, archive) {
   const leaveTags = tags.filter((t) => t.trackAsLeave);
   const leaveTagCodes = new Set(leaveTags.map((t) => t.code));
 
-  // 이번 해에 해당하는 월별 데이터 소스 모으기: 실시간(1·2개월차) 우선, 없으면 저장된 기록 사용
-  const sources = {}; // "YYYY-MM" -> { days, scheduleByEmp, employeesList }
-  (monthsMeta || []).forEach((m) => {
-    if (!m.days.length) return;
-    const key = m.days[0].dateStr.slice(0, 7);
-    sources[key] = { days: m.days, scheduleByEmp: schedule[m.key] || {}, employeesList: employees };
-  });
-  Object.keys(archive || {}).forEach((key) => {
-    if (sources[key]) return; // 실시간 데이터가 있으면 그걸 우선 사용
-    const ent = archive[key];
-    if (!ent) return;
-    sources[key] = { days: ent.days || [], scheduleByEmp: ent.schedule || {}, employeesList: ent.employeesSnapshot || [] };
-  });
-
-  // empId -> { name, byPool: { poolName: { totalHours, byTag: { code: { hours, dates: [] } } } } }
-  const result = {};
+  // 오직 [월별기록]에 "저장"된 데이터만 기준으로 계산 (진행중인 스케줄을 지우거나 수정해도 영향받지 않음)
+  const result = {}; // empId -> { name, byPool: { poolName: { totalHours, byTag: { code: { hours, dates: [] } } } } }
   const yearPrefix = String(year) + "-";
 
-  Object.keys(sources).forEach((monthKey) => {
+  Object.keys(archive || {}).forEach((monthKey) => {
     if (!monthKey.startsWith(yearPrefix)) return;
-    const src = sources[monthKey];
-    src.employeesList.forEach((e) => {
-      const arr = src.scheduleByEmp[e.id];
+    const ent = archive[monthKey];
+    if (!ent) return;
+    const days = ent.days || [];
+    const employeesList = ent.employeesSnapshot || [];
+    const scheduleByEmp = ent.schedule || {};
+
+    employeesList.forEach((e) => {
+      const arr = scheduleByEmp[e.id];
       if (!arr) return;
-      src.days.forEach((day, i) => {
+      days.forEach((day, i) => {
         const v = arr[i];
         if (!v || !leaveTagCodes.has(v)) return;
         const tag = leaveTags.find((t) => t.code === v);

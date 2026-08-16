@@ -1063,12 +1063,12 @@ function formatDaysHours(hours) {
   return `${daysStr}일 (${hours}H)`;
 }
 
-function LeaveTab({ data, setData, schedule, archive, monthsMeta }) {
+function LeaveTab({ data, setData, archive }) {
   const [year, setYear] = useState(data.settings?.year || new Date().getFullYear());
 
   const usage = useMemo(
-    () => computeLeaveUsage(year, data.employees, data.tags, schedule, archive || {}, monthsMeta),
-    [year, data.employees, data.tags, schedule, archive, monthsMeta]
+    () => computeLeaveUsage(year, data.tags, archive || {}),
+    [year, data.tags, archive]
   );
 
   const leaveTags = data.tags.filter((t) => t.trackAsLeave);
@@ -1113,7 +1113,8 @@ function LeaveTab({ data, setData, schedule, archive, monthsMeta }) {
           <NumberInput value={year} onChange={(v) => setYear(v || new Date().getFullYear())} className="w-24" />
         </div>
         <p className="text-xs text-slate-500 mt-2">
-          현재 진행중인 스케줄(1·2개월차)과 [월별기록]에 저장해둔 기록을 합쳐서 자동으로 계산합니다.
+          [월별기록]에 "기록으로 저장"해둔 데이터만 기준으로 계산합니다. 스케줄 1·2개월차에서 아직 저장하지 않은 진행중인 내용은 반영되지 않으니,
+          연차 사용이 확정되면 [스케줄 1·2개월차]에서 "기록으로 저장"을 눌러 남겨주세요. (진행중인 스케줄을 지우거나 수정해도 이미 저장된 기록에는 영향 없습니다.)
           보유량은 "일" 단위로 입력하면 1일=8시간 기준으로 환산되어, 반차·반반차를 섞어 써도 자동으로 정확히 계산됩니다.
           연차종류(예: 연차 / 리프레시·안식휴가)는 [태그목록]에서 태그마다 지정합니다.
         </p>
@@ -1664,7 +1665,7 @@ function MainApp({ role, onLogout }) {
             )}
             {tab === "summary" && monthsMeta && <SummaryTab data={data} schedule={schedule} monthsMeta={monthsMeta} />}
             {tab === "archive" && <ArchiveTab data={data} archive={archive || {}} setArchive={setArchive} />}
-            {tab === "leave" && monthsMeta && <LeaveTab data={data} setData={setData} schedule={schedule} archive={archive || {}} monthsMeta={monthsMeta} />}
+            {tab === "leave" && <LeaveTab data={data} setData={setData} archive={archive || {}} />}
             {tab === "shifty" && monthsMeta && <ShiftyMapTab data={data} setData={setData} schedule={schedule} archive={archive || {}} monthsMeta={monthsMeta} />}
           </div>
         </div>
