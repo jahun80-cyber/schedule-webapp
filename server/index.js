@@ -211,14 +211,29 @@ async function handleApi(req, res, pathname, method) {
         if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
         const body = await readBody(req);
         let found = false;
+        let updatedAt = null;
         await writeDb((db) => {
           if (!db.storeData[id]) return;
           db.storeData[id][sub] = body;
+          updatedAt = Date.now();
+          db.storeData[id].updatedAt = updatedAt;
           found = true;
         });
         if (!found) return sendJson(res, 404, { error: "매장을 찾을 수 없습니다." });
-        return sendJson(res, 200, { ok: true });
+        return sendJson(res, 200, { ok: true, updatedAt });
       }
+    }
+
+    // GET /api/stores/:id/meta - 마지막 수정 시각만 가볍게 조회 (다른 사람 수정 감지용 폴링)
+    const metaMatch = pathname.match(/^\/api\/stores\/([^/]+)\/meta$/);
+    if (metaMatch && method === "GET") {
+      const auth = checkAuth(req, "staff");
+      if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
+      const id = decodeURIComponent(metaMatch[1]);
+      const db = readDb();
+      const entry = db.storeData[id];
+      if (!entry) return sendJson(res, 404, { error: "매장을 찾을 수 없습니다." });
+      return sendJson(res, 200, { updatedAt: entry.updatedAt || 0 });
     }
 
     sendJson(res, 404, { error: "not found" });

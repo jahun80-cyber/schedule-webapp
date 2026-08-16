@@ -49,6 +49,7 @@ export const api = {
   putSchedule: (id, schedule) => apiFetch(`/api/stores/${id}/schedule`, { method: "PUT", body: JSON.stringify(schedule) }),
   getArchive: (id) => apiFetch(`/api/stores/${id}/archive`),
   putArchive: (id, archive) => apiFetch(`/api/stores/${id}/archive`, { method: "PUT", body: JSON.stringify(archive) }),
+  getMeta: (id) => apiFetch(`/api/stores/${id}/meta`),
   getBackup: () => apiFetch("/api/backup"),
   restoreBackup: (backup) => apiFetch("/api/restore", { method: "POST", body: JSON.stringify(backup) }),
 };

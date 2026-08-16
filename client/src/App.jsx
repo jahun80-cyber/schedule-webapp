@@ -1362,11 +1362,14 @@ function MainApp({ role, onLogout }) {
     if (!currentStoreId) { setDataRaw(null); setScheduleRaw(null); setArchiveRaw(null); return; }
     (async () => {
       setLoading(true);
+      knownUpdatedAt.current = null;
+      setExternalChange(false);
       try {
-        const [cfg, sched, arch] = await Promise.all([
+        const [cfg, sched, arch, meta] = await Promise.all([
           api.getConfig(currentStoreId),
           api.getSchedule(currentStoreId),
           api.getArchive(currentStoreId).catch(() => ({})),
+          api.getMeta(currentStoreId).catch(() => ({ updatedAt: 0 })),
         ]);
         const finalData = cfg || defaultStoreData();
         setDataRaw(finalData);
@@ -1376,6 +1379,7 @@ function MainApp({ role, onLogout }) {
         const days2 = buildMonthDays(y2, m2, finalData.holidays, finalData.issueDays);
         setScheduleRaw(reconcileSchedule(sched, finalData.employees, days1, days2));
         setArchiveRaw(arch || {});
+        knownUpdatedAt.current = meta?.updatedAt || 0;
       } catch (e) {
         console.error(e);
       }
@@ -1397,6 +1401,8 @@ function MainApp({ role, onLogout }) {
 
   const triggerSave = useCallback(() => { saveTick.current += 1; setSaveState("pending"); }, []);
   const [storeMissing, setStoreMissing] = useState(false);
+  const knownUpdatedAt = useRef(null); // 이 브라우저가 마지막으로 확인한 "서버 최종수정시각"
+  const [externalChange, setExternalChange] = useState(false); // 다른 곳에서 수정된 게 감지됐는지
   const setData = useCallback((updater) => {
     setDataRaw((prev) => (typeof updater === "function" ? updater(prev) : updater));
     triggerSave();
@@ -1420,6 +1426,13 @@ function MainApp({ role, onLogout }) {
     } catch (e) { /* ignore */ }
   };
 
+  // 지금 이 화면 내용을 버리고 서버의 최신 내용을 다시 불러오기 (배너의 "새로고침" 버튼)
+  const reloadCurrentStore = () => {
+    const id = currentStoreId;
+    setCurrentStoreId(null);
+    setTimeout(() => setCurrentStoreId(id), 0);
+  };
+
   useEffect(() => {
     if (!currentStoreId || !data || !schedule) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
@@ -1431,7 +1444,9 @@ function MainApp({ role, onLogout }) {
           api.putSchedule(currentStoreId, schedule),
         ];
         if (archive) calls.push(api.putArchive(currentStoreId, archive));
-        await Promise.all(calls);
+        const results = await Promise.all(calls);
+        const latest = Math.max(...results.map((r) => r?.updatedAt || 0));
+        if (latest) knownUpdatedAt.current = latest; // 내가 방금 저장한 거니까 "알고 있는 최신"으로 갱신
         setSaveState("saved");
         setStoreMissing(false);
       } catch (e) {
@@ -1442,6 +1457,27 @@ function MainApp({ role, onLogout }) {
     return () => clearTimeout(saveTimer.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, schedule, archive, currentStoreId]);
+
+  // 다른 사람이 이 매장을 수정했는지 주기적으로(그리고 화면에 돌아왔을 때) 확인
+  useEffect(() => {
+    if (!currentStoreId) return;
+    const checkForExternalChange = async () => {
+      if (knownUpdatedAt.current === null) return; // 아직 초기 로드 전이면 건너뜀
+      try {
+        const meta = await api.getMeta(currentStoreId);
+        if (meta && meta.updatedAt && meta.updatedAt > knownUpdatedAt.current) {
+          setExternalChange(true);
+        }
+      } catch (e) { /* 네트워크 문제 등은 무시 */ }
+    };
+    const interval = setInterval(checkForExternalChange, 20000); // 20초마다
+    const onVisible = () => { if (document.visibilityState === "visible") checkForExternalChange(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [currentStoreId]);
 
   useEffect(() => {
     if (!data || !schedule || !monthsMeta) return;
@@ -1626,6 +1662,16 @@ function MainApp({ role, onLogout }) {
             <GhostBtn onClick={reloadStoreList}>매장 목록 새로고침</GhostBtn>
             {isAdmin && <GhostBtn onClick={pickRestoreFile} icon={Upload}>백업 복원</GhostBtn>}
           </div>
+        </div>
+      )}
+
+      {externalChange && !storeMissing && (
+        <div className="bg-amber-50 border-b border-amber-200 text-amber-800 text-sm px-6 py-3 flex items-center justify-between gap-3 flex-wrap">
+          <span>
+            <b>다른 곳에서 이 매장 스케줄을 수정했습니다.</b> 지금 화면은 최신이 아닐 수 있어요.
+            새로고침하면 최신 내용을 볼 수 있습니다 (지금 화면에서 방금 직접 입력한 내용이 있다면, 새로고침 전에 저장 완료됐는지 "저장됨" 표시를 확인해주세요).
+          </span>
+          <GhostBtn onClick={reloadCurrentStore} icon={Loader2}>새로고침</GhostBtn>
         </div>
       )}
 
