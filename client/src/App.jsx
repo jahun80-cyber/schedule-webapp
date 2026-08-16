@@ -926,20 +926,19 @@ function SummaryTab({ data, schedule, monthsMeta }) {
 /* ============================================================
    월별기록 탭 (최근 1년치 스냅샷 조회/수정)
    ============================================================ */
-function last12Months() {
+function monthsOfYear(year) {
   const arr = [];
-  const now = new Date();
-  for (let i = 0; i < 12; i++) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-    arr.push({ key, label: `${d.getFullYear()}년 ${d.getMonth() + 1}월` });
+  for (let m = 1; m <= 12; m++) {
+    arr.push({ key: `${year}-${String(m).padStart(2, "0")}`, label: `${m}월` });
   }
   return arr;
 }
 
 function ArchiveTab({ data, archive, setArchive }) {
-  const months = useMemo(() => last12Months(), []);
-  const [selected, setSelected] = useState(months[0]?.key || "");
+  const [year, setYear] = useState(data.settings?.year || new Date().getFullYear());
+  const months = useMemo(() => monthsOfYear(year), [year]);
+  const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth() + 1);
+  const selected = `${year}-${String(selectedMonth).padStart(2, "0")}`;
   const entry = archive[selected];
 
   const allCodes = useMemo(() => {
@@ -965,18 +964,32 @@ function ArchiveTab({ data, archive, setArchive }) {
 
   return (
     <div>
-      <SectionCard title="월 선택" icon={CalendarDays}>
-        <Select value={selected} onChange={setSelected} options={months.map((m) => ({ value: m.key, label: m.label }))} className="w-40" />
+      <SectionCard title="연도 · 월 선택" icon={CalendarDays}>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1">
+            <span className="text-xs font-semibold text-slate-500">연도</span>
+            <NumberInput value={year} onChange={(v) => setYear(v || new Date().getFullYear())} className="w-24" />
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="text-xs font-semibold text-slate-500">월</span>
+            <Select
+              value={selectedMonth}
+              onChange={(v) => setSelectedMonth(Number(v))}
+              options={months.map((m, i) => ({ value: i + 1, label: m.label }))}
+              className="w-24"
+            />
+          </div>
+        </div>
         <p className="text-xs text-slate-500 mt-2">
-          [스케줄 1·2개월차] 화면에서 "기록으로 저장" 버튼을 누르면 그 시점의 스케줄이 여기에 남습니다. 최근 12개월까지 선택할 수 있습니다.
+          [스케줄 1·2개월차] 화면에서 "기록으로 저장" 버튼을 누르면 그 시점의 스케줄이 해당 연도·월에 남습니다.
         </p>
       </SectionCard>
 
       {!entry ? (
-        <div className="text-sm text-slate-400 py-16 text-center">이 달은 아직 저장된 기록이 없습니다.</div>
+        <div className="text-sm text-slate-400 py-16 text-center">{year}년 {selectedMonth}월은 아직 저장된 기록이 없습니다.</div>
       ) : (
         <SectionCard
-          title={`${entry.label || selected} 기록`}
+          title={`${year}년 ${selectedMonth}월 기록`}
           icon={Archive}
           right={<span className="text-[11px] text-slate-400">저장 시각: {entry.savedAt ? new Date(entry.savedAt).toLocaleString("ko-KR") : "-"}</span>}
         >
