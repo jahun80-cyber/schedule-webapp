@@ -325,9 +325,24 @@ function EmployeesTab({ data, setData }) {
    ============================================================ */
 function TagsTab({ data, setData }) {
   const tags = data.tags;
-  const update = (code, patch) => setData((d) => ({ ...d, tags: d.tags.map((t) => (t.code === code ? { ...t, ...patch } : t)) }));
-  const remove = (code) => setData((d) => ({ ...d, tags: d.tags.filter((t) => t.code !== code) }));
-  const add = () => setData((d) => ({ ...d, tags: [...d.tags, { code: "새태그" + (d.tags.length + 1), category: "확정휴무", countsAsAttend: false, restType: "해당없음", desc: "" }] }));
+
+  // 예전 데이터에 id가 없는 태그가 있으면 한 번만 안정적인 id를 부여 (코드 입력 중 커서가 사라지는 문제 방지)
+  useEffect(() => {
+    if (data.tags.some((t) => !t.id)) {
+      setData((d) => ({
+        ...d,
+        tags: d.tags.map((t, i) => (t.id ? t : { ...t, id: `tag_${Date.now()}_${i}` })),
+      }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const update = (id, patch) => setData((d) => ({ ...d, tags: d.tags.map((t) => (t.id === id ? { ...t, ...patch } : t)) }));
+  const remove = (id) => setData((d) => ({ ...d, tags: d.tags.filter((t) => t.id !== id) }));
+  const add = () => setData((d) => ({
+    ...d,
+    tags: [...d.tags, { id: `tag_${Date.now()}`, code: "새태그" + (d.tags.length + 1), category: "확정휴무", countsAsAttend: false, restType: "해당없음", desc: "" }],
+  }));
 
   const dragIndex = useRef(null);
   const [overIndex, setOverIndex] = useState(null);
@@ -370,7 +385,7 @@ function TagsTab({ data, setData }) {
           <tbody>
             {tags.map((t, i) => (
               <tr
-                key={t.code}
+                key={t.id || t.code}
                 onDragOver={(e) => onDragOver(e, i)}
                 onDrop={() => onDrop(i)}
                 className={`border-b border-slate-100 ${overIndex === i ? "bg-indigo-50" : ""}`}
@@ -384,19 +399,19 @@ function TagsTab({ data, setData }) {
                 >
                   ⠿
                 </td>
-                <td className="py-1.5 pr-2"><TextInput value={t.code} onChange={(v) => update(t.code, { code: v })} className="w-28" /></td>
+                <td className="py-1.5 pr-2"><TextInput value={t.code} onChange={(v) => update(t.id, { code: v })} className="w-28" /></td>
                 <td className="py-1.5 pr-2">
-                  <Select value={t.category} onChange={(v) => update(t.code, { category: v })}
+                  <Select value={t.category} onChange={(v) => update(t.id, { category: v })}
                     options={["근무코드", "확정휴무", "확정근무", "조정"]} />
                 </td>
                 <td className="py-1.5 pr-2">
-                  <Select value={t.countsAsAttend ? "예" : "아니오"} onChange={(v) => update(t.code, { countsAsAttend: v === "예" })} options={["예", "아니오"]} />
+                  <Select value={t.countsAsAttend ? "예" : "아니오"} onChange={(v) => update(t.id, { countsAsAttend: v === "예" })} options={["예", "아니오"]} />
                 </td>
                 <td className="py-1.5 pr-2">
-                  <Select value={t.restType} onChange={(v) => update(t.code, { restType: v })} options={["휴무", "휴일", "해당없음"]} />
+                  <Select value={t.restType} onChange={(v) => update(t.id, { restType: v })} options={["휴무", "휴일", "해당없음"]} />
                 </td>
-                <td className="py-1.5 pr-2"><TextInput value={t.desc} onChange={(v) => update(t.code, { desc: v })} className="w-56" /></td>
-                <td><IconBtn onClick={() => remove(t.code)} title="삭제" danger /></td>
+                <td className="py-1.5 pr-2"><TextInput value={t.desc} onChange={(v) => update(t.id, { desc: v })} className="w-56" /></td>
+                <td><IconBtn onClick={() => remove(t.id)} title="삭제" danger /></td>
               </tr>
             ))}
           </tbody>
@@ -505,44 +520,46 @@ function ShiftTemplatesTab({ data, setData }) {
           "평일 몇 인" 기준 자체가 매장마다 다를 수 있어 아래 열 제목의 숫자를 직접 바꿀 수 있습니다 (예: 2/3/4인 → 3/4/5인).
           출근인원이 이 셋 중 가장 가까운 기준에 맞춰 자동으로 그 열의 인원수를 사용합니다.
         </p>
-        <table className="text-sm w-full">
+        <table className="text-sm border-collapse" style={{ tableLayout: "fixed", width: "100%" }}>
           <thead>
             <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
-              <th className="py-2">코드</th><th>시작</th><th>종료</th>
-              <th>
-                평일 <NumberInput value={thresholds.weekday[0]} onChange={(v) => updThreshold("weekday", 0, v)} className="w-12 inline-block" />인
-              </th>
-              <th>
-                평일 <NumberInput value={thresholds.weekday[1]} onChange={(v) => updThreshold("weekday", 1, v)} className="w-12 inline-block" />인
-              </th>
-              <th>
-                평일 <NumberInput value={thresholds.weekday[2]} onChange={(v) => updThreshold("weekday", 2, v)} className="w-12 inline-block" />인
-              </th>
-              <th>
-                주말 <NumberInput value={thresholds.weekend[0]} onChange={(v) => updThreshold("weekend", 0, v)} className="w-12 inline-block" />인
-              </th>
-              <th>
-                주말 <NumberInput value={thresholds.weekend[1]} onChange={(v) => updThreshold("weekend", 1, v)} className="w-12 inline-block" />인
-              </th>
-              <th>
-                주말 <NumberInput value={thresholds.weekend[2]} onChange={(v) => updThreshold("weekend", 2, v)} className="w-12 inline-block" />인
-              </th>
-              <th></th>
+              <th className="py-2" style={{ width: 90 }}>코드</th>
+              <th style={{ width: 90 }}>시작</th>
+              <th style={{ width: 90 }}>종료</th>
+              {[0, 1, 2].map((idx) => (
+                <th key={"wd" + idx} className="text-center align-bottom pb-2" style={{ width: 78 }}>
+                  <div className="text-[10px] text-slate-400 mb-1">평일</div>
+                  <div className="flex items-center justify-center gap-1">
+                    <NumberInput value={thresholds.weekday[idx]} onChange={(v) => updThreshold("weekday", idx, v)} className="w-11 px-1 text-center" />
+                    <span className="text-[11px] text-slate-400">인</span>
+                  </div>
+                </th>
+              ))}
+              {[0, 1, 2].map((idx) => (
+                <th key={"we" + idx} className="text-center align-bottom pb-2" style={{ width: 78 }}>
+                  <div className="text-[10px] text-slate-400 mb-1">주말</div>
+                  <div className="flex items-center justify-center gap-1">
+                    <NumberInput value={thresholds.weekend[idx]} onChange={(v) => updThreshold("weekend", idx, v)} className="w-11 px-1 text-center" />
+                    <span className="text-[11px] text-slate-400">인</span>
+                  </div>
+                </th>
+              ))}
+              <th style={{ width: 32 }}></th>
             </tr>
           </thead>
           <tbody>
             {ftTemplates.map((t, i) => (
               <tr key={i} className="border-b border-slate-100">
-                <td className="py-1"><TextInput value={t.code} onChange={(v) => updFt(i, { code: v })} className="w-16" /></td>
-                <td><TextInput value={t.start} onChange={(v) => updFt(i, { start: v })} className="w-20" /></td>
-                <td><TextInput value={t.end} onChange={(v) => updFt(i, { end: v })} className="w-20" /></td>
-                <td><NumberInput value={t.wd2} onChange={(v) => updFt(i, { wd2: v })} className="w-14" /></td>
-                <td><NumberInput value={t.wd3} onChange={(v) => updFt(i, { wd3: v })} className="w-14" /></td>
-                <td><NumberInput value={t.wd4} onChange={(v) => updFt(i, { wd4: v })} className="w-14" /></td>
-                <td><NumberInput value={t.we2} onChange={(v) => updFt(i, { we2: v })} className="w-14" /></td>
-                <td><NumberInput value={t.we3} onChange={(v) => updFt(i, { we3: v })} className="w-14" /></td>
-                <td><NumberInput value={t.we4} onChange={(v) => updFt(i, { we4: v })} className="w-14" /></td>
-                <td><IconBtn onClick={() => rmFt(i)} danger /></td>
+                <td className="py-1.5 pr-1"><TextInput value={t.code} onChange={(v) => updFt(i, { code: v })} className="w-20" /></td>
+                <td className="pr-1"><TextInput value={t.start} onChange={(v) => updFt(i, { start: v })} className="w-20" /></td>
+                <td className="pr-1"><TextInput value={t.end} onChange={(v) => updFt(i, { end: v })} className="w-20" /></td>
+                <td className="text-center"><NumberInput value={t.wd2} onChange={(v) => updFt(i, { wd2: v })} className="w-14 text-center" /></td>
+                <td className="text-center"><NumberInput value={t.wd3} onChange={(v) => updFt(i, { wd3: v })} className="w-14 text-center" /></td>
+                <td className="text-center"><NumberInput value={t.wd4} onChange={(v) => updFt(i, { wd4: v })} className="w-14 text-center" /></td>
+                <td className="text-center"><NumberInput value={t.we2} onChange={(v) => updFt(i, { we2: v })} className="w-14 text-center" /></td>
+                <td className="text-center"><NumberInput value={t.we3} onChange={(v) => updFt(i, { we3: v })} className="w-14 text-center" /></td>
+                <td className="text-center"><NumberInput value={t.we4} onChange={(v) => updFt(i, { we4: v })} className="w-14 text-center" /></td>
+                <td className="text-center"><IconBtn onClick={() => rmFt(i)} danger /></td>
               </tr>
             ))}
           </tbody>
@@ -959,6 +976,7 @@ function MainApp({ role, onLogout }) {
   }, [data]);
 
   const triggerSave = useCallback(() => { saveTick.current += 1; setSaveState("pending"); }, []);
+  const [storeMissing, setStoreMissing] = useState(false);
   const setData = useCallback((updater) => {
     setDataRaw((prev) => (typeof updater === "function" ? updater(prev) : updater));
     triggerSave();
@@ -967,6 +985,16 @@ function MainApp({ role, onLogout }) {
     setScheduleRaw((prev) => (typeof updater === "function" ? updater(prev) : updater));
     triggerSave();
   }, [triggerSave]);
+
+  const reloadStoreList = async () => {
+    setStoreMissing(false);
+    try {
+      const list = await api.listStores();
+      setStoreList(list);
+      const stillExists = list.some((s) => s.id === currentStoreId);
+      if (!stillExists) setCurrentStoreId(list[0]?.id || null);
+    } catch (e) { /* ignore */ }
+  };
 
   useEffect(() => {
     if (!currentStoreId || !data || !schedule) return;
@@ -979,8 +1007,10 @@ function MainApp({ role, onLogout }) {
           api.putSchedule(currentStoreId, schedule),
         ]);
         setSaveState("saved");
+        setStoreMissing(false);
       } catch (e) {
         setSaveState("error");
+        if (e.status === 404) setStoreMissing(true);
       }
     }, 600);
     return () => clearTimeout(saveTimer.current);
@@ -1005,6 +1035,7 @@ function MainApp({ role, onLogout }) {
       const created = await api.createStore(name);
       setStoreList((prev) => [...prev, created]);
       setCurrentStoreId(created.id);
+      setStoreMissing(false);
     } catch (e) { alert(e.message); }
   };
 
@@ -1017,7 +1048,13 @@ function MainApp({ role, onLogout }) {
       await api.renameStore(currentStoreId, name);
       setStoreList((prev) => prev.map((s) => (s.id === currentStoreId ? { ...s, name } : s)));
       setData((d) => ({ ...d, settings: { ...d.settings, storeName: name } }));
-    } catch (e) { alert(e.message); }
+    } catch (e) {
+      if (e.status === 404) {
+        setStoreMissing(true);
+      } else {
+        alert(e.message);
+      }
+    }
   };
 
   const deleteStore = async () => {
@@ -1146,6 +1183,19 @@ function MainApp({ role, onLogout }) {
           </button>
         </div>
       </div>
+
+      {storeMissing && (
+        <div className="bg-red-50 border-b border-red-200 text-red-800 text-sm px-6 py-3 flex items-center justify-between gap-3 flex-wrap">
+          <span>
+            <b>이 매장 데이터를 서버에서 찾을 수 없습니다.</b> 서버가 재시작되며 데이터가 초기화되었을 수 있습니다.
+            최근에 받아둔 백업 파일이 있다면 "백업 복원"으로 되살릴 수 있습니다.
+          </span>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <GhostBtn onClick={reloadStoreList}>매장 목록 새로고침</GhostBtn>
+            {isAdmin && <GhostBtn onClick={pickRestoreFile} icon={Upload}>백업 복원</GhostBtn>}
+          </div>
+        </div>
+      )}
 
       {!currentStoreId ? (
         <div className="flex-1 flex flex-col items-center justify-center gap-3 text-slate-500">
