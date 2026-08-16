@@ -983,7 +983,7 @@ function ScheduleTab({ data, schedule, setSchedule, archive, setArchive, monthsM
    2개월 요약 탭
    ============================================================ */
 function SummaryTab({ data, schedule, monthsMeta }) {
-  const active = data.employees.filter((e) => isActiveEmployee(e));
+  const active = data.employees.filter((e) => e.type === "정직원" && isActiveEmployee(e));
   const target =
     satTarget(monthsMeta[0].days) + sunHolTarget(monthsMeta[0].days) +
     satTarget(monthsMeta[1].days) + sunHolTarget(monthsMeta[1].days);
