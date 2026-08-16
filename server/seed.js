@@ -83,6 +83,14 @@ function defaultStoreConfig() {
     shiftyCodeMap: [],
     fixedRestSchedules: [],
     memoRowLabels: [],
+    dayPairOptions: [
+      { id: "dp_월화", label: "월화", weekdays: ["월", "화"] },
+      { id: "dp_화수", label: "화수", weekdays: ["화", "수"] },
+      { id: "dp_수목", label: "수목", weekdays: ["수", "목"] },
+      { id: "dp_목금", label: "목금", weekdays: ["목", "금"] },
+      { id: "dp_금토", label: "금토", weekdays: ["금", "토"] },
+      { id: "dp_일월", label: "일월", weekdays: ["일", "월"] },
+    ],
   };
 }
 

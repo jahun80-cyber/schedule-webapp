@@ -91,6 +91,7 @@ function defaultStoreData() {
     annualLeaveGrants: {},
     shiftyCodeMap: [],
     fixedRestSchedules: [],
+    dayPairOptions: DEFAULT_DAY_PAIR_OPTIONS,
   };
 }
 
@@ -255,20 +256,24 @@ function buildTimeline(monthsMeta) {
   return timeline;
 }
 
-// 고정휴무 요일쌍 프리셋 (구분 드롭다운에서 선택) - 첫번째 요일=휴무, 두번째 요일=휴일
-const DAY_PAIR_MAP = {
-  "월화": ["월", "화"],
-  "화수": ["화", "수"],
-  "수목": ["수", "목"],
-  "목금": ["목", "금"],
-  "금토": ["금", "토"],
-  "일월": ["일", "월"],
-};
-const DAY_PAIR_OPTIONS = Object.keys(DAY_PAIR_MAP);
+// 고정휴무 요일쌍 기본값 (매장이 [공휴일·이슈일] 화면에서 자유롭게 추가/수정/삭제 가능한 목록의 초기값)
+const DEFAULT_DAY_PAIR_OPTIONS = [
+  { id: "dp_월화", label: "월화", weekdays: ["월", "화"] },
+  { id: "dp_화수", label: "화수", weekdays: ["화", "수"] },
+  { id: "dp_수목", label: "수목", weekdays: ["수", "목"] },
+  { id: "dp_목금", label: "목금", weekdays: ["목", "금"] },
+  { id: "dp_금토", label: "금토", weekdays: ["금", "토"] },
+  { id: "dp_일월", label: "일월", weekdays: ["일", "월"] },
+];
+
+function lookupDayPair(dayPairOptions, label) {
+  const found = (dayPairOptions || []).find((p) => p.label === label);
+  return found ? found.weekdays : null;
+}
 
 // 고정휴무: 개인지정태그(요청/이슈) 다음으로, 설정해둔 요일쌍에 맞춰 휴무/휴일을 미리 채움
 // 한 항목에 여러 명을 한꺼번에 지정할 수 있음 (날짜 + 구분(요일쌍) + 인원 다중선택)
-function applyFixedRestSchedules(schedule, employees, fixedRestSchedules, monthsMeta) {
+function applyFixedRestSchedules(schedule, employees, fixedRestSchedules, dayPairOptions, monthsMeta) {
   let applied = 0;
   const next = { m1: { ...schedule.m1 }, m2: { ...schedule.m2 } };
   Object.keys(next.m1).forEach((id) => (next.m1[id] = [...schedule.m1[id]]));
@@ -277,7 +282,7 @@ function applyFixedRestSchedules(schedule, employees, fixedRestSchedules, months
   const timeline = buildTimeline(monthsMeta);
 
   (fixedRestSchedules || []).forEach((f) => {
-    const sortedWds = DAY_PAIR_MAP[f.dayPair];
+    const sortedWds = lookupDayPair(dayPairOptions, f.dayPair);
     if (!f.start || !f.end || !sortedWds || !f.empNames || f.empNames.length === 0) return;
 
     f.empNames.forEach((empName) => {
@@ -299,14 +304,14 @@ function applyFixedRestSchedules(schedule, employees, fixedRestSchedules, months
   return { schedule: next, applied };
 }
 
-function isFixedRestCovered(fixedRestSchedules, empName, dateStr) {
+function isFixedRestCovered(fixedRestSchedules, dayPairOptions, empName, dateStr) {
   return (fixedRestSchedules || []).some(
-    (f) => f.dayPair && DAY_PAIR_MAP[f.dayPair] && (f.empNames || []).includes(empName) &&
+    (f) => lookupDayPair(dayPairOptions, f.dayPair) && (f.empNames || []).includes(empName) &&
       f.start && f.end && dateStr >= f.start && dateStr <= f.end
   );
 }
 
-function assignRestDays(schedule, employees, tags, settings, monthsMeta, fixedRestSchedules) {
+function assignRestDays(schedule, employees, tags, settings, monthsMeta, fixedRestSchedules, dayPairOptions) {
   const next = { m1: { ...schedule.m1 }, m2: { ...schedule.m2 } };
   Object.keys(next.m1).forEach((id) => (next.m1[id] = [...schedule.m1[id]]));
   Object.keys(next.m2).forEach((id) => (next.m2[id] = [...schedule.m2[id]]));
@@ -340,7 +345,7 @@ function assignRestDays(schedule, employees, tags, settings, monthsMeta, fixedRe
     ftEmps.forEach((e) => (isBlank[e.id] = cellsToday[e.id] === ""));
     // 고정휴무가 적용되는 사람은 그날 이 로테이션 배정의 후보에서 제외 (이미 고정 패턴대로 확정됨)
     const isFixedToday = {};
-    ftEmps.forEach((e) => (isFixedToday[e.id] = isFixedRestCovered(fixedRestSchedules, e.name, day.dateStr)));
+    ftEmps.forEach((e) => (isFixedToday[e.id] = isFixedRestCovered(fixedRestSchedules, dayPairOptions, e.name, day.dateStr)));
 
     let alreadyOff = 0;
     ftEmps.forEach((e) => { if (!isBlank[e.id] && isOffTag(tags, cellsToday[e.id])) alreadyOff++; });
@@ -694,7 +699,7 @@ export {
   DEFAULT_TAGS, DEFAULT_EMPLOYEES, DEFAULT_HOLIDAYS, DEFAULT_FT_TEMPLATES, DEFAULT_PT_TEMPLATES,
   defaultSettings, defaultStoreData, reconcileSchedule, normalizeFtTemplates,
   buildMonthDays, applyPersonalTags, assignRestDays, assignShiftCodes,
-  applyFixedRestSchedules, isFixedRestCovered, DAY_PAIR_MAP, DAY_PAIR_OPTIONS,
+  applyFixedRestSchedules, isFixedRestCovered, DEFAULT_DAY_PAIR_OPTIONS,
   emptyMemoRows, reconcileMemoRows,
   validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT,
   isOffTag, dowBucket, nextMonth, emptySchedule, isWeekendBucket, isActiveEmployee, pickThresholdIndex, isAutoAssignable,

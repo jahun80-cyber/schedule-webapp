@@ -10,7 +10,7 @@ import {
   WEEKDAYS, DOW_OPTIONS,
   defaultStoreData,
   buildMonthDays, applyPersonalTags, assignRestDays, assignShiftCodes,
-  applyFixedRestSchedules, normalizeFtTemplates, DAY_PAIR_OPTIONS,
+  applyFixedRestSchedules, normalizeFtTemplates, DEFAULT_DAY_PAIR_OPTIONS,
   emptyMemoRows, reconcileMemoRows,
   validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT,
   isOffTag, dowBucket, nextMonth, emptySchedule, reconcileSchedule, isActiveEmployee, computeLeaveUsage,
@@ -55,6 +55,27 @@ function DateInput({ value, onChange, className = "" }) {
       type="date" value={value}
       onChange={(e) => onChange(e.target.value)}
       className={`border border-slate-300 rounded-md px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 ${className}`}
+    />
+  );
+}
+
+// 스케줄 메모 줄용 - 내용을 입력하는 만큼 세로로 자동으로 늘어나는 텍스트박스
+function AutoGrowTextarea({ value, onChange }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    if (ref.current) {
+      ref.current.style.height = "auto";
+      ref.current.style.height = ref.current.scrollHeight + "px";
+    }
+  }, [value]);
+  return (
+    <textarea
+      ref={ref}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      rows={1}
+      className="w-full text-[9px] text-center border-none bg-transparent focus:outline-none focus:ring-1 focus:ring-amber-400 py-1 resize-none overflow-hidden leading-tight"
+      style={{ minHeight: "20px" }}
     />
   );
 }
@@ -451,6 +472,7 @@ function TagsTab({ data, setData }) {
 function HolidaysTab({ data, setData }) {
   const { holidays, issueDays, personalTags, employees, tags } = data;
   const fixedRestSchedules = data.fixedRestSchedules || [];
+  const dayPairOptions = data.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS;
 
   const updHol = (i, patch) => setData((d) => { const arr = [...d.holidays]; arr[i] = { ...arr[i], ...patch }; return { ...d, holidays: arr }; });
   const rmHol = (i) => setData((d) => ({ ...d, holidays: d.holidays.filter((_, idx) => idx !== i) }));
@@ -466,13 +488,38 @@ function HolidaysTab({ data, setData }) {
 
   const updFixed = (i, patch) => setData((d) => { const arr = [...(d.fixedRestSchedules || [])]; arr[i] = { ...arr[i], ...patch }; return { ...d, fixedRestSchedules: arr }; });
   const rmFixed = (i) => setData((d) => ({ ...d, fixedRestSchedules: (d.fixedRestSchedules || []).filter((_, idx) => idx !== i) }));
-  const addFixed = () => setData((d) => ({ ...d, fixedRestSchedules: [...(d.fixedRestSchedules || []), { start: "", end: "", dayPair: DAY_PAIR_OPTIONS[0], empNames: [] }] }));
+  const addFixed = () => setData((d) => {
+    const opts = d.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS;
+    return { ...d, fixedRestSchedules: [...(d.fixedRestSchedules || []), { start: "", end: "", dayPair: opts[0]?.label || "", empNames: [] }] };
+  });
   const toggleFixedEmp = (i, name) => setData((d) => {
     const arr = [...(d.fixedRestSchedules || [])];
     const cur = arr[i].empNames || [];
     const next = cur.includes(name) ? cur.filter((x) => x !== name) : [...cur, name];
     arr[i] = { ...arr[i], empNames: next };
     return { ...d, fixedRestSchedules: arr };
+  });
+
+  // 요일쌍(구분) 목록 관리 - 매장마다 다른 조합을 자유롭게 추가/수정/삭제
+  const updDayPair = (i, patch) => setData((d) => {
+    const opts = [...(d.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS)];
+    opts[i] = { ...opts[i], ...patch };
+    return { ...d, dayPairOptions: opts };
+  });
+  const rmDayPair = (i) => setData((d) => {
+    const opts = (d.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS).filter((_, idx) => idx !== i);
+    return { ...d, dayPairOptions: opts };
+  });
+  const addDayPair = () => setData((d) => ({
+    ...d,
+    dayPairOptions: [...(d.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS), { id: "dp_" + Date.now(), label: "새구분", weekdays: [] }],
+  }));
+  const toggleDayPairWeekday = (i, wd) => setData((d) => {
+    const opts = [...(d.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS)];
+    const cur = opts[i].weekdays || [];
+    const next = cur.includes(wd) ? cur.filter((x) => x !== wd) : [...cur, wd];
+    opts[i] = { ...opts[i], weekdays: next };
+    return { ...d, dayPairOptions: opts };
   });
 
   const ftEmployeeNames = employees.filter((e) => e.type === "정직원").map((e) => e.name);
@@ -526,6 +573,30 @@ function HolidaysTab({ data, setData }) {
         </div>
       </SectionCard>
 
+      <SectionCard title="고정휴무 요일쌍(구분) 관리" icon={CalendarDays} right={<GhostBtn onClick={addDayPair} icon={Plus}>구분 추가</GhostBtn>}>
+        <p className="text-xs text-slate-500 mb-3">
+          매장마다 쉬는 요일쌍이 다를 수 있어 자유롭게 추가·수정·삭제할 수 있습니다 (예: 금토가 없는 매장, 화목처럼 붙어있지 않은 조합 등).
+          체크한 요일 중 첫번째가 휴무, 나머지가 휴일로 채워집니다.
+        </p>
+        <div className="space-y-2">
+          {dayPairOptions.map((p, i) => (
+            <div key={p.id || i} className="flex items-center gap-2 flex-wrap border border-slate-200 rounded-md px-3 py-2">
+              <TextInput value={p.label} onChange={(v) => updDayPair(i, { label: v })} className="w-20" />
+              <div className="flex items-center gap-1">
+                {WEEKDAYS.map((wd) => (
+                  <label key={wd} className={`text-[11px] px-2 py-1 rounded cursor-pointer select-none ${(p.weekdays || []).includes(wd) ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-500"}`}>
+                    <input type="checkbox" className="hidden" checked={(p.weekdays || []).includes(wd)} onChange={() => toggleDayPairWeekday(i, wd)} />
+                    {wd}
+                  </label>
+                ))}
+              </div>
+              <IconBtn onClick={() => rmDayPair(i)} title="삭제" danger />
+            </div>
+          ))}
+          {dayPairOptions.length === 0 && <p className="text-xs text-slate-400">등록된 구분이 없습니다.</p>}
+        </div>
+      </SectionCard>
+
       <SectionCard title="고정휴무 설정 (정직원)" icon={CalendarDays} right={<GhostBtn onClick={addFixed} icon={Plus}>고정휴무 추가</GhostBtn>}>
         <p className="text-xs text-slate-500 mb-3">
           매주 같은 요일쌍으로 쉬는 직원들을 한 번에 지정합니다 (예: 월화 고정휴무 5명). 개인 지정 태그(요청·이슈)가 항상 먼저 반영되고,
@@ -540,7 +611,7 @@ function HolidaysTab({ data, setData }) {
                 <span className="text-slate-400 text-xs">~</span>
                 <DateInput value={f.end} onChange={(v) => updFixed(i, { end: v })} />
                 <span className="text-xs text-slate-400 ml-1">구분</span>
-                <Select value={f.dayPair} onChange={(v) => updFixed(i, { dayPair: v })} options={DAY_PAIR_OPTIONS} className="w-24" />
+                <Select value={f.dayPair} onChange={(v) => updFixed(i, { dayPair: v })} options={dayPairOptions.map((p) => p.label)} className="w-24" />
                 <IconBtn onClick={() => rmFixed(i)} title="삭제" danger />
               </div>
               <div className="flex items-center gap-1.5 flex-wrap">
@@ -868,12 +939,10 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days }) 
                   </div>
                 </td>
                 {days.map((day, i) => (
-                  <td key={day.day} className="border border-slate-200 p-0 bg-amber-50/40">
-                    <input
-                      type="text"
+                  <td key={day.day} className="border border-slate-200 p-0 bg-amber-50/40 align-top">
+                    <AutoGrowTextarea
                       value={(schedule[memoKey]?.[row.id] || [])[i] || ""}
-                      onChange={(ev) => setMemoCell(row.id, i, ev.target.value)}
-                      className="w-full text-[9px] text-center border-none bg-transparent focus:outline-none focus:ring-1 focus:ring-amber-400 py-1"
+                      onChange={(v) => setMemoCell(row.id, i, v)}
                     />
                   </td>
                 ))}
@@ -971,8 +1040,8 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
     setRunning(true);
     setTimeout(() => {
       const { schedule: withPersonal, applied } = applyPersonalTags(schedule, data.employees, data.personalTags, monthsMeta);
-      const { schedule: withFixed, applied: fixedApplied } = applyFixedRestSchedules(withPersonal, data.employees, data.fixedRestSchedules, monthsMeta);
-      const { schedule: result, message } = assignRestDays(withFixed, data.employees, data.tags, data.settings, monthsMeta, data.fixedRestSchedules);
+      const { schedule: withFixed, applied: fixedApplied } = applyFixedRestSchedules(withPersonal, data.employees, data.fixedRestSchedules, data.dayPairOptions, monthsMeta);
+      const { schedule: result, message } = assignRestDays(withFixed, data.employees, data.tags, data.settings, monthsMeta, data.fixedRestSchedules, data.dayPairOptions);
       setSchedule(result);
       setMsg(`개인 지정 태그로 채운 칸: ${applied}건 · 고정휴무로 채운 칸: ${fixedApplied}건 · ${message}`);
       setRunning(false);
@@ -1567,6 +1636,7 @@ function MainApp({ role, onLogout }) {
         finalData.ftTemplates = normalizeFtTemplates(finalData.ftTemplates);
         finalData.fixedRestSchedules = finalData.fixedRestSchedules || [];
         finalData.memoRowLabels = finalData.memoRowLabels || [];
+        finalData.dayPairOptions = finalData.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS;
         setDataRaw(finalData);
         const s1 = finalData.settings;
         const { year: y2, month: m2 } = nextMonth(s1.year, s1.startMonth);
