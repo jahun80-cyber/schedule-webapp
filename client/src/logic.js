@@ -150,6 +150,14 @@ function isActiveEmployee(e) {
   return e.status === "재직" || e.status === "퇴직예정";
 }
 
+// 정직원의 "소속"이 우리매장이 아니면(지원근무/스위칭근무) 기본적으로 자동배정 대상에서 제외.
+// autoAssign을 true로 켜두면 예외적으로 자동배정 대상에 포함시킬 수 있음.
+function isAutoAssignable(e) {
+  if (e.type !== "정직원") return true;
+  if (!e.memberType || e.memberType === "우리매장") return true;
+  return !!e.autoAssign;
+}
+
 function isOffTag(tags, v) {
   if (!v) return false;
   const t = tags.find((t) => t.code === v);
@@ -218,7 +226,7 @@ function assignRestDays(schedule, employees, tags, settings, monthsMeta) {
   Object.keys(next.m1).forEach((id) => (next.m1[id] = [...schedule.m1[id]]));
   Object.keys(next.m2).forEach((id) => (next.m2[id] = [...schedule.m2[id]]));
 
-  const ftEmps = employees.filter((e) => e.type === "정직원" && isActiveEmployee(e));
+  const ftEmps = employees.filter((e) => e.type === "정직원" && isActiveEmployee(e) && isAutoAssignable(e));
   const ftCount = ftEmps.length;
   if (ftCount === 0) return { schedule: next, message: "정직원이 없어 자동배정을 건너뛰었습니다.", inserted: 0 };
 
@@ -381,7 +389,7 @@ function assignShiftCodes(schedule, employees, tags, settings, ftTemplates, ptTe
   Object.keys(next.m1).forEach((id) => (next.m1[id] = [...schedule.m1[id]]));
   Object.keys(next.m2).forEach((id) => (next.m2[id] = [...schedule.m2[id]]));
 
-  const ftEmps = employees.filter((e) => e.type === "정직원" && isActiveEmployee(e));
+  const ftAllActive = employees.filter((e) => e.type === "정직원" && isActiveEmployee(e));
   const ptEmps = employees.filter((e) => e.type === "파트타이머" && isActiveEmployee(e));
   const timeline = buildTimeline(monthsMeta);
   const usage = {};
@@ -397,12 +405,17 @@ function assignShiftCodes(schedule, employees, tags, settings, ftTemplates, ptTe
     const arr = (empId) => next[key][empId];
 
     // ---- 정직원 ----
+    // 이미 채워진 칸(지원/스위칭 인원이 수기로 입력해둔 경우 포함)은 그날 출근 인원수에 반영하되,
+    // 빈 칸을 자동으로 채우는 대상은 "우리매장" 소속(또는 자동배정 켜둔 지원/스위칭)만 해당됨
     const ftEligible = [];
     let ftAlreadyWorking = 0;
-    ftEmps.forEach((e) => {
+    ftAllActive.forEach((e) => {
       const v = arr(e.id)[day.day - 1] || "";
-      if (v === "") ftEligible.push(e);
-      else if (!isOffTag(tags, v)) ftAlreadyWorking++;
+      if (v === "") {
+        if (isAutoAssignable(e)) ftEligible.push(e);
+      } else if (!isOffTag(tags, v)) {
+        ftAlreadyWorking++;
+      }
     });
 
     if (ftEligible.length > 0 && ftTemplates.length > 0) {
@@ -415,7 +428,7 @@ function assignShiftCodes(schedule, employees, tags, settings, ftTemplates, ptTe
       ftTemplates.forEach((t) => {
         needCnt[t.code] = Number(t[chosenField]) || 0;
       });
-      ftEmps.forEach((e) => {
+      ftAllActive.forEach((e) => {
         const v = arr(e.id)[day.day - 1] || "";
         if (v !== "" && !isOffTag(tags, v) && needCnt[v] > 0) needCnt[v]--;
       });
@@ -546,5 +559,5 @@ export {
   defaultSettings, defaultStoreData, reconcileSchedule,
   buildMonthDays, applyPersonalTags, assignRestDays, assignShiftCodes,
   validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT,
-  isOffTag, dowBucket, nextMonth, emptySchedule, isWeekendBucket, isActiveEmployee, pickThresholdIndex,
+  isOffTag, dowBucket, nextMonth, emptySchedule, isWeekendBucket, isActiveEmployee, pickThresholdIndex, isAutoAssignable,
 };

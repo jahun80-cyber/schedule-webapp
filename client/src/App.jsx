@@ -227,7 +227,7 @@ function EmployeesTab({ data, setData }) {
   const ptCodeOptions = ["", ...data.ptTemplates.map((t) => t.code)];
   const update = (id, patch) => setData((d) => ({ ...d, employees: d.employees.map((e) => (e.id === id ? { ...e, ...patch } : e)) }));
   const remove = (id) => setData((d) => ({ ...d, employees: d.employees.filter((e) => e.id !== id) }));
-  const addFT = () => setData((d) => ({ ...d, employees: [...d.employees, { id: "e" + Date.now(), name: "", type: "정직원", status: "재직" }] }));
+  const addFT = () => setData((d) => ({ ...d, employees: [...d.employees, { id: "e" + Date.now(), name: "", type: "정직원", memberType: "우리매장", autoAssign: false, status: "재직" }] }));
   const addPT = () => setData((d) => ({
     ...d,
     employees: [...d.employees, {
@@ -242,22 +242,46 @@ function EmployeesTab({ data, setData }) {
   return (
     <div className="max-w-5xl">
       <SectionCard title="정직원" icon={Users} right={<GhostBtn onClick={addFT} icon={Plus}>정직원 추가</GhostBtn>}>
+        <p className="text-xs text-slate-500 mb-3">
+          소속을 "지원근무"나 "스위칭근무"로 두면 휴무/휴일·근무 자동배정에서 제외되고, 스케줄 화면에서 수기로만 입력됩니다.
+          "자동배정 포함"을 켜면 예외적으로 우리매장 인원처럼 자동배정 대상에 포함시킬 수 있습니다.
+        </p>
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
               <th className="py-2 font-semibold">이름</th>
+              <th className="py-2 font-semibold">소속</th>
+              <th className="py-2 font-semibold">자동배정 포함</th>
               <th className="py-2 font-semibold">재직상태</th>
               <th className="py-2 w-8"></th>
             </tr>
           </thead>
           <tbody>
-            {ftList.map((e) => (
-              <tr key={e.id} className="border-b border-slate-100">
-                <td className="py-1.5 pr-2"><TextInput value={e.name} onChange={(v) => update(e.id, { name: v })} className="w-40" /></td>
-                <td className="py-1.5 pr-2"><Select value={e.status} onChange={(v) => update(e.id, { status: v })} options={["재직", "퇴직예정", "퇴직"]} /></td>
-                <td><IconBtn onClick={() => remove(e.id)} title="삭제" danger /></td>
-              </tr>
-            ))}
+            {ftList.map((e) => {
+              const memberType = e.memberType || "우리매장";
+              const isGuest = memberType !== "우리매장";
+              return (
+                <tr key={e.id} className="border-b border-slate-100">
+                  <td className="py-1.5 pr-2"><TextInput value={e.name} onChange={(v) => update(e.id, { name: v })} className="w-40" /></td>
+                  <td className="py-1.5 pr-2">
+                    <Select value={memberType} onChange={(v) => update(e.id, { memberType: v })} options={["우리매장", "지원근무", "스위칭근무"]} />
+                  </td>
+                  <td className="py-1.5 pr-2 text-center">
+                    {isGuest ? (
+                      <input
+                        type="checkbox" checked={!!e.autoAssign}
+                        onChange={(ev) => update(e.id, { autoAssign: ev.target.checked })}
+                        className="w-4 h-4 accent-indigo-600"
+                      />
+                    ) : (
+                      <span className="text-[11px] text-slate-300">해당없음</span>
+                    )}
+                  </td>
+                  <td className="py-1.5 pr-2"><Select value={e.status} onChange={(v) => update(e.id, { status: v })} options={["재직", "퇴직예정", "퇴직"]} /></td>
+                  <td><IconBtn onClick={() => remove(e.id)} title="삭제" danger /></td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </SectionCard>
@@ -569,6 +593,9 @@ function attendStatus(attend, required) {
   if (attend > required) return "AVAILABLE";
   return "OK";
 }
+function attendStatus2(attend, required) {
+  return attend < required ? "NOT" : "OK";
+}
 
 function ScheduleGrid({ data, schedule, setSchedule, monthKey, days }) {
   const { employees, tags, settings } = data;
@@ -714,7 +741,7 @@ function ScheduleGrid({ data, schedule, setSchedule, monthKey, days }) {
             <tr>
               <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] font-semibold z-10">적정확인(파트타이머)</td>
               {days.map((day, i) => {
-                const status = attendStatus(dayStats[i].ptAttend, dayStats[i].ptReq);
+                const status = attendStatus2(dayStats[i].ptAttend, dayStats[i].ptReq);
                 return (
                   <td key={day.day} className={`border border-slate-200 px-1 py-1 text-[9px] text-center font-bold ${STATUS_STYLE[status]}`}>
                     {status}

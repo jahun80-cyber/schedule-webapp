@@ -20,8 +20,8 @@ const DEFAULT_TAGS = [
 ];
 
 const DEFAULT_EMPLOYEES = [
-  { id: "e1", name: "직원1", type: "정직원", status: "재직" },
-  { id: "e2", name: "직원2", type: "정직원", status: "재직" },
+  { id: "e1", name: "직원1", type: "정직원", memberType: "우리매장", status: "재직" },
+  { id: "e2", name: "직원2", type: "정직원", memberType: "우리매장", status: "재직" },
 ];
 
 const DEFAULT_HOLIDAYS_2026 = [
