@@ -231,15 +231,20 @@ function applyPersonalTags(schedule, employees, personalTags, monthsMeta) {
   Object.keys(next.m2).forEach((id) => (next.m2[id] = [...schedule.m2[id]]));
 
   for (const pt of personalTags) {
-    if (!pt.start || !pt.end || !pt.empName || !pt.tagCode) continue;
-    const emp = employees.find((e) => e.name === pt.empName);
-    if (!emp) continue;
-    for (const { key, days } of monthsMeta) {
-      for (const day of days) {
-        if (day.dateStr >= pt.start && day.dateStr <= pt.end) {
-          if (!next[key][emp.id][day.day - 1]) {
-            next[key][emp.id][day.day - 1] = pt.tagCode;
-            applied++;
+    if (!pt.start || !pt.end || !pt.tagCode) continue;
+    // 새 방식: empNames(다수 선택) / 예전 방식: empName(한 명) 둘 다 지원
+    const names = pt.empNames && pt.empNames.length > 0 ? pt.empNames : (pt.empName ? [pt.empName] : []);
+    if (names.length === 0) continue;
+    for (const name of names) {
+      const emp = employees.find((e) => e.name === name);
+      if (!emp) continue;
+      for (const { key, days } of monthsMeta) {
+        for (const day of days) {
+          if (day.dateStr >= pt.start && day.dateStr <= pt.end) {
+            if (!next[key][emp.id][day.day - 1]) {
+              next[key][emp.id][day.day - 1] = pt.tagCode;
+              applied++;
+            }
           }
         }
       }

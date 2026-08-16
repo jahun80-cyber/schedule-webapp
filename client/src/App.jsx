@@ -484,7 +484,21 @@ function HolidaysTab({ data, setData }) {
 
   const updPt = (i, patch) => setData((d) => { const arr = [...d.personalTags]; arr[i] = { ...arr[i], ...patch }; return { ...d, personalTags: arr }; });
   const rmPt = (i) => setData((d) => ({ ...d, personalTags: d.personalTags.filter((_, idx) => idx !== i) }));
-  const addPt = () => setData((d) => ({ ...d, personalTags: [...d.personalTags, { start: "", end: "", empName: employees[0]?.name || "", tagCode: tags[0]?.code || "" }] }));
+  const addPt = () => setData((d) => ({ ...d, personalTags: [...d.personalTags, { start: "", end: "", empNames: [], tagCode: tags[0]?.code || "" }] }));
+  const togglePtEmp = (i, name) => setData((d) => {
+    const arr = [...d.personalTags];
+    const cur = arr[i].empNames || (arr[i].empName ? [arr[i].empName] : []);
+    const next = cur.includes(name) ? cur.filter((x) => x !== name) : [...cur, name];
+    arr[i] = { ...arr[i], empNames: next, empName: undefined };
+    return { ...d, personalTags: arr };
+  });
+  const setPtAll = (i, allNames) => setData((d) => {
+    const arr = [...d.personalTags];
+    const cur = arr[i].empNames || (arr[i].empName ? [arr[i].empName] : []);
+    const allSelected = allNames.length > 0 && allNames.every((n) => cur.includes(n));
+    arr[i] = { ...arr[i], empNames: allSelected ? [] : [...allNames], empName: undefined };
+    return { ...d, personalTags: arr };
+  });
 
   const updFixed = (i, patch) => setData((d) => { const arr = [...(d.fixedRestSchedules || [])]; arr[i] = { ...arr[i], ...patch }; return { ...d, fixedRestSchedules: arr }; });
   const rmFixed = (i) => setData((d) => ({ ...d, fixedRestSchedules: (d.fixedRestSchedules || []).filter((_, idx) => idx !== i) }));
@@ -558,18 +572,44 @@ function HolidaysTab({ data, setData }) {
       </SectionCard>
 
       <SectionCard title="개인 지정 태그" icon={Tag} right={<GhostBtn onClick={addPt} icon={Plus}>태그 추가</GhostBtn>}>
-        <p className="text-xs text-slate-500 mb-3">대상 직원의 해당 기간 스케줄 칸에 자동배정 시 태그가 채워집니다 (기존 값은 덮어쓰지 않음).</p>
-        <div className="grid grid-cols-1 gap-1.5">
-          {personalTags.map((pt, i) => (
-            <div key={i} className="flex items-center gap-2">
-              <DateInput value={pt.start} onChange={(v) => updPt(i, { start: v })} />
-              <span className="text-slate-400 text-xs">~</span>
-              <DateInput value={pt.end} onChange={(v) => updPt(i, { end: v })} />
-              <Select value={pt.empName} onChange={(v) => updPt(i, { empName: v })} options={employees.map((e) => e.name)} className="w-28" />
-              <Select value={pt.tagCode} onChange={(v) => updPt(i, { tagCode: v })} options={tags.map((t) => t.code)} className="w-28" />
-              <IconBtn onClick={() => rmPt(i)} title="삭제" danger />
-            </div>
-          ))}
+        <p className="text-xs text-slate-500 mb-3">
+          대상 직원의 해당 기간 스케줄 칸에 자동배정 시 태그가 채워집니다 (기존 값은 덮어쓰지 않음). 백화점 점휴일처럼 매장 전체가 같은 날 쉬어야 할 때는
+          "전체선택"으로 한 번에 지정할 수 있습니다.
+        </p>
+        <div className="space-y-2">
+          {personalTags.map((pt, i) => {
+            const selectedNames = pt.empNames || (pt.empName ? [pt.empName] : []);
+            const allNames = employees.map((e) => e.name);
+            const allSelected = allNames.length > 0 && allNames.every((n) => selectedNames.includes(n));
+            return (
+              <div key={i} className="border border-slate-200 rounded-md px-3 py-2">
+                <div className="flex items-center gap-2 flex-wrap mb-2">
+                  <DateInput value={pt.start} onChange={(v) => updPt(i, { start: v })} />
+                  <span className="text-slate-400 text-xs">~</span>
+                  <DateInput value={pt.end} onChange={(v) => updPt(i, { end: v })} />
+                  <span className="text-xs text-slate-400 ml-1">태그</span>
+                  <Select value={pt.tagCode} onChange={(v) => updPt(i, { tagCode: v })} options={tags.map((t) => t.code)} className="w-28" />
+                  <button
+                    onClick={() => setPtAll(i, allNames)}
+                    className={`text-[11px] px-2 py-1 rounded ${allSelected ? "bg-indigo-600 text-white" : "border border-slate-300 text-slate-600 hover:bg-slate-50"}`}
+                  >
+                    전체선택
+                  </button>
+                  <IconBtn onClick={() => rmPt(i)} title="삭제" danger />
+                </div>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-xs text-slate-400 mr-1">인원</span>
+                  {allNames.map((name) => (
+                    <label key={name} className={`text-[11px] px-2 py-1 rounded cursor-pointer select-none ${selectedNames.includes(name) ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-500"}`}>
+                      <input type="checkbox" className="hidden" checked={selectedNames.includes(name)} onChange={() => togglePtEmp(i, name)} />
+                      {name}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+          {personalTags.length === 0 && <p className="text-xs text-slate-400">등록된 개인 지정 태그가 없습니다.</p>}
         </div>
       </SectionCard>
 
