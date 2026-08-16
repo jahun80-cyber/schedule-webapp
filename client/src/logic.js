@@ -321,12 +321,13 @@ function assignRestDays(schedule, employees, tags, settings, monthsMeta, fixedRe
 
     const selected = new Set();
     let usedSlots = 0;
+    const urgentThreshold = Number(settings.consecRecommended) || 3; // 이 이상 연속근무하면 "급한 사람"으로 우선 배정
 
-    // 1단계: 급한 사람(연속 3일+) - 소프트 한도
+    // 1단계: 급한 사람(연속근무 권장 상한 이상) - 소프트 한도
     while (true) {
       let bestId = null, bestStreak = -1;
       ftEmps.forEach((e) => {
-        if (isBlank[e.id] && !isFixedToday[e.id] && !selected.has(e.id) && streak[e.id] >= 3 && streak[e.id] > bestStreak) {
+        if (isBlank[e.id] && !isFixedToday[e.id] && !selected.has(e.id) && streak[e.id] >= urgentThreshold && streak[e.id] > bestStreak) {
           bestStreak = streak[e.id]; bestId = e.id;
         }
       });
@@ -337,7 +338,7 @@ function assignRestDays(schedule, employees, tags, settings, monthsMeta, fixedRe
     while (true) {
       let bestId = null, bestStreak = -1;
       ftEmps.forEach((e) => {
-        if (isBlank[e.id] && !isFixedToday[e.id] && !selected.has(e.id) && streak[e.id] >= 3 && streak[e.id] > bestStreak) {
+        if (isBlank[e.id] && !isFixedToday[e.id] && !selected.has(e.id) && streak[e.id] >= urgentThreshold && streak[e.id] > bestStreak) {
           bestStreak = streak[e.id]; bestId = e.id;
         }
       });
