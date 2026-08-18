@@ -8,8 +8,8 @@ const DEFAULT_TAGS = [
   { id: "tag_default_7", code: "휴일", category: "확정휴무", countsAsAttend: false, restType: "휴일", desc: "휴무 다음으로 배정되는 휴식일" },
   { id: "tag_default_8", code: "연차", category: "확정휴무", countsAsAttend: false, restType: "해당없음", desc: "개인 연차", trackAsLeave: true, leaveHours: 8, leavePool: "연차" },
   { id: "tag_default_9", code: "반차(오전)", category: "조정", countsAsAttend: false, restType: "해당없음", desc: "오전 반차", trackAsLeave: true, leaveHours: 4, leavePool: "연차" },
-  { id: "tag_default_10", code: "반차(오후)", category: "조정", countsAsAttend: false, restType: "해당없음", desc: "오후 반차", trackAsLeave: true, leaveHours: 4, leavePool: "연차" },
-  { id: "tag_default_11", code: "반반차", category: "조정", countsAsAttend: false, restType: "해당없음", desc: "반반차", trackAsLeave: true, leaveHours: 2, leavePool: "연차" },
+  { id: "tag_default_10", code: "반차(오후)", category: "조정", countsAsAttend: false, restType: "해당없음", desc: "오후 반차", trackAsLeave: true, leaveHours: 4, leavePool: "연차", countsAsShift: "A" },
+  { id: "tag_default_11", code: "반반차", category: "조정", countsAsAttend: false, restType: "해당없음", desc: "반반차", trackAsLeave: true, leaveHours: 2, leavePool: "연차", countsAsShift: "A" },
   { id: "tag_default_12", code: "경조사", category: "확정휴무", countsAsAttend: false, restType: "해당없음", desc: "경조사 휴가" },
   { id: "tag_default_13", code: "예비군", category: "확정휴무", countsAsAttend: false, restType: "해당없음", desc: "예비군 훈련" },
   { id: "tag_default_14", code: "지원근무", category: "확정근무", countsAsAttend: false, restType: "해당없음", desc: "타매장 지원 (본 매장 인원에서 제외)" },
@@ -62,6 +62,7 @@ function defaultSettings() {
     startMonth: now.getMonth() + 1,
     weekdayMinFT: 2, weekdayMinPT: 1,
     weekendMinFT: 3, weekendMinPT: 1,
+    restMode: "로테이션",
     consecRecommended: 3, consecMax: 4,
     dow: { 월: "평일", 화: "평일", 수: "평일", 목: "평일", 금: "평일(소프트-주말수준)", 토: "주말", 일: "주말" },
   };

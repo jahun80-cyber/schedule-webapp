@@ -11,8 +11,8 @@ const DEFAULT_TAGS = [
   { id: "tag_default_7", code: "휴일", category: "확정휴무", countsAsAttend: false, restType: "휴일", desc: "휴무 다음으로 배정되는 휴식일" },
   { id: "tag_default_8", code: "연차", category: "확정휴무", countsAsAttend: false, restType: "해당없음", desc: "개인 연차", trackAsLeave: true, leaveHours: 8, leavePool: "연차" },
   { id: "tag_default_9", code: "반차(오전)", category: "조정", countsAsAttend: false, restType: "해당없음", desc: "오전 반차", trackAsLeave: true, leaveHours: 4, leavePool: "연차" },
-  { id: "tag_default_10", code: "반차(오후)", category: "조정", countsAsAttend: false, restType: "해당없음", desc: "오후 반차", trackAsLeave: true, leaveHours: 4, leavePool: "연차" },
-  { id: "tag_default_11", code: "반반차", category: "조정", countsAsAttend: false, restType: "해당없음", desc: "반반차", trackAsLeave: true, leaveHours: 2, leavePool: "연차" },
+  { id: "tag_default_10", code: "반차(오후)", category: "조정", countsAsAttend: false, restType: "해당없음", desc: "오후 반차", trackAsLeave: true, leaveHours: 4, leavePool: "연차", countsAsShift: "A" },
+  { id: "tag_default_11", code: "반반차", category: "조정", countsAsAttend: false, restType: "해당없음", desc: "반반차", trackAsLeave: true, leaveHours: 2, leavePool: "연차", countsAsShift: "A" },
   { id: "tag_default_12", code: "경조사", category: "확정휴무", countsAsAttend: false, restType: "해당없음", desc: "경조사 휴가" },
   { id: "tag_default_13", code: "예비군", category: "확정휴무", countsAsAttend: false, restType: "해당없음", desc: "예비군 훈련" },
   { id: "tag_default_14", code: "지원근무", category: "확정근무", countsAsAttend: false, restType: "해당없음", desc: "타매장 지원 (본 매장 인원에서 제외)" },
@@ -71,6 +71,7 @@ function defaultSettings() {
     startMonth: 5,
     weekdayMinFT: 2, weekdayMinPT: 1,
     weekendMinFT: 3, weekendMinPT: 1,
+    restMode: "로테이션", // "로테이션" | "고정휴무" - 이 매장이 휴무를 어떻게 배정하는지
     consecRecommended: 3, consecMax: 4,
     dow: { 월: "평일", 화: "평일", 수: "평일", 목: "평일", 금: "평일(소프트-주말수준)", 토: "주말", 일: "주말" },
   };
@@ -166,6 +167,15 @@ function isOffTag(tags, v) {
   if (!v) return false;
   const t = tags.find((t) => t.code === v);
   return t ? !t.countsAsAttend : false;
+}
+
+// 어떤 칸의 값이 근무조 집계상 어떤 코드로 계산되는지 반환
+// (예: 반차(오후)/반반차는 그날 A조 근무 1명으로 집계 - 태그의 countsAsShift로 지정)
+function shiftCodeOf(tags, v) {
+  if (!v) return null;
+  const t = (tags || []).find((t) => t.code === v);
+  if (t && t.countsAsShift) return t.countsAsShift;
+  return v;
 }
 
 function emptySchedule(employees, days1, days2) {
@@ -286,38 +296,65 @@ function resolveFixedRestEnd(f) {
   return `${f.start.slice(0, 7)}-${String(lastDay).padStart(2, "0")}`;
 }
 
-// 고정휴무: 개인지정태그(요청/이슈) 다음으로, 설정해둔 요일쌍에 맞춰 휴무/휴일을 미리 채움
-// 한 항목에 여러 명을 한꺼번에 지정할 수 있음 (날짜 + 구분(요일쌍) + 인원 다중선택)
-function applyFixedRestSchedules(schedule, employees, fixedRestSchedules, dayPairOptions, monthsMeta) {
-  let applied = 0;
+// 고정휴무: 개인지정태그(요청/이슈)가 이미 채워진 뒤에 실행됨.
+// 하루 단위로 "그날 최소 출근인원"을 지키는 선까지만 채우고, 자리가 부족하면
+// 우선순위(직원목록 순서) 후번인 직원의 휴무/휴일은 건너뛴다.
+function applyFixedRestSchedules(schedule, employees, fixedRestSchedules, dayPairOptions, monthsMeta, settings, tags) {
+  let applied = 0, skipped = 0;
   const next = { m1: { ...schedule.m1 }, m2: { ...schedule.m2 } };
   Object.keys(next.m1).forEach((id) => (next.m1[id] = [...schedule.m1[id]]));
   Object.keys(next.m2).forEach((id) => (next.m2[id] = [...schedule.m2[id]]));
 
   const timeline = buildTimeline(monthsMeta);
+  const ftEmps = employees.filter((e) => e.type === "정직원" && isActiveEmployee(e));
+  // 우선순위 = 직원목록에 등록된 순서 (앞선 사람이 우선)
+  const priorityOf = {};
+  ftEmps.forEach((e, i) => { priorityOf[e.id] = i; });
 
-  (fixedRestSchedules || []).forEach((f) => {
-    const sortedWds = lookupDayPair(dayPairOptions, f.dayPair);
-    const endDate = resolveFixedRestEnd(f);
-    if (!f.start || !endDate || !sortedWds || !f.empNames || f.empNames.length === 0) return;
+  timeline.forEach(({ key, day }) => {
+    // 이 날짜에 고정휴무가 걸리는 직원들을 모으고, 우선순위 순으로 정렬
+    const candidates = [];
+    (fixedRestSchedules || []).forEach((f) => {
+      const sortedWds = lookupDayPair(dayPairOptions, f.dayPair);
+      const endDate = resolveFixedRestEnd(f);
+      if (!f.start || !endDate || !sortedWds || !f.empNames || f.empNames.length === 0) return;
+      if (day.dateStr < f.start || day.dateStr > endDate) return;
+      const wdIdx = sortedWds.indexOf(day.weekday);
+      if (wdIdx === -1) return;
 
-    f.empNames.forEach((empName) => {
-      const emp = employees.find((e) => e.name === empName);
-      if (!emp) return;
-      timeline.forEach(({ key, day }) => {
-        if (day.dateStr < f.start || day.dateStr > endDate) return;
-        const wdIdx = sortedWds.indexOf(day.weekday);
-        if (wdIdx === -1) return;
-        const arr = next[key][emp.id];
-        if (arr && !arr[day.day - 1]) {
-          arr[day.day - 1] = wdIdx === 0 ? "휴무" : "휴일";
-          applied++;
-        }
+      f.empNames.forEach((empName) => {
+        const emp = ftEmps.find((e) => e.name === empName);
+        if (!emp) return;
+        const cur = next[key][emp.id]?.[day.day - 1] || "";
+        if (cur !== "") return; // 개인지정태그 등으로 이미 채워진 칸은 건드리지 않음
+        candidates.push({ empId: emp.id, code: wdIdx === 0 ? "휴무" : "휴일" });
       });
+    });
+    if (candidates.length === 0) return;
+    candidates.sort((a, b) => (priorityOf[a.empId] ?? 999) - (priorityOf[b.empId] ?? 999));
+
+    // 그날 이미 확정된 출근 인원수 계산 (빈칸은 아직 미정이므로 출근 가능 인원으로 봄)
+    let alreadyOff = 0, blankCount = 0;
+    ftEmps.forEach((e) => {
+      const v = next[key][e.id]?.[day.day - 1] || "";
+      if (v === "") blankCount++;
+      else if (isOffTag(tags || [], v)) alreadyOff++;
+    });
+    const required = requiredFT(settings, day);
+    const totalFT = ftEmps.length;
+    // 지금 상태에서 최대로 더 쉴 수 있는 인원 = 전체 - 필요인원 - 이미 쉬는 인원
+    let slots = totalFT - required - alreadyOff;
+    if (slots < 0) slots = 0;
+
+    candidates.forEach((c) => {
+      if (slots <= 0) { skipped++; return; }
+      next[key][c.empId][day.day - 1] = c.code;
+      slots--;
+      applied++;
     });
   });
 
-  return { schedule: next, applied };
+  return { schedule: next, applied, skipped };
 }
 
 function isFixedRestCovered(fixedRestSchedules, dayPairOptions, empName, dateStr) {
@@ -546,7 +583,10 @@ function assignShiftCodes(schedule, employees, tags, settings, ftTemplates, ptTe
       });
       ftAllActive.forEach((e) => {
         const v = arr(e.id)[day.day - 1] || "";
-        if (v !== "" && !isOffTag(tags, v) && needCnt[v] > 0) needCnt[v]--;
+        if (v === "") return;
+        // 반차(오후)/반반차처럼 근무조로 환산되는 태그도 그 조의 필요인원에서 차감
+        const asShift = shiftCodeOf(tags, v);
+        if (asShift && needCnt[asShift] > 0) needCnt[asShift]--;
       });
 
       const remaining = new Set(ftEligible.map((e) => e.id));
@@ -729,6 +769,6 @@ export {
   applyFixedRestSchedules, isFixedRestCovered, isFixedRestEmployee, resolveFixedRestEnd, DEFAULT_DAY_PAIR_OPTIONS,
   emptyMemoRows, reconcileMemoRows,
   validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT,
-  isOffTag, dowBucket, nextMonth, emptySchedule, isWeekendBucket, isActiveEmployee, pickThresholdIndex, isAutoAssignable,
+  isOffTag, shiftCodeOf, dowBucket, nextMonth, emptySchedule, isWeekendBucket, isActiveEmployee, pickThresholdIndex, isAutoAssignable,
   computeLeaveUsage,
 };

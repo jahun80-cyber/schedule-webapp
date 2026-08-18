@@ -218,8 +218,29 @@ function LoginScreen({ onLoggedIn }) {
    ============================================================ */
 function SettingsTab({ data, setData }) {
   const s = data.settings;
+  const restMode = s.restMode || "로테이션";
+  const dayPairOptions = data.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS;
   const update = (patch) => setData((d) => ({ ...d, settings: { ...d.settings, ...patch } }));
   const updateDow = (wd, val) => setData((d) => ({ ...d, settings: { ...d.settings, dow: { ...d.settings.dow, [wd]: val } } }));
+
+  const updDayPair = (i, patch) => setData((d) => {
+    const opts = [...(d.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS)];
+    opts[i] = { ...opts[i], ...patch };
+    return { ...d, dayPairOptions: opts };
+  });
+  const rmDayPair = (i) => setData((d) => ({
+    ...d, dayPairOptions: (d.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS).filter((_, idx) => idx !== i),
+  }));
+  const addDayPair = () => setData((d) => ({
+    ...d,
+    dayPairOptions: [...(d.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS), { id: "dp_" + Date.now(), label: "새구분", weekdays: [] }],
+  }));
+  const toggleDayPairWeekday = (i, wd) => setData((d) => {
+    const opts = [...(d.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS)];
+    const cur = opts[i].weekdays || [];
+    opts[i] = { ...opts[i], weekdays: cur.includes(wd) ? cur.filter((x) => x !== wd) : [...cur, wd] };
+    return { ...d, dayPairOptions: opts };
+  });
 
   return (
     <div className="max-w-4xl">
@@ -240,11 +261,60 @@ function SettingsTab({ data, setData }) {
         </div>
       </SectionCard>
 
-      <SectionCard title="연속근무 기준" icon={AlertTriangle}>
-        <div className="grid grid-cols-4 gap-4">
-          <Field label="권장 상한(일)"><NumberInput value={s.consecRecommended} onChange={(v) => update({ consecRecommended: v })} /></Field>
-          <Field label="최대 허용(일)"><NumberInput value={s.consecMax} onChange={(v) => update({ consecMax: v })} /></Field>
+      <SectionCard title="휴무 배정 방식" icon={AlertTriangle}>
+        <p className="text-xs text-slate-500 mb-3">
+          매장마다 휴무를 정하는 방식이 다릅니다. 아래에서 이 매장의 방식을 선택하면 그에 맞는 설정만 표시됩니다.
+        </p>
+        <div className="flex items-center gap-3 mb-4">
+          {["로테이션", "고정휴무"].map((mode) => (
+            <label key={mode} className={`px-4 py-2 rounded-md cursor-pointer select-none text-sm font-semibold ${restMode === mode ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
+              <input type="radio" className="hidden" checked={restMode === mode} onChange={() => update({ restMode: mode })} />
+              {mode === "로테이션" ? "로테이션 (연속근무 상한 기준)" : "고정휴무 (매주 같은 요일)"}
+            </label>
+          ))}
         </div>
+
+        {restMode === "로테이션" ? (
+          <div>
+            <p className="text-xs text-slate-500 mb-3">
+              정해진 고정 요일 없이, 연속근무가 길어지지 않도록 알아서 돌아가며 휴무를 배정합니다.
+            </p>
+            <div className="grid grid-cols-4 gap-4">
+              <Field label="연속근무 권장 상한(일)"><NumberInput value={s.consecRecommended} onChange={(v) => update({ consecRecommended: v })} /></Field>
+              <Field label="연속근무 최대 허용(일)"><NumberInput value={s.consecMax} onChange={(v) => update({ consecMax: v })} /></Field>
+            </div>
+          </div>
+        ) : (
+          <div>
+            <p className="text-xs text-slate-500 mb-3">
+              매주 정해진 요일쌍으로 쉬는 방식입니다. 아래에서 이 매장에서 쓰는 요일쌍을 정의하고,
+              실제로 누가 어떤 요일쌍인지는 [공휴일·이슈일] 탭의 "고정휴무 설정"에서 지정합니다.
+              (고정휴무 직원은 연속근무 경고 대상에서 자동으로 제외됩니다.)
+            </p>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-semibold text-slate-600">요일쌍(구분) 목록</span>
+              <GhostBtn onClick={addDayPair} icon={Plus}>구분 추가</GhostBtn>
+            </div>
+            <div className="space-y-2">
+              {dayPairOptions.map((p, i) => (
+                <div key={p.id || i} className="flex items-center gap-2 flex-wrap border border-slate-200 rounded-md px-3 py-2">
+                  <TextInput value={p.label} onChange={(v) => updDayPair(i, { label: v })} className="w-20" />
+                  <div className="flex items-center gap-1">
+                    {WEEKDAYS.map((wd) => (
+                      <label key={wd} className={`text-[11px] px-2 py-1 rounded cursor-pointer select-none ${(p.weekdays || []).includes(wd) ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-500"}`}>
+                        <input type="checkbox" className="hidden" checked={(p.weekdays || []).includes(wd)} onChange={() => toggleDayPairWeekday(i, wd)} />
+                        {wd}
+                      </label>
+                    ))}
+                  </div>
+                  <IconBtn onClick={() => rmDayPair(i)} title="삭제" danger />
+                </div>
+              ))}
+              {dayPairOptions.length === 0 && <p className="text-xs text-slate-400">등록된 구분이 없습니다.</p>}
+            </div>
+            <p className="text-[11px] text-slate-400 mt-2">체크한 요일 중 첫번째가 휴무, 나머지가 휴일로 채워집니다.</p>
+          </div>
+        )}
       </SectionCard>
 
       <SectionCard title="요일 구분 설정" icon={CalendarDays}>
@@ -424,6 +494,7 @@ function TagsTab({ data, setData }) {
               <th className="py-2 font-semibold">연차추적</th>
               <th className="py-2 font-semibold">연차종류</th>
               <th className="py-2 font-semibold">시간(H)</th>
+              <th className="py-2 font-semibold">근무조 환산</th>
               <th className="py-2 font-semibold">설명</th>
               <th className="py-2 w-8"></th>
             </tr>
@@ -469,6 +540,14 @@ function TagsTab({ data, setData }) {
                 <td className="py-1.5 pr-2">
                   {t.trackAsLeave ? <NumberInput value={t.leaveHours ?? ""} onChange={(v) => update(t.id, { leaveHours: v })} className="w-16" /> : <span className="text-[11px] text-slate-300">-</span>}
                 </td>
+                <td className="py-1.5 pr-2">
+                  <Select
+                    value={t.countsAsShift || ""}
+                    onChange={(v) => update(t.id, { countsAsShift: v })}
+                    options={["", ...data.ftTemplates.map((f) => f.code).filter(Boolean)]}
+                    className="w-20"
+                  />
+                </td>
                 <td className="py-1.5 pr-2"><TextInput value={t.desc} onChange={(v) => update(t.id, { desc: v })} className="w-40" /></td>
                 <td><IconBtn onClick={() => remove(t.id)} title="삭제" danger /></td>
               </tr>
@@ -479,6 +558,7 @@ function TagsTab({ data, setData }) {
           "연차추적"을 켜고 시간(H)을 지정하면(예: 연차=8H, 반차=4H, 반반차=2H), [연차현황] 탭에서 이 태그가 입력된 날짜를 자동으로 집계해 보여줍니다.
           "연차종류"를 같은 이름으로 맞춰두면 같은 보유량으로 묶여서 계산됩니다 — 예를 들어 연차/반차/반반차는 "연차"로, 리프레시휴가·안식휴가는
           새로 태그를 추가해서 "리프레시/안식휴가"라는 이름으로 묶어두면 [연차현황]에서 별도의 보유량으로 따로 관리됩니다.
+          "근무조 환산"을 지정하면 그날 그 근무조 인원 1명으로 계산됩니다 (예: 반차(오후)·반반차 → A조).
         </p>
       </SectionCard>
     </div>
@@ -533,27 +613,8 @@ function HolidaysTab({ data, setData }) {
     return { ...d, fixedRestSchedules: arr };
   });
 
-  // 요일쌍(구분) 목록 관리 - 매장마다 다른 조합을 자유롭게 추가/수정/삭제
-  const updDayPair = (i, patch) => setData((d) => {
-    const opts = [...(d.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS)];
-    opts[i] = { ...opts[i], ...patch };
-    return { ...d, dayPairOptions: opts };
-  });
-  const rmDayPair = (i) => setData((d) => {
-    const opts = (d.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS).filter((_, idx) => idx !== i);
-    return { ...d, dayPairOptions: opts };
-  });
-  const addDayPair = () => setData((d) => ({
-    ...d,
-    dayPairOptions: [...(d.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS), { id: "dp_" + Date.now(), label: "새구분", weekdays: [] }],
-  }));
-  const toggleDayPairWeekday = (i, wd) => setData((d) => {
-    const opts = [...(d.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS)];
-    const cur = opts[i].weekdays || [];
-    const next = cur.includes(wd) ? cur.filter((x) => x !== wd) : [...cur, wd];
-    opts[i] = { ...opts[i], weekdays: next };
-    return { ...d, dayPairOptions: opts };
-  });
+  // 고정휴무 모드일 때만 "고정휴무 설정" 섹션이 보임 (방식 선택은 [설정] 탭에서)
+  const isFixedMode = (data.settings?.restMode || "로테이션") === "고정휴무";
 
   const ftEmployeeNames = employees.filter((e) => e.type === "정직원").map((e) => e.name);
 
@@ -633,35 +694,12 @@ function HolidaysTab({ data, setData }) {
         </div>
       </SectionCard>
 
-      <SectionCard title="고정휴무 요일쌍(구분) 관리" icon={CalendarDays} right={<GhostBtn onClick={addDayPair} icon={Plus}>구분 추가</GhostBtn>}>
-        <p className="text-xs text-slate-500 mb-3">
-          매장마다 쉬는 요일쌍이 다를 수 있어 자유롭게 추가·수정·삭제할 수 있습니다 (예: 금토가 없는 매장, 화목처럼 붙어있지 않은 조합 등).
-          체크한 요일 중 첫번째가 휴무, 나머지가 휴일로 채워집니다.
-        </p>
-        <div className="space-y-2">
-          {dayPairOptions.map((p, i) => (
-            <div key={p.id || i} className="flex items-center gap-2 flex-wrap border border-slate-200 rounded-md px-3 py-2">
-              <TextInput value={p.label} onChange={(v) => updDayPair(i, { label: v })} className="w-20" />
-              <div className="flex items-center gap-1">
-                {WEEKDAYS.map((wd) => (
-                  <label key={wd} className={`text-[11px] px-2 py-1 rounded cursor-pointer select-none ${(p.weekdays || []).includes(wd) ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-500"}`}>
-                    <input type="checkbox" className="hidden" checked={(p.weekdays || []).includes(wd)} onChange={() => toggleDayPairWeekday(i, wd)} />
-                    {wd}
-                  </label>
-                ))}
-              </div>
-              <IconBtn onClick={() => rmDayPair(i)} title="삭제" danger />
-            </div>
-          ))}
-          {dayPairOptions.length === 0 && <p className="text-xs text-slate-400">등록된 구분이 없습니다.</p>}
-        </div>
-      </SectionCard>
-
+      {isFixedMode && (
       <SectionCard title="고정휴무 설정 (정직원)" icon={CalendarDays} right={<GhostBtn onClick={addFixed} icon={Plus}>고정휴무 추가</GhostBtn>}>
         <p className="text-xs text-slate-500 mb-3">
           매주 같은 요일쌍으로 쉬는 직원들을 한 번에 지정합니다 (예: 월화 고정휴무 5명). 개인 지정 태그(요청·이슈)가 항상 먼저 반영되고,
           남은 칸에 여기서 지정한 요일이 자동으로 휴무/휴일로 채워집니다. 기간을 나눠서 여러 개 등록하면 월별로 다른 패턴도 반영할 수 있습니다.
-          여기 지정된 직원은 나머지 로테이션 배정 대상에서 자동으로 제외됩니다.
+          그날 최소 출근인원이 부족해지면 직원목록 순서상 뒤쪽인 직원의 휴무는 자동으로 건너뜁니다.
         </p>
         <div className="space-y-2">
           {fixedRestSchedules.map((f, i) => (
@@ -689,6 +727,7 @@ function HolidaysTab({ data, setData }) {
           {fixedRestSchedules.length === 0 && <p className="text-xs text-slate-400">등록된 고정휴무가 없습니다.</p>}
         </div>
       </SectionCard>
+      )}
     </div>
   );
 }
@@ -1193,11 +1232,27 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
   const runRestDays = () => {
     setRunning(true);
     setTimeout(() => {
+      const isFixedMode = data.settings?.restMode === "고정휴무";
       const { schedule: withPersonal, applied } = applyPersonalTags(schedule, data.employees, data.personalTags, monthsMeta);
-      const { schedule: withFixed, applied: fixedApplied } = applyFixedRestSchedules(withPersonal, data.employees, data.fixedRestSchedules, data.dayPairOptions, monthsMeta);
-      const { schedule: result, message } = assignRestDays(withFixed, data.employees, data.tags, data.settings, monthsMeta, data.fixedRestSchedules, data.dayPairOptions);
+
+      let working = withPersonal;
+      let fixedApplied = 0, fixedSkipped = 0;
+      if (isFixedMode) {
+        const fr = applyFixedRestSchedules(withPersonal, data.employees, data.fixedRestSchedules, data.dayPairOptions, monthsMeta, data.settings, data.tags);
+        working = fr.schedule;
+        fixedApplied = fr.applied;
+        fixedSkipped = fr.skipped || 0;
+      }
+
+      const { schedule: result, message } = assignRestDays(
+        working, data.employees, data.tags, data.settings, monthsMeta,
+        isFixedMode ? data.fixedRestSchedules : [], isFixedMode ? data.dayPairOptions : []
+      );
       setSchedule(result);
-      setMsg(`개인 지정 태그로 채운 칸: ${applied}건 · 고정휴무로 채운 칸: ${fixedApplied}건 · ${message}`);
+      const fixedMsg = isFixedMode
+        ? ` · 고정휴무로 채운 칸: ${fixedApplied}건${fixedSkipped > 0 ? ` (최소인원 확보를 위해 ${fixedSkipped}건은 건너뜀)` : ""}`
+        : "";
+      setMsg(`개인 지정 태그로 채운 칸: ${applied}건${fixedMsg} · ${message}`);
       setRunning(false);
     }, 30);
   };
