@@ -1008,15 +1008,15 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
           <thead>
             <tr>
               <th style={{ minWidth: nameW, maxWidth: nameW }} className="sticky left-0 bg-slate-100 border border-slate-200 px-2 py-1.5 text-left z-10">이름</th>
-              <th style={{ minWidth: remainColW, maxWidth: remainColW }} className="bg-slate-100 border border-slate-200 px-1 py-1.5">잔여휴무</th>
-              <th style={{ minWidth: remainColW, maxWidth: remainColW }} className="bg-slate-100 border border-slate-200 px-1 py-1.5">잔여휴일</th>
+              <th style={{ minWidth: remainColW, maxWidth: remainColW }} className="bg-slate-100 border border-slate-200"></th>
+              <th style={{ minWidth: remainColW, maxWidth: remainColW }} className="bg-slate-100 border border-slate-200"></th>
               {days.map((day) => (
                 <th key={day.day} style={headerCellStyle(day)} className="border border-slate-200 px-1 py-1.5 font-semibold">
                   {day.day}<br /><span className="font-normal">{day.weekday}</span>
                 </th>
               ))}
               {ftCodeList.map((c) => (
-                <th key={c} style={{ minWidth: 44, maxWidth: 44 }} className="bg-slate-100 border border-slate-200 px-1 py-1.5 font-semibold">{c}</th>
+                <th key={c} style={{ minWidth: 44, maxWidth: 44 }} className="bg-slate-100 border border-slate-200"></th>
               ))}
             </tr>
             <tr>
@@ -1061,7 +1061,15 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
             ))}
           </thead>
           <tbody>
-            <tr><td colSpan={days.length + 1 + extraLeftCols + trailingCols} className="bg-indigo-50 text-indigo-700 font-bold text-[11px] px-2 py-1 sticky left-0">정직원</td></tr>
+            <tr className="bg-indigo-50 text-indigo-700 font-bold text-[11px]">
+              <td className="px-2 py-1 sticky left-0 bg-indigo-50 border border-indigo-100">정직원</td>
+              <td className="px-1 py-1 text-center border border-indigo-100">잔여휴무</td>
+              <td className="px-1 py-1 text-center border border-indigo-100">잔여휴일</td>
+              <td className="border border-indigo-100" colSpan={days.length}></td>
+              {ftCodeList.map((c) => (
+                <td key={c} className="px-1 py-1 text-center border border-indigo-100">{c}</td>
+              ))}
+            </tr>
             {ftList.map((e) => (
               <tr key={e.id}>
                 <td className="sticky left-0 bg-white border border-slate-200 px-2 py-1 font-medium z-10">{e.name}</td>
@@ -1087,7 +1095,12 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
                 ))}
               </tr>
             ))}
-            <tr><td colSpan={days.length + 1 + extraLeftCols + trailingCols} className="bg-amber-50 text-amber-700 font-bold text-[11px] px-2 py-1 sticky left-0">파트타이머</td></tr>
+            <tr className="bg-amber-50 text-amber-700 font-bold text-[11px]">
+              <td className="px-2 py-1 sticky left-0 bg-amber-50 border border-amber-100">파트타이머</td>
+              <td className="border border-amber-100" colSpan={extraLeftCols}></td>
+              <td className="border border-amber-100" colSpan={days.length}></td>
+              <FillerCells count={trailingCols} />
+            </tr>
             {ptList.map((e) => (
               <tr key={e.id}>
                 <td className="sticky left-0 bg-white border border-slate-200 px-2 py-1 font-medium z-10">{e.name}</td>
