@@ -59,6 +59,25 @@ function DateInput({ value, onChange, className = "" }) {
   );
 }
 
+// 고정휴무처럼 "몇년 몇월 ~ 몇년 몇월"만 정하면 되는 경우용 - 실제로는 그달 1일 / 그달 마지막날로 자동 변환됨
+function monthOf(dateStr) { return dateStr ? dateStr.slice(0, 7) : ""; }
+function monthToStart(ym) { return ym ? `${ym}-01` : ""; }
+function monthToEnd(ym) {
+  if (!ym) return "";
+  const [y, m] = ym.split("-").map(Number);
+  const lastDay = new Date(y, m, 0).getDate();
+  return `${ym}-${String(lastDay).padStart(2, "0")}`;
+}
+function MonthInput({ value, onChange, className = "" }) {
+  return (
+    <input
+      type="month" value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className={`border border-slate-300 rounded-md px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 ${className}`}
+    />
+  );
+}
+
 // 스케줄 메모 줄용 - 내용을 입력하는 만큼 세로로 자동으로 늘어나는 텍스트박스
 function AutoGrowTextarea({ value, onChange }) {
   const ref = useRef(null);
@@ -584,9 +603,10 @@ function HolidaysTab({ data, setData }) {
             return (
               <div key={i} className="border border-slate-200 rounded-md px-3 py-2">
                 <div className="flex items-center gap-2 flex-wrap mb-2">
-                  <DateInput value={pt.start} onChange={(v) => updPt(i, { start: v })} />
+                  <DateInput value={pt.start} onChange={(v) => updPt(i, { start: v, end: (!pt.end || pt.end === pt.start) ? v : pt.end })} />
                   <span className="text-slate-400 text-xs">~</span>
                   <DateInput value={pt.end} onChange={(v) => updPt(i, { end: v })} />
+                  <span className="text-[10px] text-slate-400">(하루만 해당되면 시작일만 입력해도 됩니다)</span>
                   <span className="text-xs text-slate-400 ml-1">태그</span>
                   <Select value={pt.tagCode} onChange={(v) => updPt(i, { tagCode: v })} options={tags.map((t) => t.code)} className="w-28" />
                   <button
@@ -647,9 +667,9 @@ function HolidaysTab({ data, setData }) {
           {fixedRestSchedules.map((f, i) => (
             <div key={i} className="border border-slate-200 rounded-md px-3 py-2">
               <div className="flex items-center gap-2 flex-wrap mb-2">
-                <DateInput value={f.start} onChange={(v) => updFixed(i, { start: v })} />
+                <MonthInput value={monthOf(f.start)} onChange={(ym) => updFixed(i, { start: monthToStart(ym) })} />
                 <span className="text-slate-400 text-xs">~</span>
-                <DateInput value={f.end} onChange={(v) => updFixed(i, { end: v })} />
+                <MonthInput value={monthOf(f.end)} onChange={(ym) => updFixed(i, { end: monthToEnd(ym) })} />
                 <span className="text-xs text-slate-400 ml-1">구분</span>
                 <Select value={f.dayPair} onChange={(v) => updFixed(i, { dayPair: v })} options={dayPairOptions.map((p) => p.label)} className="w-24" />
                 <IconBtn onClick={() => rmFixed(i)} title="삭제" danger />
@@ -852,7 +872,7 @@ function attendStatus2(attend, required) {
   return attend < required ? "NOT" : "OK";
 }
 
-function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days }) {
+function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, priorMonthCarry }) {
   const { employees, tags, settings } = data;
   const memoRowLabels = data.memoRowLabels || [];
   const memoKey = monthKey === "m1" ? "m1Memo" : "m2Memo";
@@ -864,12 +884,41 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days }) 
     return Array.from(set);
   }, [tags, data.ftTemplates, data.ptTemplates]);
 
+  const ftCodeList = useMemo(() => data.ftTemplates.map((t) => t.code).filter(Boolean), [data.ftTemplates]);
+
   const active = employees.filter((e) => isActiveEmployee(e));
   const ftList = active.filter((e) => e.type === "정직원");
   const ptList = active.filter((e) => e.type === "파트타이머");
 
   const satT = satTarget(days);
   const sunHolT = sunHolTarget(days);
+
+  // 직원별 이번달 휴무/휴일 잔여수량 (2개월차면 1개월차에서 당겨쓴 만큼 반영)
+  const remainByEmp = useMemo(() => {
+    const result = {};
+    ftList.forEach((e) => {
+      let humu = 0, hyuil = 0;
+      (schedule[monthKey][e.id] || []).forEach((v) => { if (v === "휴무") humu++; if (v === "휴일") hyuil++; });
+      const carry = priorMonthCarry?.[e.id] || { humu: 0, hyuil: 0 };
+      result[e.id] = {
+        remainHumu: satT - humu - carry.humu,
+        remainHyuil: sunHolT - hyuil - carry.hyuil,
+      };
+    });
+    return result;
+  }, [ftList, schedule, monthKey, satT, sunHolT, priorMonthCarry]);
+
+  // 직원별 근무형태 코드 배정 횟수 집계
+  const codeCountByEmp = useMemo(() => {
+    const result = {};
+    ftList.forEach((e) => {
+      const counts = {};
+      ftCodeList.forEach((c) => { counts[c] = 0; });
+      (schedule[monthKey][e.id] || []).forEach((v) => { if (v && counts.hasOwnProperty(v)) counts[v]++; });
+      result[e.id] = counts;
+    });
+    return result;
+  }, [ftList, ftCodeList, schedule, monthKey]);
 
   const dayStats = days.map((day) => {
     let ftAttend = 0, ptAttend = 0;
@@ -920,7 +969,10 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days }) 
   };
 
   const cellW = 54;
-  const nameW = 132;
+  const nameW = 100;
+  const remainColW = 78;
+  const extraLeftCols = 2; // 잔여휴무, 잔여휴일
+  const trailingCols = ftCodeList.length;
 
   const headerCellStyle = (day) => {
     let bg = "#fff", color = "#334155";
@@ -933,6 +985,14 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days }) 
   };
 
   const cellTextColor = (v) => (v === "휴무" ? "#2563eb" : v === "휴일" ? "#dc2626" : undefined);
+
+  const RemainBadge = ({ n }) => {
+    if (n > 0) return <span className="text-amber-600 font-semibold">부족{n}</span>;
+    if (n < 0) return <span className="text-red-600 font-semibold">초과{-n}</span>;
+    return <span className="text-green-600 font-semibold">OK</span>;
+  };
+
+  const FillerCells = ({ count }) => count > 0 ? <>{Array.from({ length: count }).map((_, i) => <td key={i} className="border border-slate-200" />)}</> : null;
 
   return (
     <div>
@@ -948,27 +1008,36 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days }) 
           <thead>
             <tr>
               <th style={{ minWidth: nameW, maxWidth: nameW }} className="sticky left-0 bg-slate-100 border border-slate-200 px-2 py-1.5 text-left z-10">이름</th>
+              <th style={{ minWidth: remainColW, maxWidth: remainColW }} className="bg-slate-100 border border-slate-200 px-1 py-1.5">잔여휴무</th>
+              <th style={{ minWidth: remainColW, maxWidth: remainColW }} className="bg-slate-100 border border-slate-200 px-1 py-1.5">잔여휴일</th>
               {days.map((day) => (
                 <th key={day.day} style={headerCellStyle(day)} className="border border-slate-200 px-1 py-1.5 font-semibold">
                   {day.day}<br /><span className="font-normal">{day.weekday}</span>
                 </th>
               ))}
+              {ftCodeList.map((c) => (
+                <th key={c} style={{ minWidth: 44, maxWidth: 44 }} className="bg-slate-100 border border-slate-200 px-1 py-1.5 font-semibold">{c}</th>
+              ))}
             </tr>
             <tr>
               <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] text-slate-400 z-10">공휴일/이슈</td>
+              <td className="border border-slate-200" colSpan={extraLeftCols}></td>
               {days.map((day) => (
                 <td key={day.day} className="border border-slate-200 px-1 py-1 text-[9px] text-center text-slate-500 whitespace-nowrap overflow-hidden">
                   {day.holidayName || day.issueName || ""}
                 </td>
               ))}
+              <FillerCells count={trailingCols} />
             </tr>
             <tr>
               <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] text-slate-400 z-10">적정(FT/PT)</td>
+              <td className="border border-slate-200" colSpan={extraLeftCols}></td>
               {days.map((day, i) => (
                 <td key={day.day} className="border border-slate-200 px-1 py-1 text-[10px] text-center text-slate-500">
                   {dayStats[i].ftReq}/{dayStats[i].ptReq}
                 </td>
               ))}
+              <FillerCells count={trailingCols} />
             </tr>
             {memoRowLabels.map((row) => (
               <tr key={row.id}>
@@ -978,6 +1047,7 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days }) 
                     <button onClick={() => removeMemoRow(row.id)} className="text-amber-300 hover:text-red-500 flex-shrink-0" title="이 줄 삭제">✕</button>
                   </div>
                 </td>
+                <td className="border border-slate-200 bg-amber-50/40" colSpan={extraLeftCols}></td>
                 {days.map((day, i) => (
                   <td key={day.day} className="border border-slate-200 p-0 bg-amber-50/40 align-top">
                     <AutoGrowTextarea
@@ -986,14 +1056,17 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days }) 
                     />
                   </td>
                 ))}
+                <FillerCells count={trailingCols} />
               </tr>
             ))}
           </thead>
           <tbody>
-            <tr><td colSpan={days.length + 1} className="bg-indigo-50 text-indigo-700 font-bold text-[11px] px-2 py-1 sticky left-0">정직원</td></tr>
+            <tr><td colSpan={days.length + 1 + extraLeftCols + trailingCols} className="bg-indigo-50 text-indigo-700 font-bold text-[11px] px-2 py-1 sticky left-0">정직원</td></tr>
             {ftList.map((e) => (
               <tr key={e.id}>
                 <td className="sticky left-0 bg-white border border-slate-200 px-2 py-1 font-medium z-10">{e.name}</td>
+                <td className="border border-slate-200 px-1 py-1 text-center text-[10px]"><RemainBadge n={remainByEmp[e.id]?.remainHumu ?? 0} /></td>
+                <td className="border border-slate-200 px-1 py-1 text-center text-[10px]"><RemainBadge n={remainByEmp[e.id]?.remainHyuil ?? 0} /></td>
                 {days.map((day, i) => {
                   const v = schedule[monthKey][e.id]?.[i] || "";
                   return (
@@ -1009,12 +1082,16 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days }) 
                     </td>
                   );
                 })}
+                {ftCodeList.map((c) => (
+                  <td key={c} className="border border-slate-200 px-1 py-1 text-center text-[10px] text-slate-600">{codeCountByEmp[e.id]?.[c] ?? 0}</td>
+                ))}
               </tr>
             ))}
-            <tr><td colSpan={days.length + 1} className="bg-amber-50 text-amber-700 font-bold text-[11px] px-2 py-1 sticky left-0">파트타이머</td></tr>
+            <tr><td colSpan={days.length + 1 + extraLeftCols + trailingCols} className="bg-amber-50 text-amber-700 font-bold text-[11px] px-2 py-1 sticky left-0">파트타이머</td></tr>
             {ptList.map((e) => (
               <tr key={e.id}>
                 <td className="sticky left-0 bg-white border border-slate-200 px-2 py-1 font-medium z-10">{e.name}</td>
+                <td className="border border-slate-200" colSpan={extraLeftCols}></td>
                 {days.map((day, i) => {
                   const v = schedule[monthKey][e.id]?.[i] || "";
                   return (
@@ -1030,20 +1107,24 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days }) 
                     </td>
                   );
                 })}
+                <FillerCells count={trailingCols} />
               </tr>
             ))}
           </tbody>
           <tfoot>
             <tr>
               <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] font-semibold z-10">출근(FT/PT)</td>
+              <td className="border border-slate-200" colSpan={extraLeftCols}></td>
               {days.map((day, i) => (
                 <td key={day.day} className="border border-slate-200 px-1 py-1 text-[10px] text-center">
                   {dayStats[i].ftAttend}/{dayStats[i].ptAttend}
                 </td>
               ))}
+              <FillerCells count={trailingCols} />
             </tr>
             <tr>
               <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] font-semibold z-10">적정확인(정직원)</td>
+              <td className="border border-slate-200" colSpan={extraLeftCols}></td>
               {days.map((day, i) => {
                 const status = attendStatus(dayStats[i].ftAttend, dayStats[i].ftReq);
                 return (
@@ -1052,9 +1133,11 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days }) 
                   </td>
                 );
               })}
+              <FillerCells count={trailingCols} />
             </tr>
             <tr>
               <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] font-semibold z-10">적정확인(파트타이머)</td>
+              <td className="border border-slate-200" colSpan={extraLeftCols}></td>
               {days.map((day, i) => {
                 const status = attendStatus2(dayStats[i].ptAttend, dayStats[i].ptReq);
                 return (
@@ -1063,6 +1146,7 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days }) 
                   </td>
                 );
               })}
+              <FillerCells count={trailingCols} />
             </tr>
           </tfoot>
         </table>
@@ -1075,6 +1159,22 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
   const meta = monthsMeta.find((m) => m.key === monthKey);
   const [running, setRunning] = useState(false);
   const [msg, setMsg] = useState(null);
+
+  // 2개월차 화면일 때만: 1개월차에서 이미 목표보다 더/덜 쓴 만큼을 "이월분"으로 계산해서 잔여수량에 반영
+  const priorMonthCarry = useMemo(() => {
+    if (monthKey !== "m2") return null;
+    const m1 = monthsMeta.find((m) => m.key === "m1");
+    if (!m1) return null;
+    const t1humu = satTarget(m1.days);
+    const t1hyuil = sunHolTarget(m1.days);
+    const carry = {};
+    data.employees.forEach((e) => {
+      let humu = 0, hyuil = 0;
+      (schedule.m1[e.id] || []).forEach((v) => { if (v === "휴무") humu++; if (v === "휴일") hyuil++; });
+      carry[e.id] = { humu: humu - t1humu, hyuil: hyuil - t1hyuil }; // 양수면 1개월차에서 더 씀(당겨씀), 음수면 덜 씀
+    });
+    return carry;
+  }, [monthKey, monthsMeta, schedule.m1, data.employees]);
 
   const runRestDays = () => {
     setRunning(true);
@@ -1154,7 +1254,7 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
           연속근무 상한 초과: {val.warnList.length === 0 ? "없음" : val.warnList.join(", ")}
         </span>
       </div>
-      <ScheduleGrid data={data} setData={setData} schedule={schedule} setSchedule={setSchedule} monthKey={monthKey} days={meta.days} />
+      <ScheduleGrid data={data} setData={setData} schedule={schedule} setSchedule={setSchedule} monthKey={monthKey} days={meta.days} priorMonthCarry={priorMonthCarry} />
     </div>
   );
 }
