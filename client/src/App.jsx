@@ -670,6 +670,7 @@ function HolidaysTab({ data, setData }) {
                 <MonthInput value={monthOf(f.start)} onChange={(ym) => updFixed(i, { start: monthToStart(ym) })} />
                 <span className="text-slate-400 text-xs">~</span>
                 <MonthInput value={monthOf(f.end)} onChange={(ym) => updFixed(i, { end: monthToEnd(ym) })} />
+                <span className="text-[10px] text-slate-400">(종료월을 비우면 시작월 한 달만 적용)</span>
                 <span className="text-xs text-slate-400 ml-1">구분</span>
                 <Select value={f.dayPair} onChange={(v) => updFixed(i, { dayPair: v })} options={dayPairOptions.map((p) => p.label)} className="w-24" />
                 <IconBtn onClick={() => rmFixed(i)} title="삭제" danger />
@@ -1245,7 +1246,7 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
     setMsg(`${meta.label} 기록을 저장했습니다. 왼쪽 [월별기록] 탭에서 확인할 수 있습니다.`);
   };
 
-  const val = useMemo(() => validateMonth(schedule, data.employees, data.tags, data.settings, meta.days, monthKey), [schedule, data, meta, monthKey]);
+  const val = useMemo(() => validateMonth(schedule, data.employees, data.tags, data.settings, meta.days, monthKey, data.fixedRestSchedules, data.dayPairOptions), [schedule, data, meta, monthKey]);
 
   return (
     <div>
@@ -1286,7 +1287,7 @@ function SummaryTab({ data, schedule, monthsMeta }) {
   const targetHyuil = monthTargets.reduce((s, m) => s + m.hyuil, 0);
   const target = targetHumu + targetHyuil;
 
-  const combinedWarn = validateCombined(schedule, data.employees, data.tags, data.settings, monthsMeta);
+  const combinedWarn = validateCombined(schedule, data.employees, data.tags, data.settings, monthsMeta, data.fixedRestSchedules, data.dayPairOptions);
 
   const rows = active.map((e) => {
     const counts = { m1: { humu: 0, hyuil: 0 }, m2: { humu: 0, hyuil: 0 } };

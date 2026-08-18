@@ -276,6 +276,16 @@ function lookupDayPair(dayPairOptions, label) {
   return found ? found.weekdays : null;
 }
 
+// 종료월을 비워두면 "시작월 한 달만" 적용되도록 자동 보정
+function resolveFixedRestEnd(f) {
+  if (f.end) return f.end;
+  if (!f.start) return "";
+  const [y, m] = f.start.split("-").map(Number);
+  if (!y || !m) return "";
+  const lastDay = new Date(y, m, 0).getDate();
+  return `${f.start.slice(0, 7)}-${String(lastDay).padStart(2, "0")}`;
+}
+
 // 고정휴무: 개인지정태그(요청/이슈) 다음으로, 설정해둔 요일쌍에 맞춰 휴무/휴일을 미리 채움
 // 한 항목에 여러 명을 한꺼번에 지정할 수 있음 (날짜 + 구분(요일쌍) + 인원 다중선택)
 function applyFixedRestSchedules(schedule, employees, fixedRestSchedules, dayPairOptions, monthsMeta) {
@@ -288,13 +298,14 @@ function applyFixedRestSchedules(schedule, employees, fixedRestSchedules, dayPai
 
   (fixedRestSchedules || []).forEach((f) => {
     const sortedWds = lookupDayPair(dayPairOptions, f.dayPair);
-    if (!f.start || !f.end || !sortedWds || !f.empNames || f.empNames.length === 0) return;
+    const endDate = resolveFixedRestEnd(f);
+    if (!f.start || !endDate || !sortedWds || !f.empNames || f.empNames.length === 0) return;
 
     f.empNames.forEach((empName) => {
       const emp = employees.find((e) => e.name === empName);
       if (!emp) return;
       timeline.forEach(({ key, day }) => {
-        if (day.dateStr < f.start || day.dateStr > f.end) return;
+        if (day.dateStr < f.start || day.dateStr > endDate) return;
         const wdIdx = sortedWds.indexOf(day.weekday);
         if (wdIdx === -1) return;
         const arr = next[key][emp.id];
@@ -310,9 +321,17 @@ function applyFixedRestSchedules(schedule, employees, fixedRestSchedules, dayPai
 }
 
 function isFixedRestCovered(fixedRestSchedules, dayPairOptions, empName, dateStr) {
+  return (fixedRestSchedules || []).some((f) => {
+    const endDate = resolveFixedRestEnd(f);
+    return lookupDayPair(dayPairOptions, f.dayPair) && (f.empNames || []).includes(empName) &&
+      f.start && endDate && dateStr >= f.start && dateStr <= endDate;
+  });
+}
+
+// 이 직원이 (해당 기간 안에서) 고정휴무 대상인지 - 연속근무 경고 제외 판단용
+function isFixedRestEmployee(fixedRestSchedules, dayPairOptions, empName) {
   return (fixedRestSchedules || []).some(
-    (f) => lookupDayPair(dayPairOptions, f.dayPair) && (f.empNames || []).includes(empName) &&
-      f.start && f.end && dateStr >= f.start && dateStr <= f.end
+    (f) => lookupDayPair(dayPairOptions, f.dayPair) && (f.empNames || []).includes(empName) && f.start
   );
 }
 
@@ -604,7 +623,7 @@ function assignShiftCodes(schedule, employees, tags, settings, ftTemplates, ptTe
 /* ============================================================
    검증
    ============================================================ */
-function validateMonth(schedule, employees, tags, settings, days, key) {
+function validateMonth(schedule, employees, tags, settings, days, key, fixedRestSchedules, dayPairOptions) {
   let notOkDates = [];
   days.forEach((day) => {
     let ftAttend = 0, ptAttend = 0;
@@ -622,6 +641,8 @@ function validateMonth(schedule, employees, tags, settings, days, key) {
 
   const warnList = [];
   employees.filter((e) => e.type === "정직원" && isActiveEmployee(e)).forEach((e) => {
+    // 고정휴무 직원은 매장이 정한 패턴대로 쉬는 것이므로 연속근무 경고 대상에서 제외
+    if (isFixedRestEmployee(fixedRestSchedules, dayPairOptions, e.name)) return;
     let consec = 0, maxRun = 0;
     days.forEach((day) => {
       const v = schedule[key][e.id][day.day - 1] || "";
@@ -634,9 +655,10 @@ function validateMonth(schedule, employees, tags, settings, days, key) {
   return { notOkCount: notOkDates.length, notOkDates, warnList };
 }
 
-function validateCombined(schedule, employees, tags, settings, monthsMeta) {
+function validateCombined(schedule, employees, tags, settings, monthsMeta, fixedRestSchedules, dayPairOptions) {
   const warnList = [];
   employees.filter((e) => e.type === "정직원" && isActiveEmployee(e)).forEach((e) => {
+    if (isFixedRestEmployee(fixedRestSchedules, dayPairOptions, e.name)) return;
     let consec = 0, maxRun = 0;
     monthsMeta.forEach(({ key, days }) => {
       days.forEach((day) => {
@@ -704,7 +726,7 @@ export {
   DEFAULT_TAGS, DEFAULT_EMPLOYEES, DEFAULT_HOLIDAYS, DEFAULT_FT_TEMPLATES, DEFAULT_PT_TEMPLATES,
   defaultSettings, defaultStoreData, reconcileSchedule, normalizeFtTemplates,
   buildMonthDays, applyPersonalTags, assignRestDays, assignShiftCodes,
-  applyFixedRestSchedules, isFixedRestCovered, DEFAULT_DAY_PAIR_OPTIONS,
+  applyFixedRestSchedules, isFixedRestCovered, isFixedRestEmployee, resolveFixedRestEnd, DEFAULT_DAY_PAIR_OPTIONS,
   emptyMemoRows, reconcileMemoRows,
   validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT,
   isOffTag, dowBucket, nextMonth, emptySchedule, isWeekendBucket, isActiveEmployee, pickThresholdIndex, isAutoAssignable,
