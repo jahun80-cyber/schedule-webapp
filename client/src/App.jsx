@@ -13,7 +13,7 @@ import {
   applyFixedRestSchedules, assignRemainingRest, finalAdjust, normalizeFtTemplates, DEFAULT_DAY_PAIR_OPTIONS,
   emptyMemoRows, reconcileMemoRows,
   validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT,
-  isOffTag, dowBucket, nextMonth, emptySchedule, reconcileSchedule, isActiveEmployee, computeLeaveUsage,
+  isOffTag, dowBucket, nextMonth, emptySchedule, reconcileSchedule, isActiveEmployee, isAutoAssignable, computeLeaveUsage,
 } from "./logic";
 
 /* ============================================================
@@ -947,6 +947,8 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
   const remainByEmp = useMemo(() => {
     const result = {};
     ftList.forEach((e) => {
+      // 자동배정 대상이 아닌 인원(지원/스위칭 등)은 목표 자체가 없으므로 잔여를 계산하지 않음
+      if (!isAutoAssignable(e)) return;
       let humu = 0, hyuil = 0;
       (schedule[monthKey][e.id] || []).forEach((v) => { if (v === "휴무") humu++; if (v === "휴일") hyuil++; });
       const carry = priorMonthCarry?.[e.id] || { humu: 0, hyuil: 0 };
@@ -1123,8 +1125,12 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
             {ftList.map((e) => (
               <tr key={e.id}>
                 <td className="sticky left-0 bg-white border border-slate-200 px-2 py-1 font-medium z-10">{e.name}</td>
-                <td className="border border-slate-200 px-1 py-1 text-center text-[10px]"><RemainBadge n={remainByEmp[e.id]?.remainHumu ?? 0} /></td>
-                <td className="border border-slate-200 px-1 py-1 text-center text-[10px]"><RemainBadge n={remainByEmp[e.id]?.remainHyuil ?? 0} /></td>
+                <td className="border border-slate-200 px-1 py-1 text-center text-[10px]">
+                  {remainByEmp[e.id] ? <RemainBadge n={remainByEmp[e.id].remainHumu} /> : <span className="text-slate-300">-</span>}
+                </td>
+                <td className="border border-slate-200 px-1 py-1 text-center text-[10px]">
+                  {remainByEmp[e.id] ? <RemainBadge n={remainByEmp[e.id].remainHyuil} /> : <span className="text-slate-300">-</span>}
+                </td>
                 {days.map((day, i) => {
                   const v = schedule[monthKey][e.id]?.[i] || "";
                   return (
@@ -1232,6 +1238,7 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
     const t1hyuil = sunHolTarget(m1.days);
     const carry = {};
     data.employees.forEach((e) => {
+      if (!isAutoAssignable(e)) return; // 자동배정 제외 인원은 이월 계산도 하지 않음
       let humu = 0, hyuil = 0;
       (schedule.m1[e.id] || []).forEach((v) => { if (v === "휴무") humu++; if (v === "휴일") hyuil++; });
       carry[e.id] = { humu: humu - t1humu, hyuil: hyuil - t1hyuil }; // 양수면 1개월차에서 더 씀(당겨씀), 음수면 덜 씀
@@ -1407,7 +1414,8 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
    2개월 요약 탭
    ============================================================ */
 function SummaryTab({ data, schedule, monthsMeta }) {
-  const active = data.employees.filter((e) => e.type === "정직원" && isActiveEmployee(e));
+  // 자동배정 대상만 집계 (지원/스위칭 근무자는 목표 자체가 없음)
+  const active = data.employees.filter((e) => e.type === "정직원" && isActiveEmployee(e) && isAutoAssignable(e));
   const monthTargets = monthsMeta.map((m) => ({
     label: m.label,
     humu: satTarget(m.days),

@@ -692,30 +692,38 @@ function normalizeWeeklyRest(sched, ftEmps, monthsMeta) {
       rests.forEach(({ key, day }) => { sched[key][e.id][day.day - 1] = "휴일"; });
     });
 
-    // 각 주의 첫 쉬는 날을 휴무로 지정하되, 그 날이 속한 달의 휴무 목표를 넘지 않도록
+    // 각 주에서 휴무를 지정한다.
+    // 주가 두 달에 걸쳐 있으면(예: 9/28~10/4) 각 달마다 그 달의 첫 쉬는 날을 휴무로 잡는다.
+    // (그렇게 하지 않으면 한쪽 달의 휴무가 통째로 사라져 "휴무 -1 / 휴일 +1"이 생김)
     const humuUsed = {};
     monthsMeta.forEach(({ key }) => { humuUsed[key] = 0; });
     weekRests.forEach((rests) => {
       if (rests.length === 0) return;
-      const first = rests[0];
-      if (humuUsed[first.key] < humuTargetOf[first.key]) {
-        sched[first.key][e.id][first.day.day - 1] = "휴무";
-        humuUsed[first.key]++;
-      }
+      // 이 주에 포함된 달들을 순서대로 훑으며, 각 달의 첫 쉬는 날을 휴무 후보로
+      const seenKeys = [];
+      rests.forEach(({ key }) => { if (!seenKeys.includes(key)) seenKeys.push(key); });
+      seenKeys.forEach((k) => {
+        if (humuUsed[k] >= humuTargetOf[k]) return;
+        const first = rests.find((r) => r.key === k);
+        if (!first) return;
+        sched[k][e.id][first.day.day - 1] = "휴무";
+        humuUsed[k]++;
+      });
     });
 
     // 주가 부족해서 월별 휴무 목표를 못 채웠다면,
-    // "아직 휴무가 없는 주"의 휴일을 휴무로 승격 (한 주에 휴무 1개 규칙 유지)
+    // "그 달에 아직 휴무가 없는 주"의 휴일을 휴무로 승격
     monthsMeta.forEach(({ key }) => {
       let need = humuTargetOf[key] - humuUsed[key];
       if (need <= 0) return;
       for (let wi = 0; wi < weekRests.length && need > 0; wi++) {
         const rests = weekRests[wi];
         if (rests.length === 0) continue;
-        // 이 주에 이미 휴무가 있으면 건너뜀
-        const hasHumu = rests.some(({ key: k, day }) => (sched[k][e.id]?.[day.day - 1] || "") === "휴무");
-        if (hasHumu) continue;
-        // 이 달에 속한 휴일 중 가장 앞선 날을 휴무로 승격
+        // 이 주의 "이 달 부분"에 이미 휴무가 있으면 건너뜀
+        const hasHumuThisMonth = rests.some(
+          ({ key: k, day }) => k === key && (sched[k][e.id]?.[day.day - 1] || "") === "휴무"
+        );
+        if (hasHumuThisMonth) continue;
         const target = rests.find(({ key: k, day }) => k === key && (sched[k][e.id]?.[day.day - 1] || "") === "휴일");
         if (!target) continue;
         sched[target.key][e.id][target.day.day - 1] = "휴무";
@@ -1424,7 +1432,8 @@ function validateMonth(schedule, employees, tags, settings, days, key, fixedRest
   });
 
   const warnList = [];
-  employees.filter((e) => e.type === "정직원" && isActiveEmployee(e)).forEach((e) => {
+  // 자동배정 대상이 아닌 인원(지원/스위칭 등)은 수기 입력 대상이므로 연속근무 경고에서 제외
+  employees.filter((e) => e.type === "정직원" && isActiveEmployee(e) && isAutoAssignable(e)).forEach((e) => {
     // 고정휴무 직원은 요일쌍 패턴이 만드는 연속근무(예: 월화 휴무 → 수~일 5근)까지는 정상으로 보고,
     // 그보다 더 길어진 경우에만 경고 (고정휴무 매장에서도 6근 이상은 잡아냄)
     const limit = fixedRestLimitOf(fixedRestSchedules, dayPairOptions, e.name, settings);
@@ -1442,7 +1451,7 @@ function validateMonth(schedule, employees, tags, settings, days, key, fixedRest
 
 function validateCombined(schedule, employees, tags, settings, monthsMeta, fixedRestSchedules, dayPairOptions) {
   const warnList = [];
-  employees.filter((e) => e.type === "정직원" && isActiveEmployee(e)).forEach((e) => {
+  employees.filter((e) => e.type === "정직원" && isActiveEmployee(e) && isAutoAssignable(e)).forEach((e) => {
     const limit = fixedRestLimitOf(fixedRestSchedules, dayPairOptions, e.name, settings);
     let consec = 0, maxRun = 0;
     monthsMeta.forEach(({ key, days }) => {
