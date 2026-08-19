@@ -10,7 +10,7 @@ import {
   WEEKDAYS, DOW_OPTIONS,
   defaultStoreData,
   buildMonthDays, applyPersonalTags, assignRestDays, assignShiftCodes,
-  applyFixedRestSchedules, normalizeFtTemplates, DEFAULT_DAY_PAIR_OPTIONS,
+  applyFixedRestSchedules, assignRemainingRest, normalizeFtTemplates, DEFAULT_DAY_PAIR_OPTIONS,
   emptyMemoRows, reconcileMemoRows,
   validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT,
   isOffTag, dowBucket, nextMonth, emptySchedule, reconcileSchedule, isActiveEmployee, computeLeaveUsage,
@@ -1267,6 +1267,37 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
     }, 30);
   };
 
+  const runRemainingRest = () => {
+    setRunning(true);
+    setTimeout(() => {
+      const isFixedMode = data.settings?.restMode === "고정휴무";
+      const r3 = assignRemainingRest(
+        schedule, data.employees, data.tags, data.settings, monthsMeta,
+        isFixedMode ? data.fixedRestSchedules : [], isFixedMode ? data.dayPairOptions : []
+      );
+
+      // 휴무가 늘어난 날은 출근인원이 줄었으므로, 그날 근무조를 새 인원수 기준으로 자동 재배정
+      let finalSchedule = r3.schedule;
+      let rebalanceMsg = "";
+      if (r3.changedDayCount > 0) {
+        const r2 = assignShiftCodes(
+          finalSchedule, data.employees, data.tags, data.settings,
+          data.ftTemplates, data.ptTemplates, data.prefCode, monthsMeta, data.ftThresholds
+        );
+        finalSchedule = r2.schedule;
+        rebalanceMsg = ` · 인원이 바뀐 ${r3.changedDayCount}일의 근무조를 새 인원수에 맞게 다시 배정했습니다`;
+      }
+
+      setSchedule(finalSchedule);
+      const baseMsg = `추가로 배정한 휴무/휴일: ${r3.added}건`;
+      const shortMsg = r3.stillShort && r3.stillShort.length > 0
+        ? ` · 자리가 부족해 아직 남은 인원: ${r3.stillShort.join(", ")} — 수기로 조정해주세요`
+        : ` · 모든 정직원의 잔여 휴무/휴일이 0이 되었습니다`;
+      setMsg(baseMsg + rebalanceMsg + shortMsg);
+      setRunning(false);
+    }, 30);
+  };
+
   const clearAll = () => {
     if (!window.confirm(`${meta.label} 스케줄을 전부 지울까요?`)) return;
     setSchedule((prev) => {
@@ -1308,6 +1339,7 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
       <div className="flex items-center gap-2 mb-4 flex-wrap">
         <PrimaryBtn onClick={runRestDays} disabled={running} icon={PlayCircle}>1단계: 휴무/휴일 자동배정</PrimaryBtn>
         <PrimaryBtn onClick={runShiftCodes} disabled={running} icon={Sparkles}>2단계: 근무 자동배정</PrimaryBtn>
+        <PrimaryBtn onClick={runRemainingRest} disabled={running} icon={CheckCircle2}>3단계: 잔여 휴무/휴일 배정</PrimaryBtn>
         <GhostBtn onClick={clearAll} icon={Trash2}>이 달 전체 지우기</GhostBtn>
         <GhostBtn onClick={saveToArchive} icon={Archive}>{alreadyArchived ? "기록 다시 저장" : "기록으로 저장"}</GhostBtn>
         {running && <Loader2 className="animate-spin text-indigo-500" size={18} />}

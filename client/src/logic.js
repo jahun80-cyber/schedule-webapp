@@ -536,6 +536,250 @@ function pickThresholdIndex(thresholds, value) {
   return bestIdx;
 }
 
+/* ============================================================
+   3단계: 남은 휴무/휴일 추가 배정
+   1·2단계 실행 후에도 목표 대비 덜 쓴 휴무/휴일이 있으면,
+   그날 쉬어도 최소 출근인원이 유지되는(=AVAILABLE) 날짜에만 추가로 배정한다.
+   - 휴무는 그 달 안에서만 채움(월별 목표 유지), 휴일은 그 달 우선 → 부족하면 다른 달까지 확장
+   - 연속근무 상한을 넘기지 않도록 확인 (고정휴무 대상자는 이 검사 생략)
+   ============================================================ */
+// 한 주(월~일) 안에서 쉬는 날이 여러 개일 때, 규칙에 맞게 휴무/휴일을 정리한다.
+//  - 한 주에 휴무는 최대 1개, 그 주의 가장 앞선 쉬는 날에 배치
+//  - 단, 그 달의 휴무 목표 개수를 넘지 않도록 조절 (초과분은 휴일로)
+//  - 연차·경조사 등 확정휴무 태그는 건드리지 않고 휴무/휴일끼리만 교체
+function normalizeWeeklyRest(sched, ftEmps, monthsMeta) {
+  const timeline = buildTimeline(monthsMeta);
+  const humuTargetOf = {};
+  monthsMeta.forEach(({ key, days }) => { humuTargetOf[key] = satTarget(days); });
+
+  ftEmps.forEach((e) => {
+    // 주 단위로 쉬는 날 묶기
+    const weeks = [];
+    let week = [];
+    timeline.forEach(({ key, day }) => {
+      if (day.weekday === "월" && week.length > 0) { weeks.push(week); week = []; }
+      week.push({ key, day });
+    });
+    if (week.length > 0) weeks.push(week);
+
+    // 각 주에서 쉬는 날(휴무/휴일) 목록 추출
+    const weekRests = weeks.map((w) =>
+      w.filter(({ key, day }) => {
+        const v = sched[key][e.id]?.[day.day - 1] || "";
+        return v === "휴무" || v === "휴일";
+      })
+    );
+
+    // 일단 전부 휴일로 초기화
+    weekRests.forEach((rests) => {
+      rests.forEach(({ key, day }) => { sched[key][e.id][day.day - 1] = "휴일"; });
+    });
+
+    // 각 주의 첫 쉬는 날을 휴무로 지정하되, 그 날이 속한 달의 휴무 목표를 넘지 않도록
+    const humuUsed = {};
+    monthsMeta.forEach(({ key }) => { humuUsed[key] = 0; });
+    weekRests.forEach((rests) => {
+      if (rests.length === 0) return;
+      const first = rests[0];
+      if (humuUsed[first.key] < humuTargetOf[first.key]) {
+        sched[first.key][e.id][first.day.day - 1] = "휴무";
+        humuUsed[first.key]++;
+      }
+    });
+
+    // 주가 부족해서 월별 휴무 목표를 못 채웠다면,
+    // "아직 휴무가 없는 주"의 휴일을 휴무로 승격 (한 주에 휴무 1개 규칙 유지)
+    monthsMeta.forEach(({ key }) => {
+      let need = humuTargetOf[key] - humuUsed[key];
+      if (need <= 0) return;
+      for (let wi = 0; wi < weekRests.length && need > 0; wi++) {
+        const rests = weekRests[wi];
+        if (rests.length === 0) continue;
+        // 이 주에 이미 휴무가 있으면 건너뜀
+        const hasHumu = rests.some(({ key: k, day }) => (sched[k][e.id]?.[day.day - 1] || "") === "휴무");
+        if (hasHumu) continue;
+        // 이 달에 속한 휴일 중 가장 앞선 날을 휴무로 승격
+        const target = rests.find(({ key: k, day }) => k === key && (sched[k][e.id]?.[day.day - 1] || "") === "휴일");
+        if (!target) continue;
+        sched[target.key][e.id][target.day.day - 1] = "휴무";
+        humuUsed[key]++;
+        need--;
+      }
+    });
+  });
+}
+
+function assignRemainingRest(schedule, employees, tags, settings, monthsMeta, fixedRestSchedules, dayPairOptions) {
+  const next = { m1: { ...schedule.m1 }, m2: { ...schedule.m2 } };
+  Object.keys(next.m1).forEach((id) => (next.m1[id] = [...schedule.m1[id]]));
+  Object.keys(next.m2).forEach((id) => (next.m2[id] = [...schedule.m2[id]]));
+
+  const ftEmps = employees.filter((e) => e.type === "정직원" && isActiveEmployee(e) && isAutoAssignable(e));
+  if (ftEmps.length === 0) return { schedule: next, added: 0, message: "정직원이 없어 추가 배정을 건너뛰었습니다." };
+
+  const consecMax = Number(settings.consecMax) || 99;
+  // 근무코드로 인정되는 코드들(= 나중에 휴무로 바꿔도 되는 칸). 확정휴무/개인지정태그는 제외
+  const workCodeSet = new Set((tags || []).filter((t) => t.countsAsAttend).map((t) => t.code));
+  const changedDays = new Set(); // "key|day" - 근무조 재배정이 필요한 날짜
+
+  // 그날 한 명 더 쉬어도 최소 출근인원이 유지되는지
+  const hasRoom = (key, day) => {
+    let off = 0;
+    ftEmps.forEach((e) => {
+      const v = next[key][e.id]?.[day.day - 1] || "";
+      if (v !== "" && isOffTag(tags, v)) off++;
+    });
+    // 아직 안 채워진 칸(빈칸)은 출근으로 간주
+    const attending = ftEmps.length - off;
+    return attending - 1 >= requiredFT(settings, day);
+  };
+
+  // 이 칸에 휴무/휴일을 넣어도 되는지:
+  // - 빈칸이면 OK
+  // - 일반 근무코드(A/B/C 등)가 들어있어도 OK (그날 근무조는 나중에 재배정)
+  // - 확정휴무/연차/개인지정태그 등은 건드리지 않음
+  const canRest = (key, day, empId) => {
+    const v = next[key][empId]?.[day.day - 1] || "";
+    if (v === "") return true;
+    return workCodeSet.has(v);
+  };
+
+  // 휴무/휴일을 실제로 넣으면서, 근무코드를 덮어쓴 경우 그날을 재배정 대상으로 기록
+  const placeRest = (key, day, empId, code) => {
+    const prev = next[key][empId]?.[day.day - 1] || "";
+    next[key][empId][day.day - 1] = code;
+    if (prev !== "" && workCodeSet.has(prev)) changedDays.add(`${key}|${day.day}`);
+  };
+
+  let added = 0;
+  const perMonth = {};
+  monthsMeta.forEach(({ key, days }) => {
+    perMonth[key] = { humuTarget: satTarget(days), hyuilTarget: sunHolTarget(days), days };
+  });
+
+  // 주 단위로 고르게 분산해서 채우기 위해, 각 달의 날짜를 "주별 묶음"으로 만들고
+  // 주를 한 바퀴씩 돌며 하나씩 배정한다 (앞 날짜에만 몰리는 것 방지)
+  const weeksOfMonth = {};
+  monthsMeta.forEach(({ key, days }) => {
+    const weeks = [];
+    let cur = [];
+    days.forEach((day) => {
+      if (day.weekday === "월" && cur.length > 0) { weeks.push(cur); cur = []; }
+      cur.push(day);
+    });
+    if (cur.length > 0) weeks.push(cur);
+    weeksOfMonth[key] = weeks;
+  });
+
+  // 그 달에서 쉬는 날을 need개 만들되, 주를 돌아가며 한 개씩 배정
+  const fillSpread = (key, empId, need, code, onPlaced) => {
+    const weeks = weeksOfMonth[key];
+    let placed = 0;
+    let guard = 0;
+    while (placed < need && guard < 100) {
+      guard++;
+      let placedThisRound = 0;
+      for (const week of weeks) {
+        if (placed >= need) break;
+        for (const day of week) {
+          if (!canRest(key, day, empId)) continue;
+          if (!hasRoom(key, day)) continue;
+          placeRest(key, day, empId, code);
+          placed++; placedThisRound++;
+          if (onPlaced) onPlaced();
+          break; // 이 주에서는 하나만 넣고 다음 주로
+        }
+      }
+      if (placedThisRound === 0) break; // 더 이상 넣을 자리가 없음
+    }
+    return placed;
+  };
+
+  ftEmps.forEach((e) => {
+    // 월별로 현재 배정된 휴무/휴일 수 세기
+    const counts = {};
+    monthsMeta.forEach(({ key }) => {
+      let humu = 0, hyuil = 0;
+      (next[key][e.id] || []).forEach((v) => { if (v === "휴무") humu++; if (v === "휴일") hyuil++; });
+      counts[key] = { humu, hyuil };
+    });
+
+    // 1) 휴무 부족분 - 주별로 분산해서 채움
+    monthsMeta.forEach(({ key }) => {
+      const need = perMonth[key].humuTarget - counts[key].humu;
+      if (need <= 0) return;
+      const placed = fillSpread(key, e.id, need, "휴무", () => { counts[key].humu++; added++; });
+    });
+
+    // 2) 휴일 부족분 - 그 달 우선, 주별로 분산
+    monthsMeta.forEach(({ key }) => {
+      const need = perMonth[key].hyuilTarget - counts[key].hyuil;
+      if (need <= 0) return;
+      fillSpread(key, e.id, need, "휴일", () => { counts[key].hyuil++; added++; });
+    });
+
+    // 3) 그 달에서 못 채운 휴일 부족분이 남으면 다른 달에서라도 채움
+    const hyuilShortOf = (key) => Math.max(0, perMonth[key].hyuilTarget - counts[key].hyuil);
+    let remainingShort = monthsMeta.reduce((s, m) => s + hyuilShortOf(m.key), 0);
+    if (remainingShort > 0) {
+      for (const { key } of monthsMeta) {
+        if (remainingShort <= 0) break;
+        fillSpread(key, e.id, remainingShort, "휴일", () => { counts[key].hyuil++; added++; });
+        remainingShort = monthsMeta.reduce((s, m) => s + hyuilShortOf(m.key), 0);
+      }
+    }
+  });
+
+  // 주 단위 정리: 한 주(월~일) 안에서 쉬는 날이 여러 개면 "가장 앞선 날 = 휴무", 나머지 = 휴일
+  // (연차·경조사 등 확정휴무 태그는 건드리지 않고, 휴무/휴일끼리만 서로 바꿈)
+  normalizeWeeklyRest(next, ftEmps, monthsMeta);
+
+  // 휴무/휴일로 바뀌면서 그날 출근인원이 줄어든 날짜는 근무조를 다시 배정해야 함.
+  // 해당 날짜의 (자동배정 대상 정직원) 근무코드 칸을 비워두면, 이후 2단계를 다시 돌릴 때 새 인원수 기준으로 채워짐.
+  let clearedForRebalance = 0;
+  changedDays.forEach((tag) => {
+    const [key, dayNum] = tag.split("|");
+    const idx = Number(dayNum) - 1;
+    ftEmps.forEach((e) => {
+      const v = next[key][e.id]?.[idx] || "";
+      if (v !== "" && workCodeSet.has(v)) {
+        next[key][e.id][idx] = "";
+        clearedForRebalance++;
+      }
+    });
+  });
+
+  // 배정 후에도 남은 인원 확인 (초과한 달이 부족한 달을 상쇄하지 않도록 부족분만 합산)
+  const stillShort = [];
+  ftEmps.forEach((e) => {
+    let humuShort = 0, hyuilShort = 0;
+    monthsMeta.forEach(({ key }) => {
+      let humu = 0, hyuil = 0;
+      (next[key][e.id] || []).forEach((v) => { if (v === "휴무") humu++; if (v === "휴일") hyuil++; });
+      humuShort += Math.max(0, perMonth[key].humuTarget - humu);
+      hyuilShort += Math.max(0, perMonth[key].hyuilTarget - hyuil);
+    });
+    if (humuShort > 0 || hyuilShort > 0) {
+      const parts = [];
+      if (humuShort > 0) parts.push(`휴무 ${humuShort}일`);
+      if (hyuilShort > 0) parts.push(`휴일 ${hyuilShort}일`);
+      stillShort.push(`${e.name}(${parts.join(", ")})`);
+    }
+  });
+
+  let message = `추가로 배정한 휴무/휴일: ${added}건`;
+  if (clearedForRebalance > 0) {
+    message += ` · 인원이 바뀐 ${changedDays.size}일의 근무조를 비웠습니다 — "2단계: 근무 자동배정"을 한 번 더 눌러 새 인원수에 맞게 채워주세요`;
+  }
+  if (stillShort.length > 0) {
+    message += ` · 자리가 부족해 아직 남은 인원: ${stillShort.join(", ")} — 수기로 조정해주세요`;
+  } else {
+    message += ` · 모든 정직원의 잔여 휴무/휴일이 0이 되었습니다`;
+  }
+
+  return { schedule: next, added, stillShort, changedDayCount: changedDays.size, message };
+}
+
 function assignShiftCodes(schedule, employees, tags, settings, ftTemplates, ptTemplates, prefCode, monthsMeta, ftThresholds) {
   const thresholds = ftThresholds || { weekday: [2, 3, 4], weekend: [2, 3, 4] };
   const next = { m1: { ...schedule.m1 }, m2: { ...schedule.m2 } };
@@ -765,7 +1009,7 @@ export {
   WEEKDAYS, DOW_OPTIONS,
   DEFAULT_TAGS, DEFAULT_EMPLOYEES, DEFAULT_HOLIDAYS, DEFAULT_FT_TEMPLATES, DEFAULT_PT_TEMPLATES,
   defaultSettings, defaultStoreData, reconcileSchedule, normalizeFtTemplates,
-  buildMonthDays, applyPersonalTags, assignRestDays, assignShiftCodes,
+  buildMonthDays, applyPersonalTags, assignRestDays, assignShiftCodes, assignRemainingRest,
   applyFixedRestSchedules, isFixedRestCovered, isFixedRestEmployee, resolveFixedRestEnd, DEFAULT_DAY_PAIR_OPTIONS,
   emptyMemoRows, reconcileMemoRows,
   validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT,
