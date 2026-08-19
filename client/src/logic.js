@@ -661,8 +661,9 @@ function pickThresholdIndex(thresholds, value) {
    - 연속근무 상한을 넘기지 않도록 확인 (고정휴무 대상자는 이 검사 생략)
    ============================================================ */
 // 한 주(월~일) 안에서 쉬는 날이 여러 개일 때, 규칙에 맞게 휴무/휴일을 정리한다.
-//  - 한 주에 휴무는 최대 1개, 그 주의 가장 앞선 쉬는 날에 배치
-//  - 단, 그 달의 휴무 목표 개수를 넘지 않도록 조절 (초과분은 휴일로)
+//  - 기본은 휴무 1개 (쉬는 날이 2개면 휴무+휴일). 휴무를 2개 써야 하는 주는 반드시 휴일도 함께 있어야 하므로
+//    쉬는 날이 3개 이상인 주에서만, 앞의 2자리를 연속으로 휴무로 채운다 (휴무+휴무+휴일... 순서)
+//  - 그 달의 휴무 목표 개수를 넘지 않도록 조절 (초과분은 휴일로)
 //  - 연차·경조사 등 확정휴무 태그는 건드리지 않고 휴무/휴일끼리만 교체
 function normalizeWeeklyRest(sched, ftEmps, monthsMeta) {
   const timeline = buildTimeline(monthsMeta);
@@ -696,12 +697,12 @@ function normalizeWeeklyRest(sched, ftEmps, monthsMeta) {
     monthsMeta.forEach(({ key }) => { humuUsed[key] = 0; });
 
     // 한 주 안에서 쉬는 날 순서대로 휴무/휴일을 정한다.
-    //   1일: 휴무
-    //   2일: 휴무 + 휴일
-    //   3일: 휴무 + 휴일 + 휴무
-    //   4일 이상: 앞 3개는 위와 같고 나머지는 전부 휴일
+    //   쉬는 날이 1~2개인 주(기본/대부분의 주): 휴무는 최대 1개만 - 휴무 또는 휴무+휴일
+    //   쉬는 날이 3개 이상인 주: 휴무 2개를 "연속으로"(1번째+2번째) 배치하고 나머지는 전부 휴일
+    //     → 휴무를 2개 써야 하는 주는 반드시 휴일도 함께 있어(쉬는 날 3일 이상) 휴무+휴무+휴일 순서가 된다.
+    //   (쉬는 날이 딱 2개뿐인 평범한 주는 절대 휴무 2개로 만들지 않는다 - 그러면 휴일 없이 휴무만 남기 때문)
     // 각 자리를 휴무로 만들 때는 그 날이 속한 달의 휴무 목표를 넘지 않는 경우에만 적용한다.
-    const HUMU_SLOTS = [0, 2]; // 주 안에서 휴무가 될 수 있는 순번 (1번째, 3번째)
+    const humuSlotsFor = (len) => (len >= 3 ? [0, 1] : [0]); // 쉬는 날 개수별 휴무 후보 순번
 
     // 월 경계 주는 어느 달 몫으로 줄지 선택의 여지가 있으므로,
     // "한 달에만 걸친 주"를 먼저 확정하고 경계 주를 나중에 처리한다.
@@ -714,7 +715,7 @@ function normalizeWeeklyRest(sched, ftEmps, monthsMeta) {
 
     order.forEach(({ rests }) => {
       if (rests.length === 0) return;
-      HUMU_SLOTS.forEach((slotIdx) => {
+      humuSlotsFor(rests.length).forEach((slotIdx) => {
         if (slotIdx >= rests.length) return;
         const spot = rests[slotIdx];
         // 경계 주에서 이 자리를 휴무로 쓸 수 있는지: 그 달 목표가 아직 남아있어야 함
@@ -725,6 +726,7 @@ function normalizeWeeklyRest(sched, ftEmps, monthsMeta) {
     });
 
     // 그래도 목표를 못 채운 달이 있으면, 그 달의 휴일 중 규칙에 맞는 자리를 휴무로 승격
+    // (쉬는 날이 2개뿐인 주는 humuSlotsFor가 [0]만 주기 때문에, 여기서도 절대 휴무 2개로 만들지 않는다)
     monthsMeta.forEach(({ key }) => {
       let need = humuTargetOf[key] - humuUsed[key];
       if (need <= 0) return;
@@ -732,7 +734,7 @@ function normalizeWeeklyRest(sched, ftEmps, monthsMeta) {
         const rests = weekRests[wi];
         if (rests.length === 0) continue;
         // 이 주에서 아직 휴무가 아닌 "휴무 가능 순번"을 찾는다
-        for (const slotIdx of HUMU_SLOTS) {
+        for (const slotIdx of humuSlotsFor(rests.length)) {
           if (need <= 0) break;
           if (slotIdx >= rests.length) break;
           const spot = rests[slotIdx];
@@ -977,7 +979,7 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
 
         for (let wi = 0; wi < weeksAll.length && !added2; wi++) {
           const week = weeksAll[wi];
-          // 한 주에 휴무는 최대 2개까지 허용 (휴무+휴일+휴무 구조)
+          // 한 주에 휴무는 최대 2개까지 허용 (휴무+휴무+휴일 구조)
           const humuInWeek = week.filter(({ key: k, day }) => (next[k][e.id]?.[day.day - 1] || "") === "휴무").length;
           if (humuInWeek >= 2) continue;
           // 이 달에 속한 날 중, 근무 중이면서 그날 여유가 있는 자리를 찾는다
