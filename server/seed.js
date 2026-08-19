@@ -16,7 +16,7 @@ const DEFAULT_TAGS = [
   { id: "tag_default_15", code: "교육", category: "확정근무", countsAsAttend: true, restType: "해당없음", desc: "사내 교육" },
   { id: "tag_default_16", code: "PT입사", category: "확정근무", countsAsAttend: true, restType: "해당없음", desc: "신규 PT 입사/교육" },
   { id: "tag_default_17", code: "민방위", category: "확정휴무", countsAsAttend: false, restType: "해당없음", desc: "민방위 훈련" },
-  { id: "tag_default_18", code: "RQ", category: "확정휴무", countsAsAttend: false, restType: "해당없음", desc: "개인 요청 휴무" },
+  { id: "tag_default_18", code: "RQ", category: "확정휴무", countsAsAttend: false, restType: "해당없음", desc: "개인 요청 휴무", convertToRest: true },
 ];
 
 const DEFAULT_EMPLOYEES = [

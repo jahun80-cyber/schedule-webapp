@@ -19,7 +19,7 @@ const DEFAULT_TAGS = [
   { id: "tag_default_15", code: "교육", category: "확정근무", countsAsAttend: true, restType: "해당없음", desc: "사내 교육" },
   { id: "tag_default_16", code: "PT입사", category: "확정근무", countsAsAttend: true, restType: "해당없음", desc: "신규 PT 입사/교육" },
   { id: "tag_default_17", code: "민방위", category: "확정휴무", countsAsAttend: false, restType: "해당없음", desc: "민방위 훈련" },
-  { id: "tag_default_18", code: "RQ", category: "확정휴무", countsAsAttend: false, restType: "해당없음", desc: "개인 요청 휴무" },
+  { id: "tag_default_18", code: "RQ", category: "확정휴무", countsAsAttend: false, restType: "해당없음", desc: "개인 요청 휴무", convertToRest: true },
 ];
 
 const DEFAULT_EMPLOYEES = [
@@ -269,6 +269,111 @@ function buildTimeline(monthsMeta) {
     days.forEach((day) => timeline.push({ key, day }));
   });
   return timeline;
+}
+
+/* ============================================================
+   요청태그(RQ 등) 자동 전환
+   "휴무/휴일 후보"로 지정된 태그(convertToRest=true)가 스케줄에 있으면
+   그 사람의 남은 휴무/휴일 목표 안에서 휴무 또는 휴일로 바꿔준다.
+   휴무/휴일을 다 소진했는데도 요청이 남으면, 연차 잔여가 충분한 경우에 한해 연차로 전환한다.
+   (반차·반반차는 자동 전환하지 않고 그대로 둠 - 수기 조정 대상)
+   ============================================================ */
+function convertRequestTags(schedule, employees, tags, settings, monthsMeta, options) {
+  const opt = options || {};
+  const annualLeaveGrants = opt.annualLeaveGrants || {};
+  const archive = opt.archive || {};
+  const year = Number(settings?.year) || new Date().getFullYear();
+
+  const next = { m1: { ...schedule.m1 }, m2: { ...schedule.m2 } };
+  Object.keys(next.m1).forEach((id) => (next.m1[id] = [...schedule.m1[id]]));
+  Object.keys(next.m2).forEach((id) => (next.m2[id] = [...schedule.m2[id]]));
+
+  // 전환 대상 태그 (예: RQ)
+  const requestCodes = new Set((tags || []).filter((t) => t.convertToRest).map((t) => t.code));
+  if (requestCodes.size === 0) {
+    return { schedule: next, toRest: 0, toLeave: 0, leaveDetails: [], leftOver: [], message: "" };
+  }
+
+  // 하루 단위 연차 태그 (8시간짜리, 연차종류가 "연차"인 것)
+  const fullDayLeaveTag = (tags || []).find(
+    (t) => t.trackAsLeave && Number(t.leaveHours) === 8 && (t.leavePool || "연차") === "연차"
+  );
+
+  // 저장된 월별기록 기준 연차 사용량 (예: 9·10월 스케줄을 짜는 시점이면 8월말까지의 실제 사용분)
+  const usageFromArchive = computeLeaveUsage(year, tags, archive);
+
+  const ftEmps = employees.filter((e) => e.type === "정직원" && isActiveEmployee(e));
+  const timeline = buildTimeline(monthsMeta);
+  const monthTargets = {};
+  monthsMeta.forEach(({ key, days }) => {
+    monthTargets[key] = { humu: satTarget(days), hyuil: sunHolTarget(days) };
+  });
+
+  let toRest = 0, toLeave = 0;
+  const leaveDetails = [];   // 연차로 바뀐 내역
+  const leftOver = [];       // 휴무/휴일/연차 모두 부족해 그대로 남은 요청
+
+  ftEmps.forEach((e) => {
+    // 현재 이 사람의 월별 휴무/휴일 개수
+    const counts = {};
+    monthsMeta.forEach(({ key }) => {
+      let humu = 0, hyuil = 0;
+      (next[key][e.id] || []).forEach((v) => { if (v === "휴무") humu++; if (v === "휴일") hyuil++; });
+      counts[key] = { humu, hyuil };
+    });
+
+    // 이 사람의 연차 잔여(일) = 보유량 - 저장된 기록의 사용분 - 지금 스케줄에 이미 들어있는 연차
+    let leaveRemainDays = 0;
+    if (fullDayLeaveTag) {
+      const grantDays = Number(((annualLeaveGrants[year] || {})["연차"] || {})[e.id]) || 0;
+      const usedHoursArchive = usageFromArchive[e.id]?.byPool?.["연차"]?.totalHours || 0;
+      let usedHoursCurrent = 0;
+      monthsMeta.forEach(({ key }) => {
+        (next[key][e.id] || []).forEach((v) => {
+          const t = (tags || []).find((x) => x.code === v);
+          if (t && t.trackAsLeave && (t.leavePool || "연차") === "연차") usedHoursCurrent += Number(t.leaveHours) || 0;
+        });
+      });
+      leaveRemainDays = grantDays - (usedHoursArchive + usedHoursCurrent) / 8;
+    }
+
+    timeline.forEach(({ key, day }) => {
+      const v = next[key][e.id]?.[day.day - 1] || "";
+      if (!requestCodes.has(v)) return;
+
+      // 1) 그 달 휴무가 남았으면 휴무로
+      if (counts[key].humu < monthTargets[key].humu) {
+        next[key][e.id][day.day - 1] = "휴무";
+        counts[key].humu++;
+        toRest++;
+        return;
+      }
+      // 2) 그 달 휴일이 남았으면 휴일로
+      if (counts[key].hyuil < monthTargets[key].hyuil) {
+        next[key][e.id][day.day - 1] = "휴일";
+        counts[key].hyuil++;
+        toRest++;
+        return;
+      }
+      // 3) 휴무/휴일을 다 썼으면, 연차 잔여가 하루 이상 남은 경우에만 연차로
+      if (fullDayLeaveTag && leaveRemainDays >= 1) {
+        next[key][e.id][day.day - 1] = fullDayLeaveTag.code;
+        leaveRemainDays -= 1;
+        toLeave++;
+        leaveDetails.push(`${e.name} ${day.dateStr.slice(5).replace("-", "/")}`);
+        return;
+      }
+      // 4) 그래도 안 되면 요청 태그 그대로 두고 알림 대상에 추가
+      leftOver.push(`${e.name} ${day.dateStr.slice(5).replace("-", "/")}`);
+    });
+  });
+
+  const parts = [];
+  if (toRest > 0) parts.push(`요청을 휴무/휴일로 전환: ${toRest}건`);
+  if (toLeave > 0) parts.push(`휴무/휴일이 모두 소진되어 연차로 등록: ${leaveDetails.join(", ")}`);
+  if (leftOver.length > 0) parts.push(`휴무/휴일·연차 모두 부족해 그대로 남은 요청: ${leftOver.join(", ")} — 직접 처리해주세요`);
+
+  return { schedule: next, toRest, toLeave, leaveDetails, leftOver, message: parts.join(" · ") };
 }
 
 // 고정휴무 요일쌍 기본값 (매장이 [공휴일·이슈일] 화면에서 자유롭게 추가/수정/삭제 가능한 목록의 초기값)
@@ -769,34 +874,50 @@ function assignRemainingRest(schedule, employees, tags, settings, monthsMeta, fi
       });
       if (candidates.length === 0) break;
 
-      // 이 달에 부족분이 가장 많은 사람 우선 (동점이면 지금까지 배정을 덜 받은 사람)
+      // 이 달에 부족분이 가장 많은 사람 우선. 단, 연속근무가 상한을 넘고 있는 사람이 있으면 그 사람을 최우선.
       const monthShortOf = (empId) =>
         Math.max(0, perMonth[key].humuTarget - counts[empId][key].humu) +
         Math.max(0, perMonth[key].hyuilTarget - counts[empId][key].hyuil);
+      const overLimitOf = (emp) => {
+        const limit = fixedRestLimitOf(fixedRestSchedules, dayPairOptions, emp.name, settings);
+        return maxStreakOf(emp.id) > limit ? 1 : 0;
+      };
       candidates.sort((a, b) => {
+        // 1순위: 연속근무 상한을 이미 넘긴 사람 (이 배정으로 끊어줘야 함)
+        const oa = overLimitOf(a), ob = overLimitOf(b);
+        if (ob !== oa) return ob - oa;
+        // 2순위: 이 달 부족분이 많은 사람
         const sa = monthShortOf(a.id), sb = monthShortOf(b.id);
         if (sb !== sa) return sb - sa;
+        // 3순위: 지금까지 배정을 덜 받은 사람
         return (placedCount[a.id] || 0) - (placedCount[b.id] || 0);
       });
-      const picked = candidates[0];
 
-      // 이 달 기준으로 휴무가 부족하면 휴무, 아니면 휴일
-      const code = (perMonth[key].humuTarget - counts[picked.id][key].humu) > 0 ? "휴무" : "휴일";
+      // 후보를 순서대로 시도 - 한 명이 연속근무 제약에 걸려도 그날을 포기하지 않고 다음 후보를 본다
+      let placedSomeone = false;
+      for (const picked of candidates) {
+        const code = (perMonth[key].humuTarget - counts[picked.id][key].humu) > 0 ? "휴무" : "휴일";
+        const before = next[key][picked.id][day.day - 1];
+        const streakBefore = maxStreakOf(picked.id);
+        placeRest(key, day, picked.id, code);
 
-      const before = next[key][picked.id][day.day - 1];
-      placeRest(key, day, picked.id, code);
+        // 이 직원의 연속근무 허용 상한 (고정휴무면 그 요일쌍이 만드는 정상 연속일수까지 허용)
+        const limit = fixedRestLimitOf(fixedRestSchedules, dayPairOptions, picked.name, settings);
+        const streakAfter = maxStreakOf(picked.id);
+        // 상한을 넘더라도 "배정 전보다 나빠지지 않았다면" 허용 (이미 넘긴 상태를 개선하는 중일 수 있음)
+        if (streakAfter > limit && streakAfter > streakBefore) {
+          next[key][picked.id][day.day - 1] = before; // 되돌리고 다음 후보 시도
+          continue;
+        }
 
-      // 연속근무 상한 확인은 "쉬는 날 추가"라 위반이 생길 수 없지만,
-      // 혹시 근무코드를 덮어써서 다른 구간이 길어지는 경우가 없도록 방어적으로 확인
-      if (maxStreakOf(picked.id) > consecMax) {
-        next[key][picked.id][day.day - 1] = before; // 되돌림
+        if (code === "휴무") counts[picked.id][key].humu++;
+        else counts[picked.id][key].hyuil++;
+        placedCount[picked.id] = (placedCount[picked.id] || 0) + 1;
+        added++;
+        placedSomeone = true;
         break;
       }
-
-      if (code === "휴무") counts[picked.id][key].humu++;
-      else counts[picked.id][key].hyuil++;
-      placedCount[picked.id] = (placedCount[picked.id] || 0) + 1;
-      added++;
+      if (!placedSomeone) break; // 이 날은 아무도 배정할 수 없음
     }
   });
   };
@@ -1104,7 +1225,7 @@ export {
   WEEKDAYS, DOW_OPTIONS,
   DEFAULT_TAGS, DEFAULT_EMPLOYEES, DEFAULT_HOLIDAYS, DEFAULT_FT_TEMPLATES, DEFAULT_PT_TEMPLATES,
   defaultSettings, defaultStoreData, reconcileSchedule, normalizeFtTemplates,
-  buildMonthDays, applyPersonalTags, assignRestDays, assignShiftCodes, assignRemainingRest,
+  buildMonthDays, applyPersonalTags, convertRequestTags, assignRestDays, assignShiftCodes, assignRemainingRest,
   applyFixedRestSchedules, isFixedRestCovered, isFixedRestEmployee, resolveFixedRestEnd, DEFAULT_DAY_PAIR_OPTIONS,
   emptyMemoRows, reconcileMemoRows,
   validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT,

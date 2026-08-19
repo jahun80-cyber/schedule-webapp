@@ -9,7 +9,7 @@ import { api, getPassword, setPassword, clearPassword, getRole, setRole } from "
 import {
   WEEKDAYS, DOW_OPTIONS,
   defaultStoreData,
-  buildMonthDays, applyPersonalTags, assignRestDays, assignShiftCodes,
+  buildMonthDays, applyPersonalTags, convertRequestTags, assignRestDays, assignShiftCodes,
   applyFixedRestSchedules, assignRemainingRest, normalizeFtTemplates, DEFAULT_DAY_PAIR_OPTIONS,
   emptyMemoRows, reconcileMemoRows,
   validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT,
@@ -491,6 +491,7 @@ function TagsTab({ data, setData }) {
               <th className="py-2 font-semibold">분류</th>
               <th className="py-2 font-semibold">매장출근카운트</th>
               <th className="py-2 font-semibold">휴무/휴일구분</th>
+              <th className="py-2 font-semibold">휴무/휴일 후보</th>
               <th className="py-2 font-semibold">연차추적</th>
               <th className="py-2 font-semibold">연차종류</th>
               <th className="py-2 font-semibold">시간(H)</th>
@@ -529,6 +530,13 @@ function TagsTab({ data, setData }) {
                 </td>
                 <td className="py-1.5 pr-2 text-center">
                   <input
+                    type="checkbox" checked={!!t.convertToRest}
+                    onChange={(ev) => update(t.id, { convertToRest: ev.target.checked })}
+                    className="w-4 h-4 accent-indigo-600"
+                  />
+                </td>
+                <td className="py-1.5 pr-2 text-center">
+                  <input
                     type="checkbox" checked={!!t.trackAsLeave}
                     onChange={(ev) => update(t.id, { trackAsLeave: ev.target.checked, leavePool: t.leavePool || "연차" })}
                     className="w-4 h-4 accent-indigo-600"
@@ -559,6 +567,8 @@ function TagsTab({ data, setData }) {
           "연차종류"를 같은 이름으로 맞춰두면 같은 보유량으로 묶여서 계산됩니다 — 예를 들어 연차/반차/반반차는 "연차"로, 리프레시휴가·안식휴가는
           새로 태그를 추가해서 "리프레시/안식휴가"라는 이름으로 묶어두면 [연차현황]에서 별도의 보유량으로 따로 관리됩니다.
           "근무조 환산"을 지정하면 그날 그 근무조 인원 1명으로 계산됩니다 (예: 반차(오후)·반반차 → A조).
+          "휴무/휴일 후보"를 켜두면(예: RQ 같은 휴무 요청 태그), 1단계 실행 시 그 사람의 남은 휴무/휴일로 자동 전환되고,
+          휴무/휴일을 다 소진했으면 연차 잔여가 남아있는 만큼만 하루 단위 연차로 등록됩니다 (반차·반반차는 자동 전환하지 않습니다).
         </p>
       </SectionCard>
     </div>
@@ -1244,15 +1254,23 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
         fixedSkipped = fr.skipped || 0;
       }
 
-      const { schedule: result, message } = assignRestDays(
+      const { schedule: afterRest, message } = assignRestDays(
         working, data.employees, data.tags, data.settings, monthsMeta,
         isFixedMode ? data.fixedRestSchedules : [], isFixedMode ? data.dayPairOptions : []
       );
-      setSchedule(result);
+
+      // RQ 같은 "휴무/휴일 후보" 태그를 그 사람의 남은 휴무/휴일(→ 부족하면 연차)로 자동 전환
+      const rq = convertRequestTags(afterRest, data.employees, data.tags, data.settings, monthsMeta, {
+        annualLeaveGrants: data.annualLeaveGrants,
+        archive: archive || {},
+      });
+
+      setSchedule(rq.schedule);
       const fixedMsg = isFixedMode
         ? ` · 고정휴무로 채운 칸: ${fixedApplied}건${fixedSkipped > 0 ? ` (최소인원 확보를 위해 ${fixedSkipped}건은 건너뜀)` : ""}`
         : "";
-      setMsg(`개인 지정 태그로 채운 칸: ${applied}건${fixedMsg} · ${message}`);
+      const rqMsg = rq.message ? ` · ${rq.message}` : "";
+      setMsg(`개인 지정 태그로 채운 칸: ${applied}건${fixedMsg} · ${message}${rqMsg}`);
       setRunning(false);
     }, 30);
   };
