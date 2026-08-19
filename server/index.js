@@ -1,5 +1,6 @@
-// 외부 패키지 없이 Node.js 내장 기능만으로 동작하는 API 서버입니다.
-// (express, cors 등 별도 설치가 필요 없습니다 - npm install만 하면 바로 실행됩니다)
+// 로컬 개발 / Docker(Render)용 진입점. 실제 라우팅 로직은 server/app.js에 있고,
+// 여기서는 .env 로딩 후 http 서버를 띄우는 역할만 합니다.
+// (Vercel에서는 이 파일 대신 api/[[...path]].js가 쓰입니다 - Vercel은 자체적으로 환경변수를 주입해줍니다)
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
@@ -23,239 +24,11 @@ const path = require("path");
   }
 })();
 
-const { readDb, writeDb } = require("./db");
-const { roleFromPassword } = require("./auth");
-const { defaultStoreConfig } = require("./seed");
+const { handleRequest } = require("./app");
 
 const PORT = process.env.PORT || 4000;
-const CLIENT_DIST = path.join(__dirname, "..", "client", "dist");
 
-const MIME = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".ico": "image/x-icon",
-  ".woff": "font/woff",
-  ".woff2": "font/woff2",
-};
-
-function send(res, status, body, headers = {}) {
-  res.writeHead(status, {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type, x-app-password",
-    "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
-    ...headers,
-  });
-  res.end(body);
-}
-
-function sendJson(res, status, obj) {
-  send(res, status, JSON.stringify(obj), { "Content-Type": "application/json; charset=utf-8" });
-}
-
-function readBody(req) {
-  return new Promise((resolve, reject) => {
-    let data = "";
-    req.on("data", (chunk) => (data += chunk));
-    req.on("end", () => {
-      if (!data) return resolve({});
-      try { resolve(JSON.parse(data)); } catch (e) { reject(e); }
-    });
-    req.on("error", reject);
-  });
-}
-
-function checkAuth(req, requiredRole) {
-  const pw = req.headers["x-app-password"] || "";
-  const role = roleFromPassword(pw);
-  if (!role) return { ok: false, status: 401, error: "비밀번호가 올바르지 않습니다." };
-  if (requiredRole === "admin" && role !== "admin") {
-    return { ok: false, status: 403, error: "관리자만 할 수 있는 작업입니다." };
-  }
-  return { ok: true, role };
-}
-
-/* ---------- 정적 파일 서빙 ---------- */
-function serveStatic(req, res, pathname) {
-  let filePath = path.join(CLIENT_DIST, pathname === "/" ? "index.html" : pathname);
-  if (!filePath.startsWith(CLIENT_DIST)) { send(res, 403, "Forbidden"); return; }
-
-  fs.readFile(filePath, (err, data) => {
-    if (err) {
-      // SPA 라우팅: 없는 경로는 index.html로 폴백
-      fs.readFile(path.join(CLIENT_DIST, "index.html"), (err2, data2) => {
-        if (err2) {
-          send(res, 404, "빌드된 프론트엔드가 없습니다. client 폴더에서 npm run build를 먼저 실행하세요.");
-        } else {
-          send(res, 200, data2, { "Content-Type": "text/html; charset=utf-8" });
-        }
-      });
-      return;
-    }
-    const ext = path.extname(filePath);
-    send(res, 200, data, { "Content-Type": MIME[ext] || "application/octet-stream" });
-  });
-}
-
-/* ---------- API 라우팅 ---------- */
-async function handleApi(req, res, pathname, method) {
-  try {
-    // POST /api/login
-    if (pathname === "/api/login" && method === "POST") {
-      const body = await readBody(req);
-      const role = roleFromPassword(body.password || "");
-      if (!role) return sendJson(res, 401, { error: "비밀번호가 올바르지 않습니다." });
-      return sendJson(res, 200, { ok: true, role });
-    }
-
-    if (pathname === "/api/health") return sendJson(res, 200, { ok: true });
-
-    // GET /api/backup - 전체 데이터를 파일로 내려받기 (관리자 전용)
-    if (pathname === "/api/backup" && method === "GET") {
-      const auth = checkAuth(req, "admin");
-      if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
-      const db = readDb();
-      return sendJson(res, 200, db);
-    }
-
-    // POST /api/restore - 백업 파일로 전체 데이터 덮어쓰기 (관리자 전용)
-    if (pathname === "/api/restore" && method === "POST") {
-      const auth = checkAuth(req, "admin");
-      if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
-      const body = await readBody(req);
-      if (!body || !Array.isArray(body.stores) || typeof body.storeData !== "object") {
-        return sendJson(res, 400, { error: "올바른 백업 파일이 아닙니다." });
-      }
-      await writeDb((db) => {
-        db.stores = body.stores;
-        db.storeData = body.storeData;
-      });
-      return sendJson(res, 200, { ok: true });
-    }
-
-    // GET /api/stores
-    if (pathname === "/api/stores" && method === "GET") {
-      const auth = checkAuth(req, "staff");
-      if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
-      const db = readDb();
-      return sendJson(res, 200, db.stores);
-    }
-
-    // POST /api/stores
-    if (pathname === "/api/stores" && method === "POST") {
-      const auth = checkAuth(req, "admin");
-      if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
-      const body = await readBody(req);
-      const name = (body.name || "").trim();
-      const group = (body.group || "").trim();
-      if (!name) return sendJson(res, 400, { error: "매장 이름을 입력하세요." });
-      const id = "store_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7);
-      await writeDb((db) => {
-        db.stores.push({ id, name, group });
-        const cfg = defaultStoreConfig();
-        cfg.settings.storeName = name;
-        db.storeData[id] = { config: cfg, schedule: null, archive: {} };
-      });
-      return sendJson(res, 200, { id, name, group });
-    }
-
-    // /api/stores/:id ...
-    const storeMatch = pathname.match(/^\/api\/stores\/([^/]+)(\/(config|schedule|archive))?$/);
-    if (storeMatch) {
-      const id = decodeURIComponent(storeMatch[1]);
-      const sub = storeMatch[3]; // undefined | 'config' | 'schedule'
-
-      if (!sub && method === "PUT") {
-        const auth = checkAuth(req, "admin");
-        if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
-        const body = await readBody(req);
-        let found = false;
-        await writeDb((db) => {
-          const s = db.stores.find((s) => s.id === id);
-          if (s) {
-            if (body.name !== undefined && body.name !== "") s.name = body.name;
-            if (body.group !== undefined) s.group = body.group;
-            found = true;
-          }
-        });
-        if (!found) return sendJson(res, 404, { error: "매장을 찾을 수 없습니다." });
-        return sendJson(res, 200, { ok: true });
-      }
-
-      if (!sub && method === "DELETE") {
-        const auth = checkAuth(req, "admin");
-        if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
-        await writeDb((db) => {
-          db.stores = db.stores.filter((s) => s.id !== id);
-          delete db.storeData[id];
-        });
-        return sendJson(res, 200, { ok: true });
-      }
-
-      if (sub && method === "GET") {
-        const auth = checkAuth(req, "staff");
-        if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
-        const db = readDb();
-        const entry = db.storeData[id];
-        if (!entry) return sendJson(res, 404, { error: "매장을 찾을 수 없습니다." });
-        if (sub === "config") return sendJson(res, 200, entry.config || defaultStoreConfig());
-        if (sub === "archive") return sendJson(res, 200, entry.archive || {});
-        return sendJson(res, 200, entry.schedule || null);
-      }
-
-      if (sub && method === "PUT") {
-        const auth = checkAuth(req, "staff");
-        if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
-        const body = await readBody(req);
-        let found = false;
-        let updatedAt = null;
-        await writeDb((db) => {
-          if (!db.storeData[id]) return;
-          db.storeData[id][sub] = body;
-          updatedAt = Date.now();
-          db.storeData[id].updatedAt = updatedAt;
-          found = true;
-        });
-        if (!found) return sendJson(res, 404, { error: "매장을 찾을 수 없습니다." });
-        return sendJson(res, 200, { ok: true, updatedAt });
-      }
-    }
-
-    // GET /api/stores/:id/meta - 마지막 수정 시각만 가볍게 조회 (다른 사람 수정 감지용 폴링)
-    const metaMatch = pathname.match(/^\/api\/stores\/([^/]+)\/meta$/);
-    if (metaMatch && method === "GET") {
-      const auth = checkAuth(req, "staff");
-      if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
-      const id = decodeURIComponent(metaMatch[1]);
-      const db = readDb();
-      const entry = db.storeData[id];
-      if (!entry) return sendJson(res, 404, { error: "매장을 찾을 수 없습니다." });
-      return sendJson(res, 200, { updatedAt: entry.updatedAt || 0 });
-    }
-
-    sendJson(res, 404, { error: "not found" });
-  } catch (e) {
-    console.error(e);
-    sendJson(res, 500, { error: "서버 오류: " + e.message });
-  }
-}
-
-const server = http.createServer((req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host}`);
-  const pathname = url.pathname;
-  const method = req.method;
-
-  if (method === "OPTIONS") return send(res, 204, "");
-
-  if (pathname.startsWith("/api/")) {
-    handleApi(req, res, pathname, method);
-  } else {
-    serveStatic(req, res, pathname);
-  }
-});
+const server = http.createServer(handleRequest);
 
 server.listen(PORT, () => {
   console.log(`서버 실행 중: http://localhost:${PORT}`);
@@ -263,5 +36,8 @@ server.listen(PORT, () => {
   const staff = process.env.STAFF_PASSWORD;
   if (!admin && !staff) {
     console.log("⚠ ADMIN_PASSWORD / STAFF_PASSWORD 환경변수가 없어 누구나 관리자 권한으로 접속됩니다. (로컬 테스트용)");
+  }
+  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    console.log("⚠ SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY 환경변수가 없습니다. .env 파일을 확인하세요.");
   }
 });
