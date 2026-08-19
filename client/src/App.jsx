@@ -3,7 +3,7 @@ import {
   Settings, Users, Tag, CalendarDays, ClipboardList, CheckCircle2,
   PlayCircle, Plus, Trash2, Store, Loader2, AlertTriangle,
   Sparkles, Save, ClipboardCheck, LogOut, Lock, Download, Upload, Archive,
-  FileSpreadsheet, Copy, PieChart,
+  FileSpreadsheet, Copy, PieChart, History,
 } from "lucide-react";
 import { api, getPassword, setPassword, clearPassword, getRole, setRole } from "./api";
 import {
@@ -2122,7 +2122,14 @@ function MainApp({ role, onLogout }) {
 
   const deleteStore = async () => {
     if (!currentStoreId) return;
-    if (!window.confirm("이 매장 데이터를 삭제할까요? 되돌릴 수 없습니다.")) return;
+    const cur = storeList.find((s) => s.id === currentStoreId);
+    const typed = window.prompt(
+      `정말 삭제하시겠어요? 되돌리려면 관리자가 "복구 스냅샷"에서 직접 복원해야 합니다.\n확인하려면 매장 이름을 정확히 입력하세요: ${cur?.name || ""}`
+    );
+    if (typed !== (cur?.name || "")) {
+      if (typed !== null) alert("입력한 이름이 일치하지 않아 삭제를 취소했습니다.");
+      return;
+    }
     try {
       await api.deleteStore(currentStoreId);
       const newList = storeList.filter((s) => s.id !== currentStoreId);
@@ -2161,7 +2168,7 @@ function MainApp({ role, onLogout }) {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
-    if (!window.confirm("백업 파일로 전체 데이터를 덮어씁니다. 지금 있는 모든 매장 데이터가 백업 시점 상태로 바뀝니다. 계속할까요?")) return;
+    if (!window.confirm("백업 파일로 전체 데이터를 덮어씁니다. 지금 있는 모든 매장 데이터가 백업 시점 상태로 바뀝니다.\n(지금 상태는 복원 직전 자동으로 스냅샷 저장되니, 실수해도 \"복구 스냅샷\"에서 되돌릴 수 있습니다.) 계속할까요?")) return;
     setBackupBusy(true);
     try {
       const text = await file.text();
@@ -2175,6 +2182,41 @@ function MainApp({ role, onLogout }) {
       alert("복원에 실패했습니다: " + e.message);
     } finally {
       setBackupBusy(false);
+    }
+  };
+
+  /* --- 안전장치: 복구 스냅샷 패널 (백업 복원/매장 삭제 직전 자동 저장된 것들) --- */
+  const [snapshotPanel, setSnapshotPanel] = useState(false);
+  const [snapshots, setSnapshots] = useState(null);
+  const [snapshotBusy, setSnapshotBusy] = useState(false);
+
+  const openSnapshotPanel = async () => {
+    setSnapshotPanel(true);
+    setSnapshots(null);
+    try {
+      const list = await api.listSnapshots();
+      setSnapshots(list);
+    } catch (e) {
+      alert("스냅샷 목록을 불러오지 못했습니다: " + e.message);
+      setSnapshotPanel(false);
+    }
+  };
+
+  const restoreFromSnapshot = async (snap) => {
+    const when = new Date(snap.created_at).toLocaleString("ko-KR");
+    if (!window.confirm(`"${when}" 시점(${snap.reason})으로 전체 데이터를 되돌릴까요?\n지금 상태도 복원 직전 자동으로 또 스냅샷 저장되니 안전합니다.`)) return;
+    setSnapshotBusy(true);
+    try {
+      await api.restoreSnapshot(snap.id);
+      const list = await api.listStores();
+      setStoreList(list);
+      setCurrentStoreId(list[0]?.id || null);
+      setSnapshotPanel(false);
+      alert("복원이 완료됐습니다.");
+    } catch (e) {
+      alert("복원에 실패했습니다: " + e.message);
+    } finally {
+      setSnapshotBusy(false);
     }
   };
 
@@ -2226,7 +2268,7 @@ function MainApp({ role, onLogout }) {
               <span className="w-px h-4 bg-slate-700 mx-1" />
               <button
                 onClick={downloadBackup} disabled={backupBusy}
-                title="전체 매장 데이터를 파일로 내려받습니다 (재배포 전에 꼭 눌러두세요)"
+                title="전체 매장 데이터를 파일로 내려받습니다 (가끔 오프라인 보관용으로 받아두면 좋습니다)"
                 className="inline-flex items-center gap-1 text-xs text-emerald-300 hover:text-emerald-200 px-2 py-1.5 disabled:opacity-50"
               >
                 <Download size={12} /> 전체 백업
@@ -2239,6 +2281,13 @@ function MainApp({ role, onLogout }) {
                 <Upload size={12} /> 백업 복원
               </button>
               <input ref={restoreFileRef} type="file" accept="application/json" onChange={handleRestoreFile} className="hidden" />
+              <button
+                onClick={openSnapshotPanel}
+                title="백업 복원/매장 삭제 직전 자동 저장된 안전 스냅샷 목록 (실수했을 때 여기서 되돌리세요)"
+                className="inline-flex items-center gap-1 text-xs text-sky-300 hover:text-sky-200 px-2 py-1.5"
+              >
+                <History size={12} /> 복구 스냅샷
+              </button>
             </>
           )}
           <span className="text-[10px] text-slate-400 flex items-center gap-1 ml-1">
@@ -2251,11 +2300,49 @@ function MainApp({ role, onLogout }) {
         </div>
       </div>
 
+      {snapshotPanel && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={() => setSnapshotPanel(false)}>
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-lg max-h-[80vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="px-4 py-3 border-b flex items-center justify-between">
+              <span className="font-semibold text-sm flex items-center gap-1.5"><History size={15} /> 복구 스냅샷</span>
+              <button onClick={() => setSnapshotPanel(false)} className="text-slate-400 hover:text-slate-600 text-sm">닫기</button>
+            </div>
+            <div className="px-4 py-2 text-[11px] text-slate-500 border-b">
+              백업 복원이나 매장 삭제 직전에 자동으로 저장된 전체 데이터 스냅샷이에요. 최근 {snapshots?.length ?? 0}개까지 보관됩니다.
+              잘못 복원/삭제했다면 여기서 원하는 시점으로 되돌릴 수 있어요.
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              {snapshots === null && (
+                <div className="flex items-center justify-center py-10 text-slate-400"><Loader2 className="animate-spin" size={20} /></div>
+              )}
+              {snapshots !== null && snapshots.length === 0 && (
+                <div className="text-center py-10 text-sm text-slate-400">아직 저장된 스냅샷이 없습니다.</div>
+              )}
+              {snapshots?.map((snap) => (
+                <div key={snap.id} className="px-4 py-2.5 border-b last:border-b-0 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium text-slate-700 truncate">{snap.reason}</div>
+                    <div className="text-[11px] text-slate-400">{new Date(snap.created_at).toLocaleString("ko-KR")}</div>
+                  </div>
+                  <button
+                    onClick={() => restoreFromSnapshot(snap)}
+                    disabled={snapshotBusy}
+                    className="flex-shrink-0 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-500 disabled:opacity-50 px-2.5 py-1.5 rounded-md"
+                  >
+                    이 시점으로 복원
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {storeMissing && (
         <div className="bg-red-50 border-b border-red-200 text-red-800 text-sm px-6 py-3 flex items-center justify-between gap-3 flex-wrap">
           <span>
-            <b>이 매장 데이터를 서버에서 찾을 수 없습니다.</b> 서버가 재시작되며 데이터가 초기화되었을 수 있습니다.
-            최근에 받아둔 백업 파일이 있다면 "백업 복원"으로 되살릴 수 있습니다.
+            <b>이 매장 데이터를 서버에서 찾을 수 없습니다.</b> 매장이 삭제되었거나 주소가 잘못됐을 수 있습니다.
+            관리자라면 "복구 스냅샷"에서 삭제 직전 상태를 되살리거나, 최근 백업 파일로 "백업 복원"할 수 있습니다.
           </span>
           <div className="flex items-center gap-2 flex-shrink-0">
             <GhostBtn onClick={reloadStoreList}>매장 목록 새로고침</GhostBtn>

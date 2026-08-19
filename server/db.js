@@ -48,6 +48,10 @@ async function updateStoreMeta(id, { name, group }) {
 }
 
 async function deleteStore(id) {
+  // 삭제 직전 전체 스냅샷을 남겨둔다 (실수로 지워도 스냅샷에서 복구 가능)
+  await saveSnapshot(`매장 삭제 직전 (id=${id})`).catch((e) => {
+    console.error("삭제 전 스냅샷 저장 실패 (그래도 삭제는 계속 진행):", e);
+  });
   // store_data는 FK ON DELETE CASCADE로 함께 삭제됩니다.
   const { error } = await supabase.from("stores").delete().eq("id", id);
   if (error) throw error;
@@ -107,8 +111,60 @@ async function getFullBackup() {
   return { stores: storesRes.data.map(mapStoreRow), storeData };
 }
 
+/* ============================================================
+   안전장치: 파괴적인 작업(백업 복원 / 매장 삭제) 직전에
+   현재 상태 전체를 backup_snapshots 테이블에 자동 저장해둔다.
+   실수로 잘못된 백업을 복원하거나 매장을 잘못 지워도, 스냅샷 목록에서
+   직전 상태를 그대로 다시 복원할 수 있다. (관리자 전용 API로 조회/복원)
+   ============================================================ */
+const MAX_SNAPSHOTS = 30; // 이보다 오래된 스냅샷은 자동으로 정리 (무한정 쌓이지 않도록)
+
+async function saveSnapshot(reason) {
+  const data = await getFullBackup();
+  const { error } = await supabase.from("backup_snapshots").insert({ reason, data });
+  if (error) throw error;
+  await pruneSnapshots();
+}
+
+async function pruneSnapshots() {
+  const { data, error } = await supabase
+    .from("backup_snapshots")
+    .select("id")
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  const idsToDelete = (data || []).slice(MAX_SNAPSHOTS).map((r) => r.id);
+  if (idsToDelete.length === 0) return;
+  const { error: delErr } = await supabase.from("backup_snapshots").delete().in("id", idsToDelete);
+  if (delErr) throw delErr;
+}
+
+async function listSnapshots() {
+  // 목록에는 용량이 큰 data는 빼고 가볍게 (id/시각/사유만)
+  const { data, error } = await supabase
+    .from("backup_snapshots")
+    .select("id,created_at,reason")
+    .order("created_at", { ascending: false })
+    .limit(MAX_SNAPSHOTS);
+  if (error) throw error;
+  return data;
+}
+
+async function getSnapshot(id) {
+  const { data, error } = await supabase
+    .from("backup_snapshots")
+    .select("id,created_at,reason,data")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw error;
+  return data || null;
+}
+
 async function restoreBackup({ stores, storeData }) {
   // 기존 데이터를 전부 지우고 백업 내용으로 다시 채웁니다.
+  // 실수로 잘못된 파일을 복원해도 되돌릴 수 있도록, 지우기 전에 지금 상태를 스냅샷으로 남겨둔다.
+  await saveSnapshot("백업 복원 직전").catch((e) => {
+    console.error("복원 전 스냅샷 저장 실패 (그래도 복원은 계속 진행):", e);
+  });
   // (store_data는 stores 삭제 시 CASCADE로 함께 지워집니다)
   const { error: delError } = await supabase.from("stores").delete().not("id", "is", null);
   if (delError) throw delError;
@@ -133,6 +189,34 @@ async function restoreBackup({ stores, storeData }) {
   if (insDataErr) throw insDataErr;
 }
 
+/* ============================================================
+   안전장치: 로그인 무차별 대입(비밀번호 무한 시도) 방지
+   같은 IP가 최근 15분 안에 실패를 LOGIN_FAIL_LIMIT번 넘게 하면 잠시 막는다.
+   ============================================================ */
+const LOGIN_FAIL_LIMIT = 8;
+const LOGIN_FAIL_WINDOW_MS = 15 * 60 * 1000; // 15분
+
+async function checkLoginRateLimit(ip) {
+  const since = new Date(Date.now() - LOGIN_FAIL_WINDOW_MS).toISOString();
+  const { count, error } = await supabase
+    .from("login_failures")
+    .select("id", { count: "exact", head: true })
+    .eq("ip", ip)
+    .gte("attempted_at", since);
+  if (error) throw error;
+  return (count || 0) < LOGIN_FAIL_LIMIT;
+}
+
+async function recordLoginFailure(ip) {
+  const { error } = await supabase.from("login_failures").insert({ ip });
+  if (error) throw error;
+  // 오래된 기록은 가끔 정리 (매번 할 필요는 없어 5% 확률로만 실행 - 비용 절감)
+  if (Math.random() < 0.05) {
+    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    await supabase.from("login_failures").delete().lt("attempted_at", cutoff);
+  }
+}
+
 module.exports = {
   listStores,
   createStore,
@@ -141,6 +225,11 @@ module.exports = {
   getStoreField,
   putStoreField,
   getMeta,
+  saveSnapshot,
+  listSnapshots,
+  getSnapshot,
+  checkLoginRateLimit,
+  recordLoginFailure,
   getFullBackup,
   restoreBackup,
 };

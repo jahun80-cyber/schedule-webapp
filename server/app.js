@@ -47,6 +47,13 @@ function readBody(req) {
   });
 }
 
+function getClientIp(req) {
+  // Vercel/프록시 뒤에서는 x-forwarded-for에 실제 접속자 IP가 담겨 온다 (맨 앞 값이 접속자)
+  const fwd = req.headers["x-forwarded-for"];
+  if (fwd) return String(fwd).split(",")[0].trim();
+  return req.socket?.remoteAddress || "unknown";
+}
+
 function checkAuth(req, requiredRole) {
   const pw = req.headers["x-app-password"] || "";
   const role = roleFromPassword(pw);
@@ -82,15 +89,33 @@ function serveStatic(req, res, pathname) {
 /* ---------- API 라우팅 ---------- */
 async function handleApi(req, res, pathname, method) {
   try {
-    // POST /api/login
+    // POST /api/login (같은 접속자가 15분 안에 너무 여러 번 틀리면 잠시 막음 - 무차별 대입 방지)
     if (pathname === "/api/login" && method === "POST") {
+      const ip = getClientIp(req);
+      const okToTry = await db.checkLoginRateLimit(ip).catch(() => true); // 확인 자체가 실패하면 막지 않음(가용성 우선)
+      if (!okToTry) {
+        return sendJson(res, 429, { error: "비밀번호를 너무 여러 번 틀렸습니다. 15분 후 다시 시도해주세요." });
+      }
       const body = await readBody(req);
       const role = roleFromPassword(body.password || "");
-      if (!role) return sendJson(res, 401, { error: "비밀번호가 올바르지 않습니다." });
+      if (!role) {
+        await db.recordLoginFailure(ip).catch((e) => console.error("로그인 실패 기록 실패:", e));
+        return sendJson(res, 401, { error: "비밀번호가 올바르지 않습니다." });
+      }
       return sendJson(res, 200, { ok: true, role });
     }
 
     if (pathname === "/api/health") return sendJson(res, 200, { ok: true });
+
+    // GET /api/cron/daily-snapshot - Vercel Cron이 매일 자동으로 호출 (안전장치: 일일 백업 스냅샷)
+    // Vercel이 CRON_SECRET 환경변수를 보고 Authorization: Bearer <값> 헤더를 자동으로 붙여서 호출해줌.
+    if (pathname === "/api/cron/daily-snapshot" && method === "GET") {
+      const expected = process.env.CRON_SECRET;
+      const got = (req.headers["authorization"] || "").replace(/^Bearer\s+/i, "");
+      if (!expected || got !== expected) return sendJson(res, 401, { error: "unauthorized" });
+      await db.saveSnapshot("일일 자동 백업");
+      return sendJson(res, 200, { ok: true });
+    }
 
     // GET /api/backup - 전체 데이터를 파일로 내려받기 (관리자 전용)
     if (pathname === "/api/backup" && method === "GET") {
@@ -110,6 +135,37 @@ async function handleApi(req, res, pathname, method) {
       }
       await db.restoreBackup(body);
       return sendJson(res, 200, { ok: true });
+    }
+
+    // GET /api/snapshots - 자동 저장된 안전 스냅샷 목록 (관리자 전용)
+    if (pathname === "/api/snapshots" && method === "GET") {
+      const auth = checkAuth(req, "admin");
+      if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
+      const list = await db.listSnapshots();
+      return sendJson(res, 200, list);
+    }
+
+    // /api/snapshots/:id, /api/snapshots/:id/restore
+    const snapshotMatch = pathname.match(/^\/api\/snapshots\/(\d+)(\/restore)?$/);
+    if (snapshotMatch) {
+      const auth = checkAuth(req, "admin");
+      if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
+      const id = Number(snapshotMatch[1]);
+      const isRestore = !!snapshotMatch[2];
+
+      if (!isRestore && method === "GET") {
+        const snap = await db.getSnapshot(id);
+        if (!snap) return sendJson(res, 404, { error: "스냅샷을 찾을 수 없습니다." });
+        return sendJson(res, 200, snap);
+      }
+
+      if (isRestore && method === "POST") {
+        const snap = await db.getSnapshot(id);
+        if (!snap) return sendJson(res, 404, { error: "스냅샷을 찾을 수 없습니다." });
+        // restoreBackup 자체가 실행 직전에 또 스냅샷을 남기므로, 이 복원도 안전하게 되돌릴 수 있다
+        await db.restoreBackup(snap.data);
+        return sendJson(res, 200, { ok: true });
+      }
     }
 
     // GET /api/stores
