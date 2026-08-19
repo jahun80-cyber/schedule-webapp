@@ -670,7 +670,7 @@ function normalizeWeeklyRest(sched, ftEmps, monthsMeta) {
   monthsMeta.forEach(({ key, days }) => { humuTargetOf[key] = satTarget(days); });
 
   ftEmps.forEach((e) => {
-    // 주 단위로 쉬는 날 묶기
+    // 2개월 전체를 월~일 주 단위로 묶기
     const weeks = [];
     let week = [];
     timeline.forEach(({ key, day }) => {
@@ -679,7 +679,7 @@ function normalizeWeeklyRest(sched, ftEmps, monthsMeta) {
     });
     if (week.length > 0) weeks.push(week);
 
-    // 각 주에서 쉬는 날(휴무/휴일) 목록 추출
+    // 각 주에서 쉬는 날(휴무/휴일)만 추출
     const weekRests = weeks.map((w) =>
       w.filter(({ key, day }) => {
         const v = sched[key][e.id]?.[day.day - 1] || "";
@@ -687,44 +687,60 @@ function normalizeWeeklyRest(sched, ftEmps, monthsMeta) {
       })
     );
 
-    // 일단 전부 휴일로 초기화
+    // 일단 전부 휴일로 초기화 (이후 주별로 딱 1개씩만 휴무로 승격)
     weekRests.forEach((rests) => {
       rests.forEach(({ key, day }) => { sched[key][e.id][day.day - 1] = "휴일"; });
     });
 
-    // 각 주에서 휴무를 지정한다.
-    // 주가 두 달에 걸쳐 있으면(예: 9/28~10/4) 각 달마다 그 달의 첫 쉬는 날을 휴무로 잡는다.
-    // (그렇게 하지 않으면 한쪽 달의 휴무가 통째로 사라져 "휴무 -1 / 휴일 +1"이 생김)
+    // 각 주에서 휴무 1개를 어느 달에 줄지 결정한다.
+    // 월 경계 주(예: 9/28~10/4)는 양쪽 달 모두 후보이므로, "아직 휴무가 더 필요한 달"을 우선 선택한다.
+    // 이렇게 해야 10월처럼 "주 개수 = 휴무 목표"인 달이 첫 주 몫을 놓치지 않는다.
     const humuUsed = {};
     monthsMeta.forEach(({ key }) => { humuUsed[key] = 0; });
-    weekRests.forEach((rests) => {
-      if (rests.length === 0) return;
-      // 이 주에 포함된 달들을 순서대로 훑으며, 각 달의 첫 쉬는 날을 휴무 후보로
-      const seenKeys = [];
-      rests.forEach(({ key }) => { if (!seenKeys.includes(key)) seenKeys.push(key); });
-      seenKeys.forEach((k) => {
-        if (humuUsed[k] >= humuTargetOf[k]) return;
-        const first = rests.find((r) => r.key === k);
-        if (!first) return;
-        sched[k][e.id][first.day.day - 1] = "휴무";
-        humuUsed[k]++;
-      });
+
+    // 각 주가 어느 달들에 걸쳐 있는지, 그 달의 쉬는 날이 있는지 미리 계산
+    const weekInfo = weekRests.map((rests) => {
+      const byKey = {};
+      rests.forEach((r) => { if (!byKey[r.key]) byKey[r.key] = r; }); // 달별 첫 쉬는 날
+      return { rests, byKey };
     });
 
-    // 주가 부족해서 월별 휴무 목표를 못 채웠다면,
-    // "그 달에 아직 휴무가 없는 주"의 휴일을 휴무로 승격
+    // 1차: 한 달에만 걸친 주부터 확정 (선택의 여지가 없음)
+    weekInfo.forEach((info) => {
+      const keys = Object.keys(info.byKey);
+      if (keys.length !== 1) return;
+      const k = keys[0];
+      if (humuUsed[k] >= humuTargetOf[k]) return;
+      const first = info.byKey[k];
+      sched[k][e.id][first.day.day - 1] = "휴무";
+      humuUsed[k]++;
+      info.assigned = true;
+    });
+
+    // 2차: 두 달에 걸친 주는 "아직 더 부족한 달" 쪽에 휴무를 준다
+    weekInfo.forEach((info) => {
+      if (info.assigned) return;
+      const keys = Object.keys(info.byKey);
+      if (keys.length === 0) return;
+      // 남은 필요량이 큰 달을 우선
+      keys.sort((a, b) => (humuTargetOf[b] - humuUsed[b]) - (humuTargetOf[a] - humuUsed[a]));
+      const k = keys.find((kk) => humuUsed[kk] < humuTargetOf[kk]);
+      if (!k) return;
+      const first = info.byKey[k];
+      sched[k][e.id][first.day.day - 1] = "휴무";
+      humuUsed[k]++;
+      info.assigned = true;
+    });
+
+    // 3차: 그래도 목표를 못 채운 달이 있으면, 그 달에 아직 휴무가 없는 주에서 휴일 하나를 승격
     monthsMeta.forEach(({ key }) => {
       let need = humuTargetOf[key] - humuUsed[key];
       if (need <= 0) return;
-      for (let wi = 0; wi < weekRests.length && need > 0; wi++) {
-        const rests = weekRests[wi];
-        if (rests.length === 0) continue;
-        // 이 주의 "이 달 부분"에 이미 휴무가 있으면 건너뜀
-        const hasHumuThisMonth = rests.some(
-          ({ key: k, day }) => k === key && (sched[k][e.id]?.[day.day - 1] || "") === "휴무"
-        );
-        if (hasHumuThisMonth) continue;
-        const target = rests.find(({ key: k, day }) => k === key && (sched[k][e.id]?.[day.day - 1] || "") === "휴일");
+      for (let wi = 0; wi < weekInfo.length && need > 0; wi++) {
+        const info = weekInfo[wi];
+        const hasHumu = info.rests.some(({ key: k, day }) => (sched[k][e.id]?.[day.day - 1] || "") === "휴무");
+        if (hasHumu) continue; // 한 주에 휴무는 1개만
+        const target = info.rests.find(({ key: k, day }) => k === key && (sched[k][e.id]?.[day.day - 1] || "") === "휴일");
         if (!target) continue;
         sched[target.key][e.id][target.day.day - 1] = "휴무";
         humuUsed[key]++;
@@ -734,13 +750,6 @@ function normalizeWeeklyRest(sched, ftEmps, monthsMeta) {
   });
 }
 
-/* ============================================================
-   4단계: 최종 조율
-   1~3단계를 마친 뒤에도 남아있는 문제를 서로 자리를 바꿔가며 해소한다.
-   (A) 연속근무 상한을 넘긴 사람의 근무일을, 그날 쉬고 있던 "여유 있는 사람"과 맞바꿈
-   (B) 휴무/휴일이 목표보다 초과한 사람과 부족한 사람 사이에서 쉬는 날을 넘겨줌
-   두 경우 모두 최소 출근인원은 그대로 유지된다 (한 명이 쉬면 다른 한 명이 나오므로).
-   ============================================================ */
 function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestSchedules, dayPairOptions) {
   const next = { m1: { ...schedule.m1 }, m2: { ...schedule.m2 } };
   Object.keys(next.m1).forEach((id) => (next.m1[id] = [...schedule.m1[id]]));
