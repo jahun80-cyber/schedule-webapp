@@ -10,7 +10,7 @@ import {
   WEEKDAYS, DOW_OPTIONS,
   defaultStoreData,
   buildMonthDays, applyPersonalTags, convertRequestTags, assignRestDays, assignShiftCodes,
-  applyFixedRestSchedules, assignRemainingRest, normalizeFtTemplates, DEFAULT_DAY_PAIR_OPTIONS,
+  applyFixedRestSchedules, assignRemainingRest, finalAdjust, normalizeFtTemplates, DEFAULT_DAY_PAIR_OPTIONS,
   emptyMemoRows, reconcileMemoRows,
   validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT,
   isOffTag, dowBucket, nextMonth, emptySchedule, reconcileSchedule, isActiveEmployee, computeLeaveUsage,
@@ -1316,6 +1316,30 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
     }, 30);
   };
 
+  const runFinalAdjust = () => {
+    setRunning(true);
+    setTimeout(() => {
+      const isFixedMode = data.settings?.restMode === "고정휴무";
+      const r4 = finalAdjust(
+        schedule, data.employees, data.tags, data.settings, monthsMeta,
+        isFixedMode ? data.fixedRestSchedules : [], isFixedMode ? data.dayPairOptions : []
+      );
+
+      // 자리를 바꾼 날은 근무조도 다시 배정
+      let finalSchedule = r4.schedule;
+      if (r4.changedDayCount > 0) {
+        finalSchedule = assignShiftCodes(
+          finalSchedule, data.employees, data.tags, data.settings,
+          data.ftTemplates, data.ptTemplates, data.prefCode, monthsMeta, data.ftThresholds
+        ).schedule;
+      }
+
+      setSchedule(finalSchedule);
+      setMsg(r4.message);
+      setRunning(false);
+    }, 30);
+  };
+
   const clearAll = () => {
     if (!window.confirm(`${meta.label} 스케줄을 전부 지울까요?`)) return;
     setSchedule((prev) => {
@@ -1358,6 +1382,7 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
         <PrimaryBtn onClick={runRestDays} disabled={running} icon={PlayCircle}>1단계: 휴무/휴일 자동배정</PrimaryBtn>
         <PrimaryBtn onClick={runShiftCodes} disabled={running} icon={Sparkles}>2단계: 근무 자동배정</PrimaryBtn>
         <PrimaryBtn onClick={runRemainingRest} disabled={running} icon={CheckCircle2}>3단계: 잔여 휴무/휴일 배정</PrimaryBtn>
+        <PrimaryBtn onClick={runFinalAdjust} disabled={running} icon={Sparkles}>4단계: 최종 조율</PrimaryBtn>
         <GhostBtn onClick={clearAll} icon={Trash2}>이 달 전체 지우기</GhostBtn>
         <GhostBtn onClick={saveToArchive} icon={Archive}>{alreadyArchived ? "기록 다시 저장" : "기록으로 저장"}</GhostBtn>
         {running && <Loader2 className="animate-spin text-indigo-500" size={18} />}

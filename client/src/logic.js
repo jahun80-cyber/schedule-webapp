@@ -19,7 +19,7 @@ const DEFAULT_TAGS = [
   { id: "tag_default_15", code: "교육", category: "확정근무", countsAsAttend: true, restType: "해당없음", desc: "사내 교육" },
   { id: "tag_default_16", code: "PT입사", category: "확정근무", countsAsAttend: true, restType: "해당없음", desc: "신규 PT 입사/교육" },
   { id: "tag_default_17", code: "민방위", category: "확정휴무", countsAsAttend: false, restType: "해당없음", desc: "민방위 훈련" },
-  { id: "tag_default_18", code: "RQ", category: "확정휴무", countsAsAttend: false, restType: "해당없음", desc: "개인 요청 휴무", convertToRest: true },
+  { id: "tag_default_18", code: "RQ", category: "확정휴무", countsAsAttend: false, restType: "해당없음", desc: "개인 요청 휴무" },
 ];
 
 const DEFAULT_EMPLOYEES = [
@@ -415,6 +415,11 @@ function applyFixedRestSchedules(schedule, employees, fixedRestSchedules, dayPai
   // 우선순위 = 직원목록에 등록된 순서 (앞선 사람이 우선)
   const priorityOf = {};
   ftEmps.forEach((e, i) => { priorityOf[e.id] = i; });
+  // 월별 휴무/휴일 목표 (이 개수를 넘겨서 배정하지 않도록)
+  const monthTarget = {};
+  monthsMeta.forEach(({ key, days }) => {
+    monthTarget[key] = { humu: satTarget(days), hyuil: sunHolTarget(days) };
+  });
 
   timeline.forEach(({ key, day }) => {
     // 이 날짜에 고정휴무가 걸리는 직원들을 모으고, 우선순위 순으로 정렬
@@ -453,6 +458,13 @@ function applyFixedRestSchedules(schedule, employees, fixedRestSchedules, dayPai
 
     candidates.forEach((c) => {
       if (slots <= 0) { skipped++; return; }
+      // 그 달의 휴무/휴일 목표를 넘지 않도록 제한
+      // (예: 그 달에 해당 요일이 5번 있는데 목표는 4개인 경우, 5번째는 배정하지 않음)
+      let cur = 0;
+      (next[key][c.empId] || []).forEach((v) => { if (v === c.code) cur++; });
+      const target = c.code === "휴무" ? monthTarget[key].humu : monthTarget[key].hyuil;
+      if (cur >= target) { skipped++; return; }
+
       next[key][c.empId][day.day - 1] = c.code;
       slots--;
       applied++;
@@ -712,6 +724,279 @@ function normalizeWeeklyRest(sched, ftEmps, monthsMeta) {
       }
     });
   });
+}
+
+/* ============================================================
+   4단계: 최종 조율
+   1~3단계를 마친 뒤에도 남아있는 문제를 서로 자리를 바꿔가며 해소한다.
+   (A) 연속근무 상한을 넘긴 사람의 근무일을, 그날 쉬고 있던 "여유 있는 사람"과 맞바꿈
+   (B) 휴무/휴일이 목표보다 초과한 사람과 부족한 사람 사이에서 쉬는 날을 넘겨줌
+   두 경우 모두 최소 출근인원은 그대로 유지된다 (한 명이 쉬면 다른 한 명이 나오므로).
+   ============================================================ */
+function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestSchedules, dayPairOptions) {
+  const next = { m1: { ...schedule.m1 }, m2: { ...schedule.m2 } };
+  Object.keys(next.m1).forEach((id) => (next.m1[id] = [...schedule.m1[id]]));
+  Object.keys(next.m2).forEach((id) => (next.m2[id] = [...schedule.m2[id]]));
+
+  const ftEmps = employees.filter((e) => e.type === "정직원" && isActiveEmployee(e) && isAutoAssignable(e));
+  if (ftEmps.length === 0) return { schedule: next, streakFixed: 0, balanceFixed: 0, message: "정직원이 없어 조율을 건너뛰었습니다." };
+
+  const timeline = buildTimeline(monthsMeta);
+  const workCodeSet = new Set((tags || []).filter((t) => t.countsAsAttend).map((t) => t.code));
+  const perMonth = {};
+  monthsMeta.forEach(({ key, days }) => {
+    perMonth[key] = { humuTarget: satTarget(days), hyuilTarget: sunHolTarget(days) };
+  });
+
+  const limitOf = (emp) => fixedRestLimitOf(fixedRestSchedules, dayPairOptions, emp.name, settings);
+
+  const maxStreakOf = (empId) => {
+    let consec = 0, maxRun = 0;
+    timeline.forEach(({ key, day }) => {
+      const v = next[key][empId]?.[day.day - 1] || "";
+      if (v !== "" && isOffTag(tags, v)) consec = 0;
+      else { consec++; if (consec > maxRun) maxRun = consec; }
+    });
+    return maxRun;
+  };
+
+  const countOf = (empId, key) => {
+    let humu = 0, hyuil = 0;
+    (next[key][empId] || []).forEach((v) => { if (v === "휴무") humu++; if (v === "휴일") hyuil++; });
+    return { humu, hyuil };
+  };
+
+  const changedDays = new Set();
+
+  /* --- (A) 연속근무 상한 초과 해소: 초과자의 근무일 ↔ 여유자의 쉬는 날 맞교환 --- */
+  let streakFixed = 0;
+  for (let round = 0; round < 30; round++) {
+    // 상한을 넘긴 사람 찾기
+    const over = ftEmps.find((e) => maxStreakOf(e.id) > limitOf(e));
+    if (!over) break;
+
+    let swapped = false;
+    // 이 사람이 근무 중인 날들을 훑으며, 그날 쉬고 있는 "바꿔줄 수 있는 사람"을 찾는다
+    for (const { key, day } of timeline) {
+      const myVal = next[key][over.id]?.[day.day - 1] || "";
+      if (!workCodeSet.has(myVal)) continue; // 내가 근무 중인 날만 대상
+
+      // 이 날 쉬고 있는 사람 중, 그 휴식을 넘겨줘도 본인이 상한을 안 넘는 사람
+      const donors = ftEmps.filter((other) => {
+        if (other.id === over.id) return false;
+        const theirVal = next[key][other.id]?.[day.day - 1] || "";
+        if (theirVal !== "휴무" && theirVal !== "휴일") return false; // 휴무/휴일만 교환 (연차 등은 제외)
+        return true;
+      });
+
+      for (const donor of donors) {
+        const theirVal = next[key][donor.id][day.day - 1];
+        // 맞교환 시도
+        next[key][over.id][day.day - 1] = theirVal;
+        next[key][donor.id][day.day - 1] = myVal;
+
+        const okOver = maxStreakOf(over.id) <= limitOf(over);
+        const okDonor = maxStreakOf(donor.id) <= limitOf(donor);
+        if (okOver && okDonor) {
+          changedDays.add(`${key}|${day.day}`);
+          streakFixed++;
+          swapped = true;
+          break;
+        }
+        // 되돌리기
+        next[key][over.id][day.day - 1] = myVal;
+        next[key][donor.id][day.day - 1] = theirVal;
+      }
+      if (swapped) break;
+    }
+    if (!swapped) break; // 더 이상 고칠 수 없음
+  }
+
+  /* --- (B) 휴무/휴일 초과/부족 재조정: 초과자 → 부족자에게 쉬는 날 넘김 --- */
+  // 초과한 코드와 부족한 코드가 서로 달라도(예: A는 휴일 초과, B는 휴무 부족) 교환할 수 있게 처리한다.
+  let balanceFixed = 0;
+  for (let round = 0; round < 80; round++) {
+    let moved = false;
+
+    for (const { key } of monthsMeta) {
+      // 이 달에서 초과한 (사람, 코드) 목록과 부족한 (사람, 코드) 목록을 각각 모은다
+      const surplusList = [];
+      const deficitList = [];
+      ftEmps.forEach((e) => {
+        const c = countOf(e.id, key);
+        if (c.humu > perMonth[key].humuTarget) surplusList.push({ emp: e, code: "휴무" });
+        if (c.hyuil > perMonth[key].hyuilTarget) surplusList.push({ emp: e, code: "휴일" });
+        if (c.humu < perMonth[key].humuTarget) deficitList.push({ emp: e, code: "휴무" });
+        if (c.hyuil < perMonth[key].hyuilTarget) deficitList.push({ emp: e, code: "휴일" });
+      });
+      if (surplusList.length === 0 || deficitList.length === 0) continue;
+
+      for (const giver of surplusList) {
+        for (const taker of deficitList) {
+          if (giver.emp.id === taker.emp.id) {
+            // 같은 사람이 한 코드는 초과, 다른 코드는 부족한 경우 -> 그 자리에서 코드만 바꿔줌
+            const slot = monthsMeta.find((m) => m.key === key).days.find(
+              (day) => (next[key][giver.emp.id]?.[day.day - 1] || "") === giver.code
+            );
+            if (!slot) continue;
+            next[key][giver.emp.id][slot.day - 1] = taker.code;
+            balanceFixed++;
+            moved = true;
+            break;
+          }
+
+          // 다른 사람끼리: giver가 쉬는 날에 taker가 근무 중이면 맞바꿈
+          const slot = timeline.find(({ key: k, day }) => {
+            if (k !== key) return false;
+            if ((next[k][giver.emp.id]?.[day.day - 1] || "") !== giver.code) return false;
+            const takerVal = next[k][taker.emp.id]?.[day.day - 1] || "";
+            return workCodeSet.has(takerVal);
+          });
+          if (!slot) continue;
+
+          const takerVal = next[slot.key][taker.emp.id][slot.day.day - 1];
+          next[slot.key][taker.emp.id][slot.day.day - 1] = taker.code;  // 받는 사람은 부족한 코드로
+          next[slot.key][giver.emp.id][slot.day.day - 1] = takerVal;    // 주는 사람은 근무로
+
+          if (maxStreakOf(giver.emp.id) <= limitOf(giver.emp) && maxStreakOf(taker.emp.id) <= limitOf(taker.emp)) {
+            changedDays.add(`${slot.key}|${slot.day.day}`);
+            balanceFixed++;
+            moved = true;
+            break;
+          }
+          // 되돌리기
+          next[slot.key][taker.emp.id][slot.day.day - 1] = takerVal;
+          next[slot.key][giver.emp.id][slot.day.day - 1] = giver.code;
+        }
+        if (moved) break;
+      }
+      if (moved) break;
+    }
+    if (!moved) break;
+  }
+
+  /* --- (C) 받아줄 사람이 없는 초과분은, 같은 사람의 "부족한 다른 달"로 옮김 --- */
+  for (let round = 0; round < 40; round++) {
+    let moved = false;
+    for (const e of ftEmps) {
+      for (const code of ["휴무", "휴일"]) {
+        const targetKey = code === "휴무" ? "humuTarget" : "hyuilTarget";
+        const countKey = code === "휴무" ? "humu" : "hyuil";
+
+        // 초과한 달과 부족한 달 찾기
+        const overMonth = monthsMeta.find(({ key }) => countOf(e.id, key)[countKey] > perMonth[key][targetKey]);
+        const underMonth = monthsMeta.find(({ key }) => countOf(e.id, key)[countKey] < perMonth[key][targetKey]);
+        if (!overMonth || !underMonth) continue;
+
+        // 초과한 달에서 이 코드로 쉬는 날 하나를 근무로 바꾸고
+        const giveSlot = overMonth.days.find((day) => (next[overMonth.key][e.id]?.[day.day - 1] || "") === code);
+        // 부족한 달에서 근무 중이면서 그날 여유가 있는 날 하나를 이 코드로 바꿈
+        const takeSlot = underMonth.days.find((day) => {
+          const v = next[underMonth.key][e.id]?.[day.day - 1] || "";
+          if (!workCodeSet.has(v)) return false;
+          // 그날 한 명 더 쉬어도 최소인원 유지되는지
+          let off = 0;
+          ftEmps.forEach((o) => {
+            const ov = next[underMonth.key][o.id]?.[day.day - 1] || "";
+            if (ov !== "" && isOffTag(tags, ov)) off++;
+          });
+          return (ftEmps.length - off) - 1 >= requiredFT(settings, day);
+        });
+        if (!giveSlot || !takeSlot) continue;
+
+        const giveBefore = next[overMonth.key][e.id][giveSlot.day - 1];
+        const takeBefore = next[underMonth.key][e.id][takeSlot.day - 1];
+        next[overMonth.key][e.id][giveSlot.day - 1] = "";      // 근무로 되돌림(2단계 재배정이 채움)
+        next[underMonth.key][e.id][takeSlot.day - 1] = code;
+
+        if (maxStreakOf(e.id) <= limitOf(e)) {
+          changedDays.add(`${overMonth.key}|${giveSlot.day}`);
+          changedDays.add(`${underMonth.key}|${takeSlot.day}`);
+          balanceFixed++;
+          moved = true;
+          break;
+        }
+        next[overMonth.key][e.id][giveSlot.day - 1] = giveBefore;
+        next[underMonth.key][e.id][takeSlot.day - 1] = takeBefore;
+      }
+      if (moved) break;
+    }
+    if (!moved) break;
+  }
+
+  /* --- (D) 그래도 남은 초과분은 근무로 되돌림 (목표보다 더 쉬지 않도록) --- */
+  // 주는 사람도 받는 사람도 없는 경우(예: 전원이 동시에 초과) 초과한 쉬는 날을 근무로 되돌린다.
+  let revertedToWork = 0;
+  for (let round = 0; round < 60; round++) {
+    let reverted = false;
+    for (const e of ftEmps) {
+      for (const { key, days } of monthsMeta) {
+        const c = countOf(e.id, key);
+        const overHumu = c.humu - perMonth[key].humuTarget;
+        const overHyuil = c.hyuil - perMonth[key].hyuilTarget;
+        const code = overHyuil > 0 ? "휴일" : (overHumu > 0 ? "휴무" : null);
+        if (!code) continue;
+
+        // 뒤쪽 날짜부터 되돌려서 앞부분 패턴을 최대한 보존
+        for (let i = days.length - 1; i >= 0; i--) {
+          const day = days[i];
+          if ((next[key][e.id]?.[day.day - 1] || "") !== code) continue;
+          next[key][e.id][day.day - 1] = "";  // 근무로 (2단계 재배정이 코드를 채움)
+          if (maxStreakOf(e.id) <= limitOf(e)) {
+            changedDays.add(`${key}|${day.day}`);
+            revertedToWork++;
+            reverted = true;
+            break;
+          }
+          next[key][e.id][day.day - 1] = code; // 연속근무가 나빠지면 되돌리지 않음
+        }
+        if (reverted) break;
+      }
+      if (reverted) break;
+    }
+    if (!reverted) break;
+  }
+
+  // 주 단위 규칙 재정리 (휴무 1개 우선 배치)
+  normalizeWeeklyRest(next, ftEmps, monthsMeta);
+
+  // 남은 문제 확인
+  const stillOver = ftEmps.filter((e) => maxStreakOf(e.id) > limitOf(e)).map((e) => `${e.name}(${maxStreakOf(e.id)}일)`);
+  const stillShort = [];   // 목표에 못 미친 경우 - 실제로 조치가 필요
+  const extraRest = [];    // 목표를 채우고 더 쉰 경우 - 문제 아님(참고용)
+  ftEmps.forEach((e) => {
+    const shortParts = [], extraParts = [];
+    monthsMeta.forEach(({ key, label }) => {
+      const c = countOf(e.id, key);
+      const dh = c.humu - perMonth[key].humuTarget;
+      const dy = c.hyuil - perMonth[key].hyuilTarget;
+      if (dh < 0) shortParts.push(`${label || key} 휴무 ${dh}`);
+      if (dy < 0) shortParts.push(`${label || key} 휴일 ${dy}`);
+      if (dh > 0) extraParts.push(`${label || key} 휴무 +${dh}`);
+      if (dy > 0) extraParts.push(`${label || key} 휴일 +${dy}`);
+    });
+    if (shortParts.length > 0) stillShort.push(`${e.name}(${shortParts.join(", ")})`);
+    if (extraParts.length > 0) extraRest.push(`${e.name}(${extraParts.join(", ")})`);
+  });
+
+  const parts = [];
+  parts.push(`연속근무 조율: ${streakFixed}건`);
+  parts.push(`휴무/휴일 균형 조율: ${balanceFixed}건`);
+  if (revertedToWork > 0) parts.push(`초과분을 근무로 되돌림: ${revertedToWork}건`);
+  if (stillOver.length > 0) parts.push(`아직 연속근무 상한 초과: ${stillOver.join(", ")} — 수기 조정 필요`);
+  if (stillShort.length > 0) parts.push(`목표에 못 미침: ${stillShort.join(", ")} — 수기 조정 필요`);
+  if (extraRest.length > 0) parts.push(`목표보다 초과해서 쉬는 인원: ${extraRest.join(", ")} — 연차로 처리하거나 근무로 되돌려주세요`);
+  if (stillOver.length === 0 && stillShort.length === 0 && extraRest.length === 0) {
+    parts.push("모든 인원이 연속근무 상한과 휴무/휴일 목표를 정확히 만족합니다");
+  }
+
+  return {
+    schedule: next,
+    streakFixed, balanceFixed,
+    changedDayCount: changedDays.size,
+    stillOver, stillShort, extraRest,
+    message: parts.join(" · "),
+  };
 }
 
 function assignRemainingRest(schedule, employees, tags, settings, monthsMeta, fixedRestSchedules, dayPairOptions) {
@@ -1225,7 +1510,7 @@ export {
   WEEKDAYS, DOW_OPTIONS,
   DEFAULT_TAGS, DEFAULT_EMPLOYEES, DEFAULT_HOLIDAYS, DEFAULT_FT_TEMPLATES, DEFAULT_PT_TEMPLATES,
   defaultSettings, defaultStoreData, reconcileSchedule, normalizeFtTemplates,
-  buildMonthDays, applyPersonalTags, convertRequestTags, assignRestDays, assignShiftCodes, assignRemainingRest,
+  buildMonthDays, applyPersonalTags, convertRequestTags, assignRestDays, assignShiftCodes, assignRemainingRest, finalAdjust,
   applyFixedRestSchedules, isFixedRestCovered, isFixedRestEmployee, resolveFixedRestEnd, DEFAULT_DAY_PAIR_OPTIONS,
   emptyMemoRows, reconcileMemoRows,
   validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT,
