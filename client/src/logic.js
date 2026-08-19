@@ -651,14 +651,48 @@ function assignRemainingRest(schedule, employees, tags, settings, monthsMeta, fi
     if (prev !== "" && workCodeSet.has(prev)) changedDays.add(`${key}|${day.day}`);
   };
 
+  // 2개월 전체를 하루씩 이어붙인 타임라인 (연속근무 계산용)
+  const flatTimeline = buildTimeline(monthsMeta);
+  const flatIndexOf = {};
+  flatTimeline.forEach((slot, i) => { flatIndexOf[`${slot.key}|${slot.day.day}`] = i; });
+
+  // 이 직원의 현재 최대 연속근무 일수
+  const maxStreakOf = (empId) => {
+    let consec = 0, maxRun = 0;
+    flatTimeline.forEach(({ key, day }) => {
+      const v = next[key][empId]?.[day.day - 1] || "";
+      if (v !== "" && isOffTag(tags, v)) consec = 0;
+      else { consec++; if (consec > maxRun) maxRun = consec; }
+    });
+    return maxRun;
+  };
+
+  // 이 직원이 "가장 길게 연속근무 중인 구간"의 한가운데쯤 되는 날짜를 우선 고르기 위해,
+  // 특정 날짜가 얼마나 긴 연속근무 구간에 속해 있는지 계산
+  const streakLengthAt = (empId, key, dayNum) => {
+    const idx = flatIndexOf[`${key}|${dayNum}`];
+    if (idx === undefined) return 0;
+    const isWork = (i) => {
+      const slot = flatTimeline[i];
+      if (!slot) return false;
+      const v = next[slot.key][empId]?.[slot.day.day - 1] || "";
+      return !(v !== "" && isOffTag(tags, v));
+    };
+    if (!isWork(idx)) return 0;
+    let len = 1;
+    for (let i = idx - 1; i >= 0 && isWork(i); i--) len++;
+    for (let i = idx + 1; i < flatTimeline.length && isWork(i); i++) len++;
+    return len;
+  };
+
   let added = 0;
   const perMonth = {};
   monthsMeta.forEach(({ key, days }) => {
     perMonth[key] = { humuTarget: satTarget(days), hyuilTarget: sunHolTarget(days), days };
   });
 
-  // 주 단위로 고르게 분산해서 채우기 위해, 각 달의 날짜를 "주별 묶음"으로 만들고
-  // 주를 한 바퀴씩 돌며 하나씩 배정한다 (앞 날짜에만 몰리는 것 방지)
+
+  // 주 단위 묶음 (한 주에 휴무 1개 규칙 확인용)
   const weeksOfMonth = {};
   monthsMeta.forEach(({ key, days }) => {
     const weeks = [];
@@ -670,65 +704,109 @@ function assignRemainingRest(schedule, employees, tags, settings, monthsMeta, fi
     if (cur.length > 0) weeks.push(cur);
     weeksOfMonth[key] = weeks;
   });
-
-  // 그 달에서 쉬는 날을 need개 만들되, 주를 돌아가며 한 개씩 배정
-  const fillSpread = (key, empId, need, code, onPlaced) => {
+  const weekIndexOf = (key, dayNum) => {
     const weeks = weeksOfMonth[key];
-    let placed = 0;
-    let guard = 0;
-    while (placed < need && guard < 100) {
-      guard++;
-      let placedThisRound = 0;
-      for (const week of weeks) {
-        if (placed >= need) break;
-        for (const day of week) {
-          if (!canRest(key, day, empId)) continue;
-          if (!hasRoom(key, day)) continue;
-          placeRest(key, day, empId, code);
-          placed++; placedThisRound++;
-          if (onPlaced) onPlaced();
-          break; // 이 주에서는 하나만 넣고 다음 주로
-        }
-      }
-      if (placedThisRound === 0) break; // 더 이상 넣을 자리가 없음
+    for (let i = 0; i < weeks.length; i++) {
+      if (weeks[i].some((d) => d.day === dayNum)) return i;
     }
-    return placed;
+    return -1;
   };
 
+  // 각 직원의 월별 현재 휴무/휴일 개수
+  const counts = {};
   ftEmps.forEach((e) => {
-    // 월별로 현재 배정된 휴무/휴일 수 세기
-    const counts = {};
+    counts[e.id] = {};
     monthsMeta.forEach(({ key }) => {
       let humu = 0, hyuil = 0;
       (next[key][e.id] || []).forEach((v) => { if (v === "휴무") humu++; if (v === "휴일") hyuil++; });
-      counts[key] = { humu, hyuil };
+      counts[e.id][key] = { humu, hyuil };
     });
+  });
 
-    // 1) 휴무 부족분 - 주별로 분산해서 채움
+  const shortOf = (empId) => {
+    let humu = 0, hyuil = 0;
     monthsMeta.forEach(({ key }) => {
-      const need = perMonth[key].humuTarget - counts[key].humu;
-      if (need <= 0) return;
-      const placed = fillSpread(key, e.id, need, "휴무", () => { counts[key].humu++; added++; });
+      humu += Math.max(0, perMonth[key].humuTarget - counts[empId][key].humu);
+      hyuil += Math.max(0, perMonth[key].hyuilTarget - counts[empId][key].hyuil);
     });
+    return { humu, hyuil, total: humu + hyuil };
+  };
 
-    // 2) 휴일 부족분 - 그 달 우선, 주별로 분산
-    monthsMeta.forEach(({ key }) => {
-      const need = perMonth[key].hyuilTarget - counts[key].hyuil;
-      if (need <= 0) return;
-      fillSpread(key, e.id, need, "휴일", () => { counts[key].hyuil++; added++; });
-    });
+  const timelineAll = buildTimeline(monthsMeta);
+  const placedCount = {};
 
-    // 3) 그 달에서 못 채운 휴일 부족분이 남으면 다른 달에서라도 채움
-    const hyuilShortOf = (key) => Math.max(0, perMonth[key].hyuilTarget - counts[key].hyuil);
-    let remainingShort = monthsMeta.reduce((s, m) => s + hyuilShortOf(m.key), 0);
-    if (remainingShort > 0) {
-      for (const { key } of monthsMeta) {
-        if (remainingShort <= 0) break;
-        fillSpread(key, e.id, remainingShort, "휴일", () => { counts[key].hyuil++; added++; });
-        remainingShort = monthsMeta.reduce((s, m) => s + hyuilShortOf(m.key), 0);
+  // 날짜를 순서대로 돌면서, 그날 여유가 있으면 "가장 부족한 직원"에게 하나씩 배정
+  // (한 명이 좋은 자리를 독식하지 않도록, 자리마다 대상자를 다시 고름)
+  // 1차: 한 주에 2일까지만 / 2차: 그래도 부족하면 주 3일까지 허용
+  let allowThirdRestDay = false;
+  const runPass = () => {
+  timelineAll.forEach(({ key, day }) => {
+    let guard = 0;
+    while (guard < 20) {
+      guard++;
+      if (!hasRoom(key, day)) break;
+
+      // 이 날 배정 가능한 후보 = 빈칸이거나 일반 근무코드인 사람 중, 이 달에 아직 부족분이 있는 사람
+      const candidates = ftEmps.filter((e) => {
+        if (!canRest(key, day, e.id)) return false;
+        // 이 달 기준 부족분 (다른 달 부족분 때문에 이 달을 초과 배정하지 않도록)
+        const humuShortHere = perMonth[key].humuTarget - counts[e.id][key].humu;
+        const hyuilShortHere = perMonth[key].hyuilTarget - counts[e.id][key].hyuil;
+        if (humuShortHere <= 0 && hyuilShortHere <= 0) return false;
+        // 한 주에 쉬는 날이 너무 몰리지 않도록 제한.
+        // 기본은 주 2일(휴무1+휴일1)이지만, 그렇게 해서는 목표를 못 채우는 경우
+        // (예: 고정휴무 매장에서 공휴일이 많은 달) 주 3일까지는 허용한다.
+        const wi = weekIndexOf(key, day.day);
+        if (wi >= 0) {
+          const restsInWeek = weeksOfMonth[key][wi].filter((d) => {
+            const v = next[key][e.id]?.[d.day - 1] || "";
+            return v === "휴무" || v === "휴일";
+          }).length;
+          const weekLimit = allowThirdRestDay ? 3 : 2;
+          if (restsInWeek >= weekLimit) return false;
+        }
+        return true;
+      });
+      if (candidates.length === 0) break;
+
+      // 이 달에 부족분이 가장 많은 사람 우선 (동점이면 지금까지 배정을 덜 받은 사람)
+      const monthShortOf = (empId) =>
+        Math.max(0, perMonth[key].humuTarget - counts[empId][key].humu) +
+        Math.max(0, perMonth[key].hyuilTarget - counts[empId][key].hyuil);
+      candidates.sort((a, b) => {
+        const sa = monthShortOf(a.id), sb = monthShortOf(b.id);
+        if (sb !== sa) return sb - sa;
+        return (placedCount[a.id] || 0) - (placedCount[b.id] || 0);
+      });
+      const picked = candidates[0];
+
+      // 이 달 기준으로 휴무가 부족하면 휴무, 아니면 휴일
+      const code = (perMonth[key].humuTarget - counts[picked.id][key].humu) > 0 ? "휴무" : "휴일";
+
+      const before = next[key][picked.id][day.day - 1];
+      placeRest(key, day, picked.id, code);
+
+      // 연속근무 상한 확인은 "쉬는 날 추가"라 위반이 생길 수 없지만,
+      // 혹시 근무코드를 덮어써서 다른 구간이 길어지는 경우가 없도록 방어적으로 확인
+      if (maxStreakOf(picked.id) > consecMax) {
+        next[key][picked.id][day.day - 1] = before; // 되돌림
+        break;
       }
+
+      if (code === "휴무") counts[picked.id][key].humu++;
+      else counts[picked.id][key].hyuil++;
+      placedCount[picked.id] = (placedCount[picked.id] || 0) + 1;
+      added++;
     }
   });
+  };
+
+  runPass();
+  // 아직 목표를 못 채운 사람이 있으면 주 3일 허용으로 한 번 더
+  if (ftEmps.some((e) => shortOf(e.id).total > 0)) {
+    allowThirdRestDay = true;
+    runPass();
+  }
 
   // 주 단위 정리: 한 주(월~일) 안에서 쉬는 날이 여러 개면 "가장 앞선 날 = 휴무", 나머지 = 휴일
   // (연차·경조사 등 확정휴무 태그는 건드리지 않고, 휴무/휴일끼리만 서로 바꿈)
@@ -907,6 +985,22 @@ function assignShiftCodes(schedule, employees, tags, settings, ftTemplates, ptTe
 /* ============================================================
    검증
    ============================================================ */
+// 이 직원의 연속근무 허용 상한을 구한다.
+// 고정휴무 직원이면 그 요일쌍 패턴이 만들어내는 연속근무일수(예: 월화 휴무 → 수~일 5근)를 상한으로 삼고,
+// 그렇지 않으면 설정의 연속근무 최대 허용값을 쓴다.
+function fixedRestLimitOf(fixedRestSchedules, dayPairOptions, empName, settings) {
+  const base = Number(settings?.consecMax) || 99;
+  const entry = (fixedRestSchedules || []).find(
+    (f) => (f.empNames || []).includes(empName) && lookupDayPair(dayPairOptions, f.dayPair)
+  );
+  if (!entry) return base;
+  const wds = lookupDayPair(dayPairOptions, entry.dayPair) || [];
+  if (wds.length === 0) return base;
+  // 한 주(7일) 중 쉬는 날을 뺀 나머지가 연속으로 이어질 수 있는 최대치
+  const patternMax = 7 - wds.length;
+  return Math.max(base, patternMax);
+}
+
 function validateMonth(schedule, employees, tags, settings, days, key, fixedRestSchedules, dayPairOptions) {
   let notOkDates = [];
   days.forEach((day) => {
@@ -925,15 +1019,16 @@ function validateMonth(schedule, employees, tags, settings, days, key, fixedRest
 
   const warnList = [];
   employees.filter((e) => e.type === "정직원" && isActiveEmployee(e)).forEach((e) => {
-    // 고정휴무 직원은 매장이 정한 패턴대로 쉬는 것이므로 연속근무 경고 대상에서 제외
-    if (isFixedRestEmployee(fixedRestSchedules, dayPairOptions, e.name)) return;
+    // 고정휴무 직원은 요일쌍 패턴이 만드는 연속근무(예: 월화 휴무 → 수~일 5근)까지는 정상으로 보고,
+    // 그보다 더 길어진 경우에만 경고 (고정휴무 매장에서도 6근 이상은 잡아냄)
+    const limit = fixedRestLimitOf(fixedRestSchedules, dayPairOptions, e.name, settings);
     let consec = 0, maxRun = 0;
     days.forEach((day) => {
       const v = schedule[key][e.id][day.day - 1] || "";
       if (isOffTag(tags, v)) consec = 0;
       else { consec++; if (consec > maxRun) maxRun = consec; }
     });
-    if (maxRun > settings.consecMax) warnList.push(`${e.name}(최대연속 ${maxRun}일)`);
+    if (maxRun > limit) warnList.push(`${e.name}(최대연속 ${maxRun}일)`);
   });
 
   return { notOkCount: notOkDates.length, notOkDates, warnList };
@@ -942,7 +1037,7 @@ function validateMonth(schedule, employees, tags, settings, days, key, fixedRest
 function validateCombined(schedule, employees, tags, settings, monthsMeta, fixedRestSchedules, dayPairOptions) {
   const warnList = [];
   employees.filter((e) => e.type === "정직원" && isActiveEmployee(e)).forEach((e) => {
-    if (isFixedRestEmployee(fixedRestSchedules, dayPairOptions, e.name)) return;
+    const limit = fixedRestLimitOf(fixedRestSchedules, dayPairOptions, e.name, settings);
     let consec = 0, maxRun = 0;
     monthsMeta.forEach(({ key, days }) => {
       days.forEach((day) => {
@@ -951,7 +1046,7 @@ function validateCombined(schedule, employees, tags, settings, monthsMeta, fixed
         else { consec++; if (consec > maxRun) maxRun = consec; }
       });
     });
-    if (maxRun > settings.consecMax) warnList.push(`${e.name}(2개월 연속 최대 ${maxRun}일)`);
+    if (maxRun > limit) warnList.push(`${e.name}(2개월 연속 최대 ${maxRun}일)`);
   });
   return warnList;
 }
