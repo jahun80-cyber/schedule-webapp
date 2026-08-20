@@ -344,8 +344,14 @@ function convertRequestTags(schedule, employees, tags, settings, monthsMeta, opt
     (t) => t.trackAsLeave && Number(t.leaveHours) === 8 && (t.leavePool || "연차") === "연차"
   );
 
-  // 저장된 월별기록 기준 연차 사용량 (예: 9·10월 스케줄을 짜는 시점이면 8월말까지의 실제 사용분)
-  const usageFromArchive = computeLeaveUsage(year, tags, archive);
+  // 저장된 월별기록 기준 연차 사용량 (예: 9·10월 스케줄을 짜는 시점이면 8월말까지의 실제 사용분).
+  // 단, 지금 짜고 있는 1·2개월차와 같은 달(예: 9월/10월)에 예전에 저장해둔 기록이 남아있으면
+  // 그건 "이번 스케줄링 이전의 사용분"이 아니라 지금 다시 짜고 있는 그 달 자체이므로 제외한다
+  // (안 그러면 같은 달 연차 사용량이 중복으로 잡혀 남은 연차가 실제보다 적게 계산됨).
+  const currentMonthKeys = new Set(monthsMeta.map((m) => m.days[0]?.dateStr.slice(0, 7)).filter(Boolean));
+  const archiveForUsage = {};
+  Object.keys(archive || {}).forEach((k) => { if (!currentMonthKeys.has(k)) archiveForUsage[k] = archive[k]; });
+  const usageFromArchive = computeLeaveUsage(year, tags, archiveForUsage);
 
   const ftEmps = employees.filter((e) => e.type === "정직원" && isActiveEmployee(e));
   const timeline = buildTimeline(monthsMeta);
