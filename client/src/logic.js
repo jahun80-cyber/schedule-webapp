@@ -1421,16 +1421,17 @@ function assignRemainingRest(schedule, employees, tags, settings, monthsMeta, fi
   const timelineAll = buildTimeline(monthsMeta);
   const placedCount = {};
 
-  // 날짜를 순서대로 돌면서, 그날 여유가 있으면 "가장 부족한 직원"에게 하나씩 배정
-  // (한 명이 좋은 자리를 독식하지 않도록, 자리마다 대상자를 다시 고름)
+  // 날짜를 순서대로 돌면서, 그날 여유가 있으면 "가장 부족한 직원"에게 하나씩 배정한다.
+  // 한 라운드에 하루당 딱 1명씩만 배정하고(한 날짜가 여러 명을 몰아서 받지 않도록), 부족분이
+  // 남으면 처음부터 다시 한 바퀴 돈다 - 그러면 부족한 사람들이 여러 날짜에 골고루 흩어져서
+  // 배정되고, 이미 사람이 많이 쉬는 날(예: 고정휴무 인원이 몰린 날)보다 상대적으로 한산한
+  // 날짜부터 먼저 채워지는 효과가 자연스럽게 생긴다(hasRoom이 그날 실제 여유를 확인하므로).
   // 1차: 한 주에 2일까지만 / 2차: 그래도 부족하면 주 3일까지 허용
   let allowThirdRestDay = false;
   const runPass = () => {
+  let placedThisPass = 0;
   timelineAll.forEach(({ key, day }) => {
-    let guard = 0;
-    while (guard < 20) {
-      guard++;
-      if (!hasRoom(key, day)) break;
+      if (!hasRoom(key, day)) return;
 
       // 이 날 배정 가능한 후보 = 빈칸이거나 일반 근무코드인 사람 중, 이 달에 아직 부족분이 있는 사람
       const candidates = ftEmps.filter((e) => {
@@ -1456,7 +1457,7 @@ function assignRemainingRest(schedule, employees, tags, settings, monthsMeta, fi
         }
         return true;
       });
-      if (candidates.length === 0) break;
+      if (candidates.length === 0) return;
 
       // 이 달에 부족분이 가장 많은 사람 우선. 단, 연속근무가 상한을 넘고 있는 사람이 있으면 그 사람을 최우선.
       const monthShortOf = (empId) => {
@@ -1503,16 +1504,22 @@ function assignRemainingRest(schedule, employees, tags, settings, monthsMeta, fi
         placedSomeone = true;
         break;
       }
-      if (!placedSomeone) break; // 이 날은 아무도 배정할 수 없음
-    }
+      if (placedSomeone) placedThisPass++;
   });
+  return placedThisPass;
   };
 
-  runPass();
-  // 아직 목표를 못 채운 사람이 있으면 주 3일 허용으로 한 번 더
+  // 한 바퀴(하루당 최대 1명)를 돌려서 더 이상 아무 곳에도 못 채울 때까지 반복한다.
+  // (한 번에 다 채우지 않고 매번 처음부터 다시 돌기 때문에, 부족한 사람들이 여러 날짜에 나뉘어 배정된다)
+  for (let round = 0; round < 60; round++) {
+    if (runPass() === 0) break;
+  }
+  // 아직 목표를 못 채운 사람이 있으면 주 3일 허용으로 한 번 더(마찬가지로 하루당 1명씩, 여러 바퀴)
   if (ftEmps.some((e) => shortOf(e.id).total > 0)) {
     allowThirdRestDay = true;
-    runPass();
+    for (let round = 0; round < 60; round++) {
+      if (runPass() === 0) break;
+    }
   }
 
   // 주 단위 정리: 한 주(월~일) 안에서 쉬는 날이 여러 개면 "가장 앞선 날 = 휴무", 나머지 = 휴일
