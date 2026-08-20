@@ -107,13 +107,21 @@ function AutoGrowTextarea({ value, onChange }) {
 }
 
 function Select({ value, onChange, options, className = "" }) {
+  const normOptions = options.map((o) => ({ value: o?.value ?? o, label: o?.label ?? o }));
+  // eslint-disable-next-line eqeqeq
+  const hasMatch = normOptions.some((o) => o.value == value);
+  // 저장된 값이 옵션 목록 어디에도 없으면(예: 예전 데이터에 값이 아예 비어있는 경우) 브라우저가
+  // 조용히 첫 번째 옵션을 대신 보여줘서 "정상 선택된 것처럼" 착각하게 만든다 - 그걸 막기 위해
+  // 그런 경우엔 눈에 띄는 빨간 "⚠ 선택 안 됨" 자리표시자를 보여주고, 실제 옵션 중 하나를 골라야
+  // 그제서야 값이 저장되게 한다.
   return (
     <select
-      value={value} onChange={(e) => onChange(e.target.value)}
-      className={`border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400 ${className}`}
+      value={hasMatch ? value : "__unset__"} onChange={(e) => onChange(e.target.value)}
+      className={`border rounded-md px-2 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400 ${hasMatch ? "border-slate-300" : "border-red-400 text-red-600 font-semibold"} ${className}`}
     >
-      {options.map((o) => (
-        <option key={o.value ?? o} value={o.value ?? o}>{o.label ?? o}</option>
+      {!hasMatch && <option value="__unset__" disabled>⚠ 선택 안 됨</option>}
+      {normOptions.map((o) => (
+        <option key={o.value} value={o.value}>{o.label}</option>
       ))}
     </select>
   );
