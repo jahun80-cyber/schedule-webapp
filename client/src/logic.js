@@ -352,6 +352,12 @@ function convertRequestTags(schedule, employees, tags, settings, monthsMeta, opt
   const daysByKey = {};
   monthsMeta.forEach(({ key, days }) => { daysByKey[key] = days; });
 
+  // 참고: 여기서는 리더 최소인원을 따로 검사하지 않는다. RQ 등 "요청" 태그는 이미 그 자체로
+  // 출근 안 함(countsAsAttend:false)으로 취급되는 상태라, 그걸 휴무/휴일로 "전환"해도 그날 출근인원은
+  // 바뀌지 않는다(휴무든 RQ든 둘 다 "쉬는 상태"). 그래서 이 단계에서 리더 슬랙을 막을 이유가 없다
+  // (실제로 리더 최소인원을 지켜야 하는 지점은 "새로 누군가를 쉬게 정하는" assignRestDays/
+  // applyFixedRestSchedules/assignRemainingRest와, 자리를 맞바꾸는 finalAdjust다).
+
   let toRest = 0, toLeave = 0;
   const leaveDetails = [];   // 연차로 바뀐 내역
   const leftOver = [];       // 휴무/휴일/연차 모두 부족해 그대로 남은 요청
@@ -875,6 +881,21 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
 
   const limitOf = (emp) => fixedRestLimitOf(fixedRestSchedules, dayPairOptions, emp, settings);
 
+  // 리더 최소인원(직책별 최소인원 사용 시) - 이 함수의 모든 교환/이동은 마지막에 반드시 이 검사를 같이 통과해야 한다.
+  // (여기서 하는 "부족/초과분 교환"이 리더를 다른 날로 밀어버리면 1·3단계에서 지켜둔 리더 최소인원이 깨질 수 있어서)
+  const leaderAttendOn = (key, day) => {
+    // 다른 곳(assignRestDays 등)과 동일한 규칙: 아직 안 채워진 칸(빈칸)은 "출근 예정"으로 간주한다
+    // (여기 4단계는 보통 근무배정까지 끝난 뒤 돌리지만, 만약을 대비해 일관되게 계산)
+    let count = 0;
+    ftEmps.forEach((e) => {
+      if (e.role !== "리더") return;
+      const v = next[key][e.id]?.[day.day - 1] || "";
+      if (v === "" || !isOffTag(tags, v)) count++;
+    });
+    return count;
+  };
+  const leaderOk = (key, day) => !settings?.leaderMinEnabled || leaderAttendOn(key, day) >= requiredLeaderFT(settings, day);
+
   // 2개월 전체를 월~일 주 단위로 묶어둔다 (주 규칙 확인용)
   const weeksAll = [];
   {
@@ -938,7 +959,7 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
 
         const okOver = maxStreakOf(over.id) <= limitOf(over);
         const okDonor = maxStreakOf(donor.id) <= limitOf(donor);
-        if (okOver && okDonor) {
+        if (okOver && okDonor && leaderOk(key, day)) {
           changedDays.add(`${key}|${day.day}`);
           streakFixed++;
           swapped = true;
@@ -1015,7 +1036,7 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
           next[slot.key][taker.emp.id][slot.day.day - 1] = taker.code;  // 받는 사람은 부족한 코드로
           next[slot.key][giver.emp.id][slot.day.day - 1] = takerVal;    // 주는 사람은 근무로
 
-          if (maxStreakOf(giver.emp.id) <= limitOf(giver.emp) && maxStreakOf(taker.emp.id) <= limitOf(taker.emp)) {
+          if (maxStreakOf(giver.emp.id) <= limitOf(giver.emp) && maxStreakOf(taker.emp.id) <= limitOf(taker.emp) && leaderOk(slot.key, slot.day)) {
             changedDays.add(`${slot.key}|${slot.day.day}`);
             balanceFixed++;
             moved = true;
@@ -1065,7 +1086,7 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
         next[overMonth.key][e.id][giveSlot.day - 1] = "";      // 근무로 되돌림(2단계 재배정이 채움)
         next[underMonth.key][e.id][takeSlot.day - 1] = code;
 
-        if (maxStreakOf(e.id) <= limitOf(e)) {
+        if (maxStreakOf(e.id) <= limitOf(e) && leaderOk(overMonth.key, giveSlot) && leaderOk(underMonth.key, takeSlot)) {
           changedDays.add(`${overMonth.key}|${giveSlot.day}`);
           changedDays.add(`${underMonth.key}|${takeSlot.day}`);
           balanceFixed++;
@@ -1108,7 +1129,7 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
 
             const before = next[k][e.id][day.day - 1];
             next[k][e.id][day.day - 1] = "휴무";
-            if (maxStreakOf(e.id) <= limitOf(e)) {
+            if (maxStreakOf(e.id) <= limitOf(e) && leaderOk(k, day)) {
               changedDays.add(`${k}|${day.day}`);
               balanceFixed++;
               added2 = true;
@@ -1159,7 +1180,7 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
             const donorVal = next[k][donor.id][day.day - 1];
             next[k][e.id][day.day - 1] = "휴무";
             next[k][donor.id][day.day - 1] = myVal;
-            if (maxStreakOf(e.id) <= limitOf(e) && maxStreakOf(donor.id) <= limitOf(donor)) {
+            if (maxStreakOf(e.id) <= limitOf(e) && maxStreakOf(donor.id) <= limitOf(donor) && leaderOk(k, day)) {
               changedDays.add(`${k}|${day.day}`);
               balanceFixed++;
               swapped2 = true;
