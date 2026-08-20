@@ -143,6 +143,12 @@ function requiredPT(settings, day) {
   if (day.issuePT !== null) return day.issuePT;
   return isWeekendBucket(settings, day) ? settings.weekendMinPT : settings.weekdayMinPT;
 }
+// 직책별(리더) 최소 출근인원 - 매장이 "직책별 최소인원 사용"을 켠 경우에만 의미가 있고,
+// 꺼져 있으면 항상 0을 반환해 관련 로직이 전부 자연스럽게 no-op이 된다.
+function requiredLeaderFT(settings, day) {
+  if (!settings?.leaderMinEnabled) return 0;
+  return isWeekendBucket(settings, day) ? (Number(settings.weekendMinLeader) || 0) : (Number(settings.weekdayMinLeader) || 0);
+}
 function satTarget(days) { return days.filter((d) => d.weekday === "토").length; }
 function sunHolTarget(days) {
   return (
@@ -161,6 +167,35 @@ function isAutoAssignable(e) {
   if (e.type !== "정직원") return true;
   if (!e.memberType || e.memberType === "우리매장") return true;
   return !!e.autoAssign;
+}
+
+// 이 직원의 휴무 배정 방식. emp.restMode가 없으면(마이그레이션 안 된 예외 상황) 매장 기본값을 따른다.
+function restModeOf(emp, settings) {
+  return emp?.restMode || settings?.restMode || "로테이션";
+}
+function isRotationEmployee(emp, settings) {
+  return restModeOf(emp, settings) !== "고정휴무";
+}
+
+// 계약기간(인턴 등)이 있는 직원이 그 날짜에 재직 중인지. 계약기간 설정이 없으면 항상 재직으로 본다.
+function isUnderContractOn(emp, dateStr) {
+  if (emp?.contractStart && dateStr < emp.contractStart) return false;
+  if (emp?.contractEnd && dateStr > emp.contractEnd) return false;
+  return true;
+}
+// 그날 출근을 "1인분"으로 셀지 여부(인턴 입사 초반 1인분을 못 하는 기간 제외용).
+function isCountedOn(emp, dateStr) {
+  if (emp?.fullCountFrom && dateStr < emp.fullCountFrom) return false;
+  return true;
+}
+
+// 이 직원의 이번 1·2개월차 휴무/휴일 목표. emp.restTargetM1/M2에 값이 있으면 그걸 그대로 쓰고
+// (인턴처럼 계약기간이 있는 인원을 수기로 지정할 때 사용), 없으면 기존처럼 매장 공통 계산식을 쓴다.
+function restTargetFor(emp, key, days) {
+  const override = key === "m1" ? emp?.restTargetM1 : key === "m2" ? emp?.restTargetM2 : null;
+  const humu = override && override.humu !== "" && override.humu != null ? Number(override.humu) : satTarget(days);
+  const hyuil = override && override.hyuil !== "" && override.hyuil != null ? Number(override.hyuil) : sunHolTarget(days);
+  return { humu, hyuil };
 }
 
 function isOffTag(tags, v) {
@@ -189,6 +224,16 @@ function emptySchedule(employees, days1, days2) {
 
 // 기존 스케줄을 새 달력 길이에 맞춰 보존 이관 (직원 추가/월 변경 대응)
 // 예전 방식(wd2/wd3/wd4 고정 3칸)으로 저장된 데이터를 배열 방식(wdCounts/weCounts)으로 자동 변환
+// 기존 매장은 employee.restMode가 없다. 매장의 기존 settings.restMode를 그대로 채워 넣어,
+// 배포 직후엔 동작이 하나도 바뀌지 않게 한다(그 뒤로는 [직원목록]에서 인원별로 자유롭게 바꿀 수 있음).
+function normalizeEmployeeRestModes(employees, settings) {
+  const fallback = settings?.restMode || "로테이션";
+  return (employees || []).map((e) => {
+    if (e.type !== "정직원" || e.restMode) return e;
+    return { ...e, restMode: fallback };
+  });
+}
+
 function normalizeFtTemplates(ftTemplates) {
   return (ftTemplates || []).map((t) => {
     if (Array.isArray(t.wdCounts) && Array.isArray(t.weCounts)) return t;
@@ -304,10 +349,8 @@ function convertRequestTags(schedule, employees, tags, settings, monthsMeta, opt
 
   const ftEmps = employees.filter((e) => e.type === "정직원" && isActiveEmployee(e));
   const timeline = buildTimeline(monthsMeta);
-  const monthTargets = {};
-  monthsMeta.forEach(({ key, days }) => {
-    monthTargets[key] = { humu: satTarget(days), hyuil: sunHolTarget(days) };
-  });
+  const daysByKey = {};
+  monthsMeta.forEach(({ key, days }) => { daysByKey[key] = days; });
 
   let toRest = 0, toLeave = 0;
   const leaveDetails = [];   // 연차로 바뀐 내역
@@ -340,16 +383,17 @@ function convertRequestTags(schedule, employees, tags, settings, monthsMeta, opt
     timeline.forEach(({ key, day }) => {
       const v = next[key][e.id]?.[day.day - 1] || "";
       if (!requestCodes.has(v)) return;
+      const t = restTargetFor(e, key, daysByKey[key]);
 
       // 1) 그 달 휴무가 남았으면 휴무로
-      if (counts[key].humu < monthTargets[key].humu) {
+      if (counts[key].humu < t.humu) {
         next[key][e.id][day.day - 1] = "휴무";
         counts[key].humu++;
         toRest++;
         return;
       }
       // 2) 그 달 휴일이 남았으면 휴일로
-      if (counts[key].hyuil < monthTargets[key].hyuil) {
+      if (counts[key].hyuil < t.hyuil) {
         next[key][e.id][day.day - 1] = "휴일";
         counts[key].hyuil++;
         toRest++;
@@ -430,14 +474,12 @@ function applyFixedRestSchedules(schedule, employees, fixedRestSchedules, dayPai
     priorityCache[ym] = map;
     return map;
   };
-  // 월별 휴무/휴일 목표 (이 개수를 넘겨서 배정하지 않도록)
-  const monthTarget = {};
-  monthsMeta.forEach(({ key, days }) => {
-    monthTarget[key] = { humu: satTarget(days), hyuil: sunHolTarget(days) };
-  });
+  // 월별 휴무/휴일 목표 (이 개수를 넘겨서 배정하지 않도록) - 인원별 수기 목표(restTargetM1/M2)가 있으면 그걸 우선한다
+  const daysByKey = {};
+  monthsMeta.forEach(({ key, days }) => { daysByKey[key] = days; });
 
   timeline.forEach(({ key, day }) => {
-    // 이 날짜에 고정휴무가 걸리는 직원들을 모으고, 우선순위 순으로 정렬
+    // 이 날짜에 고정휴무가 걸리는 직원들을 모으고, 우선순위 순으로 정렬 (계약기간 밖인 인원은 후보에서 제외)
     const candidates = [];
     (fixedRestSchedules || []).forEach((f) => {
       const sortedWds = lookupDayPair(dayPairOptions, f.dayPair);
@@ -450,6 +492,9 @@ function applyFixedRestSchedules(schedule, employees, fixedRestSchedules, dayPai
       f.empNames.forEach((empName) => {
         const emp = ftEmps.find((e) => e.name === empName);
         if (!emp) return;
+        // 이 사람이 나중에 "로테이션"으로 바뀌었는데 옛 고정휴무 설정에 이름이 남아있는 경우를 방어
+        if (isRotationEmployee(emp, settings)) return;
+        if (!isUnderContractOn(emp, day.dateStr)) return;
         const cur = next[key][emp.id]?.[day.day - 1] || "";
         if (cur !== "") return; // 개인지정태그 등으로 이미 채워진 칸은 건드리지 않음
         candidates.push({ empId: emp.id, code: wdIdx === 0 ? "휴무" : "휴일" });
@@ -472,17 +517,34 @@ function applyFixedRestSchedules(schedule, employees, fixedRestSchedules, dayPai
     let slots = totalFT - required - alreadyOff;
     if (slots < 0) slots = 0;
 
+    // 리더 최소인원(직책별 최소인원 사용 시) - 이미 쉬고 있는 리더를 뺀 만큼만 더 쉴 수 있다
+    let leaderSlack = Infinity;
+    if (settings?.leaderMinEnabled) {
+      const leaders = ftEmps.filter((e) => e.role === "리더");
+      let leaderOff = 0;
+      leaders.forEach((e) => {
+        const v = next[key][e.id]?.[day.day - 1] || "";
+        if (v !== "" && isOffTag(tags || [], v)) leaderOff++;
+      });
+      leaderSlack = leaders.length - requiredLeaderFT(settings, day) - leaderOff;
+      if (leaderSlack < 0) leaderSlack = 0;
+    }
+
     candidates.forEach((c) => {
       if (slots <= 0) { skipped++; return; }
-      // 그 달의 휴무/휴일 목표를 넘지 않도록 제한
+      const emp = ftEmps.find((e) => e.id === c.empId);
+      if (emp?.role === "리더" && leaderSlack <= 0) { skipped++; return; }
+      // 그 달의 휴무/휴일 목표를 넘지 않도록 제한 (인원별 수기 목표가 있으면 그걸 기준)
       // (예: 그 달에 해당 요일이 5번 있는데 목표는 4개인 경우, 5번째는 배정하지 않음)
       let cur = 0;
       (next[key][c.empId] || []).forEach((v) => { if (v === c.code) cur++; });
-      const target = c.code === "휴무" ? monthTarget[key].humu : monthTarget[key].hyuil;
-      if (cur >= target) { skipped++; return; }
+      const target = restTargetFor(emp, key, daysByKey[key]);
+      const targetVal = c.code === "휴무" ? target.humu : target.hyuil;
+      if (cur >= targetVal) { skipped++; return; }
 
       next[key][c.empId][day.day - 1] = c.code;
       slots--;
+      if (emp?.role === "리더") leaderSlack--;
       applied++;
     });
   });
@@ -510,13 +572,18 @@ function assignRestDays(schedule, employees, tags, settings, monthsMeta, fixedRe
   Object.keys(next.m1).forEach((id) => (next.m1[id] = [...schedule.m1[id]]));
   Object.keys(next.m2).forEach((id) => (next.m2[id] = [...schedule.m2[id]]));
 
-  const ftEmps = employees.filter((e) => e.type === "정직원" && isActiveEmployee(e) && isAutoAssignable(e));
+  // 고정휴무 인원은 이 함수가 "새로 선택"하지는 않는다(applyFixedRestSchedules가 전담)지만,
+  // 최소인원/리더최소인원 슬랙 계산에는 반드시 포함되어야 한다(전체 출근 가능 인원 기준이므로).
+  const allFtEmps = employees.filter((e) => e.type === "정직원" && isActiveEmployee(e) && isAutoAssignable(e));
+  const ftEmps = allFtEmps.filter((e) => isRotationEmployee(e, settings));
   const ftCount = ftEmps.length;
   if (ftCount === 0) return { schedule: next, message: "정직원이 없어 자동배정을 건너뛰었습니다.", inserted: 0 };
 
   const timeline = buildTimeline(monthsMeta);
   const totalDays = timeline.length;
 
+  const daysByKey = {};
+  monthsMeta.forEach(({ key, days }) => { daysByKey[key] = days; });
   const monthTargets = {};
   monthsMeta.forEach(({ key, days }) => {
     monthTargets[key] = { sat: satTarget(days), sunHol: sunHolTarget(days) };
@@ -530,71 +597,94 @@ function assignRestDays(schedule, employees, tags, settings, monthsMeta, fixedRe
   ftEmps.forEach((e) => { selNew[e.id] = new Set(); });
 
   let inserted = 0;
+  const urgentThresholdOf = (e) => Number(e.consecRecommended) || Number(settings.consecRecommended) || 3;
 
   timeline.forEach((slot, idx) => {
     const { key, day } = slot;
+    // 계약기간(인턴 등)이 있는 인원은 그 기간 밖인 날엔 아예 없는 사람처럼 취급한다.
+    // allActiveToday: 오늘 최소인원 계산에 들어가는 전체(로테이션+고정휴무), activeToday: 오늘 새로 뽑을 수 있는 후보(로테이션만)
+    const allActiveToday = allFtEmps.filter((e) => isUnderContractOn(e, day.dateStr));
+    const activeToday = allActiveToday.filter((e) => isRotationEmployee(e, settings));
+
     const cellsToday = {};
-    ftEmps.forEach((e) => (cellsToday[e.id] = next[key][e.id][day.day - 1] || ""));
+    allActiveToday.forEach((e) => (cellsToday[e.id] = next[key][e.id][day.day - 1] || ""));
     const isBlank = {};
-    ftEmps.forEach((e) => (isBlank[e.id] = cellsToday[e.id] === ""));
+    allActiveToday.forEach((e) => (isBlank[e.id] = cellsToday[e.id] === ""));
     // 고정휴무가 적용되는 사람은 그날 이 로테이션 배정의 후보에서 제외 (이미 고정 패턴대로 확정됨)
     const isFixedToday = {};
-    ftEmps.forEach((e) => (isFixedToday[e.id] = isFixedRestCovered(fixedRestSchedules, dayPairOptions, e.name, day.dateStr)));
+    activeToday.forEach((e) => (isFixedToday[e.id] = isFixedRestCovered(fixedRestSchedules, dayPairOptions, e.name, day.dateStr)));
 
     let alreadyOff = 0;
-    ftEmps.forEach((e) => { if (!isBlank[e.id] && isOffTag(tags, cellsToday[e.id])) alreadyOff++; });
+    allActiveToday.forEach((e) => { if (!isBlank[e.id] && isOffTag(tags, cellsToday[e.id])) alreadyOff++; });
 
     const required = requiredFT(settings, day);
-    let slackHard = ftCount - required - alreadyOff;
+    const todayCount = allActiveToday.length;
+    let slackHard = todayCount - required - alreadyOff;
     if (slackHard < 0) slackHard = 0;
     let slackSoft = slackHard;
     if (dowBucket(settings, day.weekday) === "평일(소프트-주말수준)") {
-      slackSoft = ftCount - settings.weekendMinFT - alreadyOff;
+      slackSoft = todayCount - settings.weekendMinFT - alreadyOff;
       if (slackSoft < 0) slackSoft = 0;
       if (slackSoft > slackHard) slackSoft = slackHard;
     }
 
+    // 리더 최소인원(직책별 최소인원 사용 시) - 리더인 후보는 이 슬랙이 바닥나면 뽑히지 않는다.
+    // 고정휴무 리더도 슬랙 계산엔 포함(오늘 이미 리더가 몇 명 쉬고 있는지는 모드와 무관하게 사실이므로).
+    let leaderSlack = Infinity;
+    if (settings?.leaderMinEnabled) {
+      const leaders = allActiveToday.filter((e) => e.role === "리더");
+      let leaderOff = 0;
+      leaders.forEach((e) => { if (!isBlank[e.id] && isOffTag(tags, cellsToday[e.id])) leaderOff++; });
+      leaderSlack = leaders.length - requiredLeaderFT(settings, day) - leaderOff;
+      if (leaderSlack < 0) leaderSlack = 0;
+    }
+    const leaderBlocks = (e) => e.role === "리더" && leaderSlack <= 0;
+    const markSelected = (id) => {
+      selected.add(id); usedSlots++;
+      const emp = activeToday.find((e) => e.id === id);
+      if (emp?.role === "리더") leaderSlack--;
+    };
+
     const selected = new Set();
     let usedSlots = 0;
-    const urgentThreshold = Number(settings.consecRecommended) || 3; // 이 이상 연속근무하면 "급한 사람"으로 우선 배정
 
     // 1단계: 급한 사람(연속근무 권장 상한 이상) - 소프트 한도
     while (true) {
       let bestId = null, bestStreak = -1;
-      ftEmps.forEach((e) => {
-        if (isBlank[e.id] && !isFixedToday[e.id] && !selected.has(e.id) && streak[e.id] >= urgentThreshold && streak[e.id] > bestStreak) {
+      activeToday.forEach((e) => {
+        if (isBlank[e.id] && !isFixedToday[e.id] && !selected.has(e.id) && !leaderBlocks(e) && streak[e.id] >= urgentThresholdOf(e) && streak[e.id] > bestStreak) {
           bestStreak = streak[e.id]; bestId = e.id;
         }
       });
       if (!bestId) break;
-      if (usedSlots < slackSoft) { selected.add(bestId); usedSlots++; } else break;
+      if (usedSlots < slackSoft) { markSelected(bestId); } else break;
     }
     // 1b단계: 하드 한도까지
     while (true) {
       let bestId = null, bestStreak = -1;
-      ftEmps.forEach((e) => {
-        if (isBlank[e.id] && !isFixedToday[e.id] && !selected.has(e.id) && streak[e.id] >= urgentThreshold && streak[e.id] > bestStreak) {
+      activeToday.forEach((e) => {
+        if (isBlank[e.id] && !isFixedToday[e.id] && !selected.has(e.id) && !leaderBlocks(e) && streak[e.id] >= urgentThresholdOf(e) && streak[e.id] > bestStreak) {
           bestStreak = streak[e.id]; bestId = e.id;
         }
       });
       if (!bestId) break;
-      if (usedSlots < slackHard) { selected.add(bestId); usedSlots++; } else break;
+      if (usedSlots < slackHard) { markSelected(bestId); } else break;
     }
     // 2단계: 선제 배정 (페이스 뒤처짐)
     while (true) {
       let bestId = null, bestRest = Infinity;
-      ftEmps.forEach((e) => {
-        if (isBlank[e.id] && !isFixedToday[e.id] && !selected.has(e.id) && streak[e.id] >= 1 && restCount[e.id] < bestRest) {
+      activeToday.forEach((e) => {
+        if (isBlank[e.id] && !isFixedToday[e.id] && !selected.has(e.id) && !leaderBlocks(e) && streak[e.id] >= 1 && restCount[e.id] < bestRest) {
           bestRest = restCount[e.id]; bestId = e.id;
         }
       });
       if (!bestId) break;
       if (usedSlots >= slackSoft) break;
       const paceTarget = (target * (idx + 1)) / totalDays;
-      if (restCount[bestId] < paceTarget) { selected.add(bestId); usedSlots++; } else break;
+      if (restCount[bestId] < paceTarget) { markSelected(bestId); } else break;
     }
 
-    ftEmps.forEach((e) => {
+    activeToday.forEach((e) => {
       if (isBlank[e.id]) {
         if (selected.has(e.id)) {
           selNew[e.id].add(idx);
@@ -626,10 +716,10 @@ function assignRestDays(schedule, employees, tags, settings, monthsMeta, fixedRe
     });
   });
 
-  // 2단계-B: 월별 목표 보정
+  // 2단계-B: 월별 목표 보정 (인원별 수기 목표(restTargetM1/M2)가 있으면 그걸 기준으로 삼는다)
   monthsMeta.forEach(({ key }) => {
-    const satT = monthTargets[key].sat;
     ftEmps.forEach((e) => {
+      const satT = restTargetFor(e, key, daysByKey[key]).humu;
       const arr = next[key][e.id];
       const idxsThisMonth = [];
       timeline.forEach((slot, idx) => { if (slot.key === key && selNew[e.id].has(idx)) idxsThisMonth.push(idx); });
@@ -770,17 +860,20 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
   Object.keys(next.m1).forEach((id) => (next.m1[id] = [...schedule.m1[id]]));
   Object.keys(next.m2).forEach((id) => (next.m2[id] = [...schedule.m2[id]]));
 
+  // 여기는 assignRestDays와 달리 고정휴무 인원도 포함한다 - 새로 패턴을 시작하는 단계가 아니라
+  // "부족/초과분을 다른 날로 보충·교환"하는 마무리 단계라, 고정휴무 인원도 목표에 못 미치면
+  // 패턴 외 다른 날로 보충받고 연속근무 초과도 함께 잡아줘야 한다(기존 동작 유지).
   const ftEmps = employees.filter((e) => e.type === "정직원" && isActiveEmployee(e) && isAutoAssignable(e));
   if (ftEmps.length === 0) return { schedule: next, streakFixed: 0, balanceFixed: 0, message: "정직원이 없어 조율을 건너뛰었습니다." };
 
   const timeline = buildTimeline(monthsMeta);
   const workCodeSet = new Set((tags || []).filter((t) => t.countsAsAttend).map((t) => t.code));
-  const perMonth = {};
-  monthsMeta.forEach(({ key, days }) => {
-    perMonth[key] = { humuTarget: satTarget(days), hyuilTarget: sunHolTarget(days) };
-  });
+  const daysOfKey = {};
+  monthsMeta.forEach(({ key, days }) => { daysOfKey[key] = days; });
+  // 인원별 휴무/휴일 목표(수기 오버라이드가 있으면 그걸, 없으면 매장 공통 계산식을 쓴다)
+  const targetOf = (emp, key) => restTargetFor(emp, key, daysOfKey[key]);
 
-  const limitOf = (emp) => fixedRestLimitOf(fixedRestSchedules, dayPairOptions, emp.name, settings);
+  const limitOf = (emp) => fixedRestLimitOf(fixedRestSchedules, dayPairOptions, emp, settings);
 
   // 2개월 전체를 월~일 주 단위로 묶어둔다 (주 규칙 확인용)
   const weeksAll = [];
@@ -796,8 +889,11 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
     weeksAll.findIndex((w) => w.some(({ key: k, day }) => k === key && day.day === dayNum));
 
   const maxStreakOf = (empId) => {
+    const emp = ftEmps.find((e) => e.id === empId);
     let consec = 0, maxRun = 0;
     timeline.forEach(({ key, day }) => {
+      // 계약기간(인턴 등) 밖인 날은 근무도 휴무도 아니므로 연속근무 계산에서 경계로 취급(리셋)한다
+      if (emp && !isUnderContractOn(emp, day.dateStr)) { consec = 0; return; }
       const v = next[key][empId]?.[day.day - 1] || "";
       if (v !== "" && isOffTag(tags, v)) consec = 0;
       else { consec++; if (consec > maxRun) maxRun = consec; }
@@ -873,10 +969,11 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
       const deficitList = [];
       ftEmps.forEach((e) => {
         const c = countOf(e.id, key);
-        if (c.humu > perMonth[key].humuTarget) surplusList.push({ emp: e, code: "휴무" });
-        if (c.hyuil > perMonth[key].hyuilTarget) surplusList.push({ emp: e, code: "휴일" });
-        if (c.humu < perMonth[key].humuTarget) deficitList.push({ emp: e, code: "휴무" });
-        if (c.hyuil < perMonth[key].hyuilTarget) deficitList.push({ emp: e, code: "휴일" });
+        const t = targetOf(e, key);
+        if (c.humu > t.humu) surplusList.push({ emp: e, code: "휴무" });
+        if (c.hyuil > t.hyuil) surplusList.push({ emp: e, code: "휴일" });
+        if (c.humu < t.humu) deficitList.push({ emp: e, code: "휴무" });
+        if (c.hyuil < t.hyuil) deficitList.push({ emp: e, code: "휴일" });
       });
       if (surplusList.length === 0 || deficitList.length === 0) continue;
 
@@ -940,12 +1037,11 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
     let moved = false;
     for (const e of ftEmps) {
       for (const code of ["휴무", "휴일"]) {
-        const targetKey = code === "휴무" ? "humuTarget" : "hyuilTarget";
         const countKey = code === "휴무" ? "humu" : "hyuil";
 
         // 초과한 달과 부족한 달 찾기
-        const overMonth = monthsMeta.find(({ key }) => countOf(e.id, key)[countKey] > perMonth[key][targetKey]);
-        const underMonth = monthsMeta.find(({ key }) => countOf(e.id, key)[countKey] < perMonth[key][targetKey]);
+        const overMonth = monthsMeta.find(({ key }) => countOf(e.id, key)[countKey] > targetOf(e, key)[countKey]);
+        const underMonth = monthsMeta.find(({ key }) => countOf(e.id, key)[countKey] < targetOf(e, key)[countKey]);
         if (!overMonth || !underMonth) continue;
 
         // 초과한 달에서 이 코드로 쉬는 날 하나를 근무로 바꾸고
@@ -990,7 +1086,7 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
     let added2 = false;
     for (const e of ftEmps) {
       for (const { key } of monthsMeta) {
-        const need = perMonth[key].humuTarget - countOf(e.id, key).humu;
+        const need = targetOf(e, key).humu - countOf(e.id, key).humu;
         if (need <= 0) continue;
 
         for (let wi = 0; wi < weeksAll.length && !added2; wi++) {
@@ -1034,7 +1130,7 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
     let swapped2 = false;
     for (const e of ftEmps) {
       for (const { key } of monthsMeta) {
-        const need = perMonth[key].humuTarget - countOf(e.id, key).humu;
+        const need = targetOf(e, key).humu - countOf(e.id, key).humu;
         if (need <= 0) continue;
 
         for (let wi = 0; wi < weeksAll.length && !swapped2; wi++) {
@@ -1053,7 +1149,8 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
               if (ov !== "휴무" && ov !== "휴일") return false;
               // 넘겨주면 그 사람은 그 코드가 하나 줄어드는데, 목표보다 많아야 넘길 수 있음
               const oc = countOf(o.id, k);
-              const oTarget = ov === "휴무" ? perMonth[k].humuTarget : perMonth[k].hyuilTarget;
+              const ot = targetOf(o, k);
+              const oTarget = ov === "휴무" ? ot.humu : ot.hyuil;
               const oCur = ov === "휴무" ? oc.humu : oc.hyuil;
               return oCur > oTarget;
             });
@@ -1087,8 +1184,9 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
     for (const e of ftEmps) {
       for (const { key, days } of monthsMeta) {
         const c = countOf(e.id, key);
-        const overHumu = c.humu - perMonth[key].humuTarget;
-        const overHyuil = c.hyuil - perMonth[key].hyuilTarget;
+        const t = targetOf(e, key);
+        const overHumu = c.humu - t.humu;
+        const overHyuil = c.hyuil - t.hyuil;
         const code = overHyuil > 0 ? "휴일" : (overHumu > 0 ? "휴무" : null);
         if (!code) continue;
 
@@ -1120,8 +1218,9 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
     const shortParts = [], extraParts = [];
     monthsMeta.forEach(({ key, label }) => {
       const c = countOf(e.id, key);
-      const dh = c.humu - perMonth[key].humuTarget;
-      const dy = c.hyuil - perMonth[key].hyuilTarget;
+      const t = targetOf(e, key);
+      const dh = c.humu - t.humu;
+      const dy = c.hyuil - t.hyuil;
       if (dh < 0) shortParts.push(`${label || key} 휴무 ${dh}`);
       if (dy < 0) shortParts.push(`${label || key} 휴일 ${dy}`);
       if (dh > 0) extraParts.push(`${label || key} 휴무 +${dh}`);
@@ -1156,6 +1255,7 @@ function assignRemainingRest(schedule, employees, tags, settings, monthsMeta, fi
   Object.keys(next.m1).forEach((id) => (next.m1[id] = [...schedule.m1[id]]));
   Object.keys(next.m2).forEach((id) => (next.m2[id] = [...schedule.m2[id]]));
 
+  // 여기도 finalAdjust와 같은 이유로 고정휴무 인원을 포함한다(부족분을 패턴 외 다른 날로 보충하는 마무리 단계)
   const ftEmps = employees.filter((e) => e.type === "정직원" && isActiveEmployee(e) && isAutoAssignable(e));
   if (ftEmps.length === 0) return { schedule: next, added: 0, message: "정직원이 없어 추가 배정을 건너뛰었습니다." };
 
@@ -1164,16 +1264,29 @@ function assignRemainingRest(schedule, employees, tags, settings, monthsMeta, fi
   const workCodeSet = new Set((tags || []).filter((t) => t.countsAsAttend).map((t) => t.code));
   const changedDays = new Set(); // "key|day" - 근무조 재배정이 필요한 날짜
 
-  // 그날 한 명 더 쉬어도 최소 출근인원이 유지되는지
+  // 그날(계약기간 안인 인원만) 한 명 더 쉬어도 최소 출근인원이 유지되는지
+  const activeOn = (key, day) => ftEmps.filter((e) => isUnderContractOn(e, day.dateStr));
   const hasRoom = (key, day) => {
+    const active = activeOn(key, day);
     let off = 0;
-    ftEmps.forEach((e) => {
+    active.forEach((e) => {
       const v = next[key][e.id]?.[day.day - 1] || "";
       if (v !== "" && isOffTag(tags, v)) off++;
     });
     // 아직 안 채워진 칸(빈칸)은 출근으로 간주
-    const attending = ftEmps.length - off;
+    const attending = active.length - off;
     return attending - 1 >= requiredFT(settings, day);
+  };
+  // 리더 최소인원(직책별 최소인원 사용 시) - 그날 리더가 한 명 더 쉬어도 되는지
+  const leaderHasRoom = (key, day) => {
+    if (!settings?.leaderMinEnabled) return true;
+    const leaders = activeOn(key, day).filter((e) => e.role === "리더");
+    let off = 0;
+    leaders.forEach((e) => {
+      const v = next[key][e.id]?.[day.day - 1] || "";
+      if (v !== "" && isOffTag(tags, v)) off++;
+    });
+    return (leaders.length - off) - 1 >= requiredLeaderFT(settings, day);
   };
 
   // 이 칸에 휴무/휴일을 넣어도 되는지:
@@ -1198,10 +1311,12 @@ function assignRemainingRest(schedule, employees, tags, settings, monthsMeta, fi
   const flatIndexOf = {};
   flatTimeline.forEach((slot, i) => { flatIndexOf[`${slot.key}|${slot.day.day}`] = i; });
 
-  // 이 직원의 현재 최대 연속근무 일수
+  // 이 직원의 현재 최대 연속근무 일수 (계약기간 밖인 날은 경계로 취급해 리셋)
   const maxStreakOf = (empId) => {
+    const emp = ftEmps.find((e) => e.id === empId);
     let consec = 0, maxRun = 0;
     flatTimeline.forEach(({ key, day }) => {
+      if (emp && !isUnderContractOn(emp, day.dateStr)) { consec = 0; return; }
       const v = next[key][empId]?.[day.day - 1] || "";
       if (v !== "" && isOffTag(tags, v)) consec = 0;
       else { consec++; if (consec > maxRun) maxRun = consec; }
@@ -1228,10 +1343,10 @@ function assignRemainingRest(schedule, employees, tags, settings, monthsMeta, fi
   };
 
   let added = 0;
-  const perMonth = {};
-  monthsMeta.forEach(({ key, days }) => {
-    perMonth[key] = { humuTarget: satTarget(days), hyuilTarget: sunHolTarget(days), days };
-  });
+  const daysOfKey = {};
+  monthsMeta.forEach(({ key, days }) => { daysOfKey[key] = days; });
+  // 인원별 휴무/휴일 목표(수기 오버라이드가 있으면 그걸, 없으면 매장 공통 계산식을 쓴다)
+  const targetOf = (emp, key) => restTargetFor(emp, key, daysOfKey[key]);
 
 
   // 주 단위 묶음 (한 주에 휴무 1개 규칙 확인용)
@@ -1266,10 +1381,12 @@ function assignRemainingRest(schedule, employees, tags, settings, monthsMeta, fi
   });
 
   const shortOf = (empId) => {
+    const emp = ftEmps.find((e) => e.id === empId);
     let humu = 0, hyuil = 0;
     monthsMeta.forEach(({ key }) => {
-      humu += Math.max(0, perMonth[key].humuTarget - counts[empId][key].humu);
-      hyuil += Math.max(0, perMonth[key].hyuilTarget - counts[empId][key].hyuil);
+      const t = targetOf(emp, key);
+      humu += Math.max(0, t.humu - counts[empId][key].humu);
+      hyuil += Math.max(0, t.hyuil - counts[empId][key].hyuil);
     });
     return { humu, hyuil, total: humu + hyuil };
   };
@@ -1290,10 +1407,13 @@ function assignRemainingRest(schedule, employees, tags, settings, monthsMeta, fi
 
       // 이 날 배정 가능한 후보 = 빈칸이거나 일반 근무코드인 사람 중, 이 달에 아직 부족분이 있는 사람
       const candidates = ftEmps.filter((e) => {
+        if (!isUnderContractOn(e, day.dateStr)) return false; // 계약기간(인턴 등) 밖인 인원은 대상 아님
+        if (e.role === "리더" && !leaderHasRoom(key, day)) return false; // 리더 최소인원을 깨는 배정은 제외
         if (!canRest(key, day, e.id)) return false;
         // 이 달 기준 부족분 (다른 달 부족분 때문에 이 달을 초과 배정하지 않도록)
-        const humuShortHere = perMonth[key].humuTarget - counts[e.id][key].humu;
-        const hyuilShortHere = perMonth[key].hyuilTarget - counts[e.id][key].hyuil;
+        const t = targetOf(e, key);
+        const humuShortHere = t.humu - counts[e.id][key].humu;
+        const hyuilShortHere = t.hyuil - counts[e.id][key].hyuil;
         if (humuShortHere <= 0 && hyuilShortHere <= 0) return false;
         // 한 주에 쉬는 날이 너무 몰리지 않도록 제한.
         // 기본은 주 2일(휴무1+휴일1)이지만, 그렇게 해서는 목표를 못 채우는 경우
@@ -1312,11 +1432,13 @@ function assignRemainingRest(schedule, employees, tags, settings, monthsMeta, fi
       if (candidates.length === 0) break;
 
       // 이 달에 부족분이 가장 많은 사람 우선. 단, 연속근무가 상한을 넘고 있는 사람이 있으면 그 사람을 최우선.
-      const monthShortOf = (empId) =>
-        Math.max(0, perMonth[key].humuTarget - counts[empId][key].humu) +
-        Math.max(0, perMonth[key].hyuilTarget - counts[empId][key].hyuil);
+      const monthShortOf = (empId) => {
+        const emp = ftEmps.find((e) => e.id === empId);
+        const t = targetOf(emp, key);
+        return Math.max(0, t.humu - counts[empId][key].humu) + Math.max(0, t.hyuil - counts[empId][key].hyuil);
+      };
       const overLimitOf = (emp) => {
-        const limit = fixedRestLimitOf(fixedRestSchedules, dayPairOptions, emp.name, settings);
+        const limit = fixedRestLimitOf(fixedRestSchedules, dayPairOptions, emp, settings);
         return maxStreakOf(emp.id) > limit ? 1 : 0;
       };
       candidates.sort((a, b) => {
@@ -1333,13 +1455,13 @@ function assignRemainingRest(schedule, employees, tags, settings, monthsMeta, fi
       // 후보를 순서대로 시도 - 한 명이 연속근무 제약에 걸려도 그날을 포기하지 않고 다음 후보를 본다
       let placedSomeone = false;
       for (const picked of candidates) {
-        const code = (perMonth[key].humuTarget - counts[picked.id][key].humu) > 0 ? "휴무" : "휴일";
+        const code = (targetOf(picked, key).humu - counts[picked.id][key].humu) > 0 ? "휴무" : "휴일";
         const before = next[key][picked.id][day.day - 1];
         const streakBefore = maxStreakOf(picked.id);
         placeRest(key, day, picked.id, code);
 
         // 이 직원의 연속근무 허용 상한 (고정휴무면 그 요일쌍이 만드는 정상 연속일수까지 허용)
-        const limit = fixedRestLimitOf(fixedRestSchedules, dayPairOptions, picked.name, settings);
+        const limit = fixedRestLimitOf(fixedRestSchedules, dayPairOptions, picked, settings);
         const streakAfter = maxStreakOf(picked.id);
         // 상한을 넘더라도 "배정 전보다 나빠지지 않았다면" 허용 (이미 넘긴 상태를 개선하는 중일 수 있음)
         if (streakAfter > limit && streakAfter > streakBefore) {
@@ -1392,8 +1514,9 @@ function assignRemainingRest(schedule, employees, tags, settings, monthsMeta, fi
     monthsMeta.forEach(({ key }) => {
       let humu = 0, hyuil = 0;
       (next[key][e.id] || []).forEach((v) => { if (v === "휴무") humu++; if (v === "휴일") hyuil++; });
-      humuShort += Math.max(0, perMonth[key].humuTarget - humu);
-      hyuilShort += Math.max(0, perMonth[key].hyuilTarget - hyuil);
+      const t = targetOf(e, key);
+      humuShort += Math.max(0, t.humu - humu);
+      hyuilShort += Math.max(0, t.hyuil - hyuil);
     });
     if (humuShort > 0 || hyuilShort > 0) {
       const parts = [];
@@ -1439,20 +1562,27 @@ function assignShiftCodes(schedule, employees, tags, settings, ftTemplates, ptTe
 
     // ---- 정직원 ----
     // 이미 채워진 칸(지원/스위칭 인원이 수기로 입력해둔 경우 포함)은 그날 출근 인원수에 반영하되,
-    // 빈 칸을 자동으로 채우는 대상은 "우리매장" 소속(또는 자동배정 켜둔 지원/스위칭)만 해당됨
+    // 빈 칸을 자동으로 채우는 대상은 "우리매장" 소속(또는 자동배정 켜둔 지원/스위칭)만 해당됨.
+    // 계약기간(인턴 등) 밖인 인원은 아예 배정 대상에서 제외(칸은 빈 채로 둠).
+    // fullCountFrom 이전인 인원은 실제로 출근해서 근무조는 배정받지만, "적정인원 기준" 카운트에는 안 잡힌다.
     const ftEligible = [];
     let ftAlreadyWorking = 0;
+    let ftEligibleCounted = 0;
     ftAllActive.forEach((e) => {
+      if (!isUnderContractOn(e, day.dateStr)) return;
       const v = arr(e.id)[day.day - 1] || "";
       if (v === "") {
-        if (isAutoAssignable(e)) ftEligible.push(e);
+        if (isAutoAssignable(e)) {
+          ftEligible.push(e);
+          if (isCountedOn(e, day.dateStr)) ftEligibleCounted++;
+        }
       } else if (!isOffTag(tags, v)) {
-        ftAlreadyWorking++;
+        if (isCountedOn(e, day.dateStr)) ftAlreadyWorking++;
       }
     });
 
     if (ftEligible.length > 0 && ftTemplates.length > 0) {
-      const attendingFT = ftAlreadyWorking + ftEligible.length;
+      const attendingFT = ftAlreadyWorking + ftEligibleCounted;
       const weekendB = dowBucket(settings, wd) === "주말" || isHoliday;
       const bucketList = weekendB ? thresholds.weekend : thresholds.weekday;
       const colIdx = pickThresholdIndex(bucketList, attendingFT);
@@ -1546,8 +1676,9 @@ function assignShiftCodes(schedule, employees, tags, settings, ftTemplates, ptTe
 // 이 직원의 연속근무 허용 상한을 구한다.
 // 고정휴무 직원이면 그 요일쌍 패턴이 만들어내는 연속근무일수(예: 월화 휴무 → 수~일 5근)를 상한으로 삼고,
 // 그렇지 않으면 설정의 연속근무 최대 허용값을 쓴다.
-function fixedRestLimitOf(fixedRestSchedules, dayPairOptions, empName, settings) {
-  const base = Number(settings?.consecMax) || 99;
+function fixedRestLimitOf(fixedRestSchedules, dayPairOptions, emp, settings) {
+  const empName = typeof emp === "string" ? emp : emp?.name;
+  const base = Number(emp?.consecMax) || Number(settings?.consecMax) || 99;
   const entry = (fixedRestSchedules || []).find(
     (f) => (f.empNames || []).includes(empName) && lookupDayPair(dayPairOptions, f.dayPair)
   );
@@ -1561,18 +1692,25 @@ function fixedRestLimitOf(fixedRestSchedules, dayPairOptions, empName, settings)
 
 function validateMonth(schedule, employees, tags, settings, days, key, fixedRestSchedules, dayPairOptions) {
   let notOkDates = [];
+  const leaderNotOkDates = [];
   days.forEach((day) => {
-    let ftAttend = 0, ptAttend = 0;
+    let ftAttend = 0, ptAttend = 0, leaderAttend = 0;
     employees.forEach((e) => {
       if (!isActiveEmployee(e)) return;
+      // 계약기간(인턴 등) 밖이거나, 아직 "1인분"으로 세지 않기로 한 인원은 적정인원 카운트에서 제외
+      if (e.type === "정직원" && (!isUnderContractOn(e, day.dateStr) || !isCountedOn(e, day.dateStr))) return;
       const v = schedule[key][e.id][day.day - 1] || "";
       const attend = v !== "" && !isOffTag(tags, v);
-      if (e.type === "정직원" && attend) ftAttend++;
+      if (e.type === "정직원" && attend) {
+        ftAttend++;
+        if (e.role === "리더") leaderAttend++;
+      }
       if (e.type === "파트타이머" && attend) ptAttend++;
     });
     const ftReq = requiredFT(settings, day);
     const ptReq = requiredPT(settings, day);
     if (ftAttend < ftReq || ptAttend < ptReq) notOkDates.push(`${day.day}일`);
+    if (settings?.leaderMinEnabled && leaderAttend < requiredLeaderFT(settings, day)) leaderNotOkDates.push(`${day.day}일`);
   });
 
   const warnList = [];
@@ -1580,9 +1718,10 @@ function validateMonth(schedule, employees, tags, settings, days, key, fixedRest
   employees.filter((e) => e.type === "정직원" && isActiveEmployee(e) && isAutoAssignable(e)).forEach((e) => {
     // 고정휴무 직원은 요일쌍 패턴이 만드는 연속근무(예: 월화 휴무 → 수~일 5근)까지는 정상으로 보고,
     // 그보다 더 길어진 경우에만 경고 (고정휴무 매장에서도 6근 이상은 잡아냄)
-    const limit = fixedRestLimitOf(fixedRestSchedules, dayPairOptions, e.name, settings);
+    const limit = fixedRestLimitOf(fixedRestSchedules, dayPairOptions, e, settings);
     let consec = 0, maxRun = 0;
     days.forEach((day) => {
+      if (!isUnderContractOn(e, day.dateStr)) { consec = 0; return; }
       const v = schedule[key][e.id][day.day - 1] || "";
       if (isOffTag(tags, v)) consec = 0;
       else { consec++; if (consec > maxRun) maxRun = consec; }
@@ -1590,16 +1729,20 @@ function validateMonth(schedule, employees, tags, settings, days, key, fixedRest
     if (maxRun > limit) warnList.push(`${e.name}(최대연속 ${maxRun}일)`);
   });
 
-  return { notOkCount: notOkDates.length, notOkDates, warnList };
+  return {
+    notOkCount: notOkDates.length, notOkDates, warnList,
+    leaderNotOkCount: leaderNotOkDates.length, leaderNotOkDates,
+  };
 }
 
 function validateCombined(schedule, employees, tags, settings, monthsMeta, fixedRestSchedules, dayPairOptions) {
   const warnList = [];
   employees.filter((e) => e.type === "정직원" && isActiveEmployee(e) && isAutoAssignable(e)).forEach((e) => {
-    const limit = fixedRestLimitOf(fixedRestSchedules, dayPairOptions, e.name, settings);
+    const limit = fixedRestLimitOf(fixedRestSchedules, dayPairOptions, e, settings);
     let consec = 0, maxRun = 0;
     monthsMeta.forEach(({ key, days }) => {
       days.forEach((day) => {
+        if (!isUnderContractOn(e, day.dateStr)) { consec = 0; return; }
         const v = schedule[key][e.id][day.day - 1] || "";
         if (isOffTag(tags, v)) consec = 0;
         else { consec++; if (consec > maxRun) maxRun = consec; }
@@ -1662,11 +1805,12 @@ function computeLeaveUsage(year, tags, archive) {
 export {
   WEEKDAYS, DOW_OPTIONS,
   DEFAULT_TAGS, DEFAULT_EMPLOYEES, DEFAULT_HOLIDAYS, DEFAULT_FT_TEMPLATES, DEFAULT_PT_TEMPLATES,
-  defaultSettings, defaultStoreData, reconcileSchedule, normalizeFtTemplates,
+  defaultSettings, defaultStoreData, reconcileSchedule, normalizeFtTemplates, normalizeEmployeeRestModes,
   buildMonthDays, applyPersonalTags, convertRequestTags, assignRestDays, assignShiftCodes, assignRemainingRest, finalAdjust,
   applyFixedRestSchedules, isFixedRestCovered, isFixedRestEmployee, resolveFixedRestEnd, DEFAULT_DAY_PAIR_OPTIONS,
   emptyMemoRows, reconcileMemoRows,
-  validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT,
+  validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT, requiredLeaderFT,
   isOffTag, shiftCodeOf, dowBucket, nextMonth, emptySchedule, isWeekendBucket, isActiveEmployee, pickThresholdIndex, isAutoAssignable,
+  restModeOf, isRotationEmployee, isUnderContractOn, isCountedOn, restTargetFor, fixedRestLimitOf,
   computeLeaveUsage,
 };

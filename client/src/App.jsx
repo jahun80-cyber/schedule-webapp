@@ -10,10 +10,11 @@ import {
   WEEKDAYS, DOW_OPTIONS,
   defaultStoreData,
   buildMonthDays, applyPersonalTags, convertRequestTags, assignRestDays, assignShiftCodes,
-  applyFixedRestSchedules, assignRemainingRest, finalAdjust, normalizeFtTemplates, DEFAULT_DAY_PAIR_OPTIONS,
+  applyFixedRestSchedules, assignRemainingRest, finalAdjust, normalizeFtTemplates, normalizeEmployeeRestModes, DEFAULT_DAY_PAIR_OPTIONS,
   emptyMemoRows, reconcileMemoRows,
-  validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT,
+  validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT, requiredLeaderFT,
   isOffTag, dowBucket, nextMonth, emptySchedule, reconcileSchedule, isActiveEmployee, isAutoAssignable, computeLeaveUsage,
+  isUnderContractOn, isCountedOn, restTargetFor,
 } from "./logic";
 import {
   saveDirHandle, loadDirHandle, clearDirHandle, isFileSystemAccessSupported, ensurePermission,
@@ -247,7 +248,6 @@ function LoginScreen({ onLoggedIn }) {
 function SettingsTab({ data, setData, role }) {
   const locked = role === "viewer";
   const s = data.settings;
-  const restMode = s.restMode || "로테이션";
   const dayPairOptions = data.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS;
   const update = (patch) => setData((d) => ({ ...d, settings: { ...d.settings, ...patch } }));
   const updateDow = (wd, val) => setData((d) => ({ ...d, settings: { ...d.settings, dow: { ...d.settings.dow, [wd]: val } } }));
@@ -290,62 +290,62 @@ function SettingsTab({ data, setData, role }) {
           <Field label="주말/공휴일 최소 - 정직원"><NumberInput value={s.weekendMinFT} onChange={(v) => update({ weekendMinFT: v })} /></Field>
           <Field label="주말/공휴일 최소 - PT"><NumberInput value={s.weekendMinPT} onChange={(v) => update({ weekendMinPT: v })} /></Field>
         </div>
-      </SectionCard>
-
-      <SectionCard title="휴무 배정 방식" icon={AlertTriangle}>
-        <p className="text-xs text-slate-500 mb-3">
-          매장마다 휴무를 정하는 방식이 다릅니다. 아래에서 이 매장의 방식을 선택하면 그에 맞는 설정만 표시됩니다.
-        </p>
-        <div className="flex items-center gap-3 mb-4">
-          {["로테이션", "고정휴무"].map((mode) => (
-            <label key={mode} className={`px-4 py-2 rounded-md cursor-pointer select-none text-sm font-semibold ${restMode === mode ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
-              <input type="radio" className="hidden" checked={restMode === mode} onChange={() => update({ restMode: mode })} />
-              {mode === "로테이션" ? "로테이션 (연속근무 상한 기준)" : "고정휴무 (매주 같은 요일)"}
-            </label>
-          ))}
-        </div>
-
-        {restMode === "로테이션" ? (
-          <div>
-            <p className="text-xs text-slate-500 mb-3">
-              정해진 고정 요일 없이, 연속근무가 길어지지 않도록 알아서 돌아가며 휴무를 배정합니다.
-            </p>
-            <div className="grid grid-cols-4 gap-4">
-              <Field label="연속근무 권장 상한(일)"><NumberInput value={s.consecRecommended} onChange={(v) => update({ consecRecommended: v })} /></Field>
-              <Field label="연속근무 최대 허용(일)"><NumberInput value={s.consecMax} onChange={(v) => update({ consecMax: v })} /></Field>
-            </div>
-          </div>
-        ) : (
-          <div>
-            <p className="text-xs text-slate-500 mb-3">
-              매주 정해진 요일쌍으로 쉬는 방식입니다. 아래에서 이 매장에서 쓰는 요일쌍을 정의하고,
-              실제로 누가 어떤 요일쌍인지는 [공휴일·이슈일] 탭의 "고정휴무 설정"에서 지정합니다.
-              (고정휴무 직원은 연속근무 경고 대상에서 자동으로 제외됩니다.)
-            </p>
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-xs font-semibold text-slate-600">요일쌍(구분) 목록</span>
-              <GhostBtn onClick={addDayPair} icon={Plus}>구분 추가</GhostBtn>
-            </div>
-            <div className="space-y-2">
-              {dayPairOptions.map((p, i) => (
-                <div key={p.id || i} className="flex items-center gap-2 flex-wrap border border-slate-200 rounded-md px-3 py-2">
-                  <TextInput value={p.label} onChange={(v) => updDayPair(i, { label: v })} className="w-20" />
-                  <div className="flex items-center gap-1">
-                    {WEEKDAYS.map((wd) => (
-                      <label key={wd} className={`text-[11px] px-2 py-1 rounded cursor-pointer select-none ${(p.weekdays || []).includes(wd) ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-500"}`}>
-                        <input type="checkbox" className="hidden" checked={(p.weekdays || []).includes(wd)} onChange={() => toggleDayPairWeekday(i, wd)} />
-                        {wd}
-                      </label>
-                    ))}
-                  </div>
-                  <IconBtn onClick={() => rmDayPair(i)} title="삭제" danger />
-                </div>
-              ))}
-              {dayPairOptions.length === 0 && <p className="text-xs text-slate-400">등록된 구분이 없습니다.</p>}
-            </div>
-            <p className="text-[11px] text-slate-400 mt-2">체크한 요일 중 첫번째가 휴무, 나머지가 휴일로 채워집니다.</p>
+        <label className="flex items-center gap-2 mt-4 text-xs font-semibold text-slate-600 cursor-pointer select-none">
+          <input
+            type="checkbox" className="w-4 h-4 accent-indigo-600"
+            checked={!!s.leaderMinEnabled}
+            onChange={(ev) => update({ leaderMinEnabled: ev.target.checked })}
+          />
+          직책별(리더) 최소인원 사용
+        </label>
+        {s.leaderMinEnabled && (
+          <div className="grid grid-cols-4 gap-4 mt-3">
+            <Field label="평일 최소 - 리더"><NumberInput value={s.weekdayMinLeader} onChange={(v) => update({ weekdayMinLeader: v })} /></Field>
+            <Field label="주말/공휴일 최소 - 리더"><NumberInput value={s.weekendMinLeader} onChange={(v) => update({ weekendMinLeader: v })} /></Field>
           </div>
         )}
+        {s.leaderMinEnabled && (
+          <p className="text-[11px] text-slate-400 mt-2">
+            [직원목록]에서 "리더"로 지정한 정직원이 매일 이 인원수 이상 출근하도록 자동배정이 반영합니다. 리더가 아닌 인원은 영향 없습니다.
+          </p>
+        )}
+      </SectionCard>
+
+      <SectionCard title="휴무 배정 - 매장 기본값" icon={AlertTriangle}>
+        <p className="text-xs text-slate-500 mb-3">
+          이제 휴무 배정 방식(로테이션/고정휴무)은 [직원목록]에서 인원별로 지정합니다. 여기 값은 "로테이션"으로 지정한 인원이
+          개인별 값을 따로 입력하지 않았을 때 쓰이는 매장 공통 기본값입니다.
+        </p>
+        <div className="grid grid-cols-4 gap-4">
+          <Field label="연속근무 권장 상한(일)"><NumberInput value={s.consecRecommended} onChange={(v) => update({ consecRecommended: v })} /></Field>
+          <Field label="연속근무 최대 허용(일)"><NumberInput value={s.consecMax} onChange={(v) => update({ consecMax: v })} /></Field>
+        </div>
+
+        <div className="flex items-center justify-between mb-2 mt-5">
+          <span className="text-xs font-semibold text-slate-600">요일쌍(구분) 목록 — 고정휴무 인원이 쓸 수 있는 요일쌍 정의</span>
+          <GhostBtn onClick={addDayPair} icon={Plus}>구분 추가</GhostBtn>
+        </div>
+        <div className="space-y-2">
+          {dayPairOptions.map((p, i) => (
+            <div key={p.id || i} className="flex items-center gap-2 flex-wrap border border-slate-200 rounded-md px-3 py-2">
+              <TextInput value={p.label} onChange={(v) => updDayPair(i, { label: v })} className="w-20" />
+              <div className="flex items-center gap-1">
+                {WEEKDAYS.map((wd) => (
+                  <label key={wd} className={`text-[11px] px-2 py-1 rounded cursor-pointer select-none ${(p.weekdays || []).includes(wd) ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-500"}`}>
+                    <input type="checkbox" className="hidden" checked={(p.weekdays || []).includes(wd)} onChange={() => toggleDayPairWeekday(i, wd)} />
+                    {wd}
+                  </label>
+                ))}
+              </div>
+              <IconBtn onClick={() => rmDayPair(i)} title="삭제" danger />
+            </div>
+          ))}
+          {dayPairOptions.length === 0 && <p className="text-xs text-slate-400">등록된 구분이 없습니다.</p>}
+        </div>
+        <p className="text-[11px] text-slate-400 mt-2">
+          체크한 요일 중 첫번째가 휴무, 나머지가 휴일로 채워집니다. 실제로 누가 어떤 요일쌍을 쓰는지는
+          [직원목록]에서 "고정휴무"로 지정한 뒤 [공휴일·이슈일] 탭의 "고정휴무 설정"에서 지정합니다.
+        </p>
       </SectionCard>
 
       <SectionCard title="요일 구분 설정" icon={CalendarDays}>
@@ -393,7 +393,10 @@ function EmployeesTab({ data, setData, role }) {
         <p className="text-xs text-slate-500 mb-3">
           소속을 "지원근무"나 "스위칭근무"로 두면 휴무/휴일·근무 자동배정에서 제외되고, 스케줄 화면에서 수기로만 입력됩니다.
           "자동배정 포함"을 켜면 예외적으로 우리매장 인원처럼 자동배정 대상에 포함시킬 수 있습니다.
+          "휴무방식"이 로테이션이면 같은 행에서 개인별 연속근무 상한을 지정할 수 있고(비우면 매장 기본값), 고정휴무면
+          [공휴일·이슈일]의 "고정휴무 설정"에서 요일쌍을 지정합니다. 직책을 "인턴"으로 두면 계약기간·목표를 아래 추가 줄에서 지정할 수 있습니다.
         </p>
+        <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
@@ -401,6 +404,10 @@ function EmployeesTab({ data, setData, role }) {
               <th className="py-2 font-semibold">사원번호</th>
               <th className="py-2 font-semibold">소속</th>
               <th className="py-2 font-semibold">자동배정 포함</th>
+              <th className="py-2 font-semibold">직책</th>
+              <th className="py-2 font-semibold">휴무방식</th>
+              <th className="py-2 font-semibold">연속근무 권장</th>
+              <th className="py-2 font-semibold">연속근무 최대</th>
               <th className="py-2 font-semibold">재직상태</th>
               <th className="py-2 w-8"></th>
             </tr>
@@ -409,8 +416,11 @@ function EmployeesTab({ data, setData, role }) {
             {ftList.map((e) => {
               const memberType = e.memberType || "우리매장";
               const isGuest = memberType !== "우리매장";
+              const restMode = e.restMode || "로테이션";
+              const isIntern = e.role === "인턴";
               return (
-                <tr key={e.id} className="border-b border-slate-100">
+                <React.Fragment key={e.id}>
+                <tr className="border-b border-slate-100">
                   <td className="py-1.5 pr-2"><TextInput value={e.name} onChange={(v) => update(e.id, { name: v })} className="w-40" /></td>
                   <td className="py-1.5 pr-2"><TextInput value={e.empNo || ""} onChange={(v) => update(e.id, { empNo: v })} className="w-28" placeholder="예: I501193" /></td>
                   <td className="py-1.5 pr-2">
@@ -427,13 +437,65 @@ function EmployeesTab({ data, setData, role }) {
                       <span className="text-[11px] text-slate-300">해당없음</span>
                     )}
                   </td>
+                  <td className="py-1.5 pr-2">
+                    <Select value={e.role || "직원"} onChange={(v) => update(e.id, { role: v })} options={["리더", "직원", "인턴"]} className="w-20" />
+                  </td>
+                  <td className="py-1.5 pr-2">
+                    <Select value={restMode} onChange={(v) => update(e.id, { restMode: v })} options={["로테이션", "고정휴무"]} className="w-24" />
+                  </td>
+                  <td className="py-1.5 pr-2">
+                    {restMode === "로테이션" ? (
+                      <NumberInput value={e.consecRecommended ?? ""} onChange={(v) => update(e.id, { consecRecommended: v })} className="w-16" placeholder="기본값" />
+                    ) : (
+                      <span className="text-[11px] text-slate-300">-</span>
+                    )}
+                  </td>
+                  <td className="py-1.5 pr-2">
+                    {restMode === "로테이션" ? (
+                      <NumberInput value={e.consecMax ?? ""} onChange={(v) => update(e.id, { consecMax: v })} className="w-16" placeholder="기본값" />
+                    ) : (
+                      <span className="text-[11px] text-slate-300">-</span>
+                    )}
+                  </td>
                   <td className="py-1.5 pr-2"><Select value={e.status} onChange={(v) => update(e.id, { status: v })} options={["재직", "퇴직예정", "퇴직"]} /></td>
                   <td><IconBtn onClick={() => remove(e.id)} title="삭제" danger /></td>
                 </tr>
+                {isIntern && (
+                  <tr className="border-b border-slate-100 bg-amber-50/40">
+                    <td colSpan={10} className="py-2 px-2">
+                      <div className="flex items-center gap-4 flex-wrap text-xs">
+                        <span className="font-semibold text-amber-700">인턴 계약</span>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-slate-400">계약기간</span>
+                          <DateInput value={e.contractStart || ""} onChange={(v) => update(e.id, { contractStart: v })} />
+                          <span className="text-slate-400">~</span>
+                          <DateInput value={e.contractEnd || ""} onChange={(v) => update(e.id, { contractEnd: v })} />
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-slate-400">출근인원 1로 계산 시작일</span>
+                          <DateInput value={e.fullCountFrom || ""} onChange={(v) => update(e.id, { fullCountFrom: v })} />
+                          <span className="text-[10px] text-slate-400">(비우면 처음부터 1로 계산)</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-slate-400">1개월차 목표(휴무/휴일)</span>
+                          <NumberInput value={e.restTargetM1?.humu ?? ""} onChange={(v) => update(e.id, { restTargetM1: { ...(e.restTargetM1 || {}), humu: v } })} className="w-14" placeholder="자동" />
+                          <NumberInput value={e.restTargetM1?.hyuil ?? ""} onChange={(v) => update(e.id, { restTargetM1: { ...(e.restTargetM1 || {}), hyuil: v } })} className="w-14" placeholder="자동" />
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-slate-400">2개월차 목표(휴무/휴일)</span>
+                          <NumberInput value={e.restTargetM2?.humu ?? ""} onChange={(v) => update(e.id, { restTargetM2: { ...(e.restTargetM2 || {}), humu: v } })} className="w-14" placeholder="자동" />
+                          <NumberInput value={e.restTargetM2?.hyuil ?? ""} onChange={(v) => update(e.id, { restTargetM2: { ...(e.restTargetM2 || {}), hyuil: v } })} className="w-14" placeholder="자동" />
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                </React.Fragment>
               );
             })}
           </tbody>
         </table>
+        </div>
       </SectionCard>
 
       <SectionCard title="파트타이머" icon={Users} right={<GhostBtn onClick={addPT} icon={Plus}>파트타이머 추가</GhostBtn>}>
@@ -668,10 +730,8 @@ function HolidaysTab({ data, setData, role }) {
     return { ...d, fixedRestSchedules: arr };
   });
 
-  // 고정휴무 모드일 때만 "고정휴무 설정" 섹션이 보임 (방식 선택은 [설정] 탭에서)
-  const isFixedMode = (data.settings?.restMode || "로테이션") === "고정휴무";
-
-  const ftEmployeeNames = employees.filter((e) => e.type === "정직원").map((e) => e.name);
+  // 휴무 방식은 이제 인원별로 [직원목록]에서 지정한다 - 여기는 "고정휴무"로 지정된 인원만 대상으로 노출
+  const ftEmployeeNames = employees.filter((e) => e.type === "정직원" && (e.restMode || "로테이션") === "고정휴무").map((e) => e.name);
 
   return (
     <div className="max-w-5xl">
@@ -752,14 +812,20 @@ function HolidaysTab({ data, setData, role }) {
         </div>
       </SectionCard>
 
-      {isFixedMode && (
       <ReadOnlyFence locked={locked}>
       <SectionCard title="고정휴무 설정 (정직원)" icon={CalendarDays} right={<GhostBtn onClick={addFixed} icon={Plus}>고정휴무 추가</GhostBtn>}>
         <p className="text-xs text-slate-500 mb-3">
-          매주 같은 요일쌍으로 쉬는 직원들을 한 번에 지정합니다 (예: 월화 고정휴무 5명). 개인 지정 태그(요청·이슈)가 항상 먼저 반영되고,
-          남은 칸에 여기서 지정한 요일이 자동으로 휴무/휴일로 채워집니다. 기간을 나눠서 여러 개 등록하면 월별로 다른 패턴도 반영할 수 있습니다.
-          그날 최소 출근인원이 부족해지면 직원목록 순서상 뒤쪽인 직원의 휴무는 자동으로 건너뜁니다.
+          [직원목록]에서 "고정휴무"로 지정한 인원만 매주 같은 요일쌍으로 쉬는 패턴을 여기서 지정합니다 (예: 월화 고정휴무 5명).
+          개인 지정 태그(요청·이슈)가 항상 먼저 반영되고, 남은 칸에 여기서 지정한 요일이 자동으로 휴무/휴일로 채워집니다.
+          기간을 나눠서 여러 개 등록하면 월별로 다른 패턴도 반영할 수 있습니다. 그날 최소 출근인원(또는 리더 최소인원)이
+          부족해지면, 그 달 우선순위가 낮은 직원의 휴무만 건너뛰고 나머지는 그대로 배정됩니다(우선순위는 매달 자동으로 돌아가
+          특정 인원만 계속 손해보지 않습니다).
         </p>
+        {ftEmployeeNames.length === 0 && (
+          <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mb-3">
+            고정휴무로 지정된 직원이 없습니다 — [직원목록]에서 정직원의 "휴무방식"을 "고정휴무"로 먼저 지정하세요.
+          </p>
+        )}
         <div className="space-y-2">
           {fixedRestSchedules.map((f, i) => (
             <div key={i} className="border border-slate-200 rounded-md px-3 py-2">
@@ -787,7 +853,6 @@ function HolidaysTab({ data, setData, role }) {
         </div>
       </SectionCard>
       </ReadOnlyFence>
-      )}
     </div>
   );
 }
@@ -976,7 +1041,7 @@ function attendStatus2(attend, required) {
   return attend < required ? "NOT" : "OK";
 }
 
-function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, priorMonthCarry }) {
+function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, priorMonthCarry, filterDate, filterMode }) {
   const { employees, tags, settings } = data;
   const memoRowLabels = data.memoRowLabels || [];
   const memoKey = monthKey === "m1" ? "m1Memo" : "m2Memo";
@@ -1027,15 +1092,37 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
   }, [ftList, ftCodeList, schedule, monthKey]);
 
   const dayStats = days.map((day) => {
-    let ftAttend = 0, ptAttend = 0;
+    let ftAttend = 0, ptAttend = 0, leaderAttend = 0;
     active.forEach((e) => {
+      // 계약기간(인턴 등) 밖이거나 아직 "1인분"으로 세지 않기로 한 인원은 적정인원 카운트에서 제외
+      if (e.type === "정직원" && (!isUnderContractOn(e, day.dateStr) || !isCountedOn(e, day.dateStr))) return;
       const v = schedule[monthKey][e.id]?.[day.day - 1] || "";
       const attend = v !== "" && !isOffTag(tags, v);
-      if (e.type === "정직원" && attend) ftAttend++;
+      if (e.type === "정직원" && attend) {
+        ftAttend++;
+        if (e.role === "리더") leaderAttend++;
+      }
       if (e.type === "파트타이머" && attend) ptAttend++;
     });
-    return { ftReq: requiredFT(settings, day), ptReq: requiredPT(settings, day), ftAttend, ptAttend };
+    return {
+      ftReq: requiredFT(settings, day), ptReq: requiredPT(settings, day), leaderReq: requiredLeaderFT(settings, day),
+      ftAttend, ptAttend, leaderAttend,
+      leaveSlack: Math.max(0, ftAttend - requiredFT(settings, day)),
+    };
   });
+
+  // 기준일 인원 필터: 선택한 날짜의 셀 값이 조건에 맞는 직원 행만 남긴다(열은 그대로 전체 표시)
+  const filterDayIdx = filterDate ? days.findIndex((d) => d.dateStr === filterDate) : -1;
+  const passesFilter = (e) => {
+    if (!filterMode || filterMode === "all" || filterDayIdx < 0) return true;
+    const v = schedule[monthKey][e.id]?.[filterDayIdx] || "";
+    const off = v !== "" && isOffTag(tags, v);
+    if (filterMode === "working") return v !== "" && !off;
+    if (filterMode === "off") return off;
+    return v === filterMode; // 특정 근무조 코드 선택
+  };
+  const visibleFtList = ftList.filter(passesFilter);
+  const visiblePtList = ptList.filter(passesFilter);
 
   const setCell = (empId, dayIdx, value) => {
     setSchedule((prev) => {
@@ -1145,6 +1232,16 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
               ))}
               <FillerCells count={trailingCols} />
             </tr>
+            <tr>
+              <td className="sticky left-0 bg-sky-50 border border-slate-200 px-2 py-1 text-[10px] text-sky-700 font-semibold z-10">연차가능인원</td>
+              <td className="border border-slate-200 bg-sky-50/40" colSpan={extraLeftCols}></td>
+              {days.map((day, i) => (
+                <td key={day.day} className="border border-slate-200 px-1 py-1 text-[10px] text-center bg-sky-50/40 text-sky-700 font-semibold">
+                  {dayStats[i].leaveSlack}
+                </td>
+              ))}
+              <FillerCells count={trailingCols} />
+            </tr>
             {memoRowLabels.map((row) => (
               <tr key={row.id}>
                 <td className="sticky left-0 bg-amber-50 border border-slate-200 px-2 py-1 text-[10px] text-amber-700 font-semibold z-10">
@@ -1176,9 +1273,13 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
                 <td key={c} className="px-1 py-1 text-center border border-indigo-100">{c}</td>
               ))}
             </tr>
-            {ftList.map((e) => (
+            {visibleFtList.map((e) => (
               <tr key={e.id}>
-                <td className="sticky left-0 bg-white border border-slate-200 px-2 py-1 font-medium z-10">{e.name}</td>
+                <td className="sticky left-0 bg-white border border-slate-200 px-2 py-1 font-medium z-10">
+                  {e.name}
+                  {e.role === "리더" && <span className="ml-1 text-[9px] text-amber-600 font-bold align-top">리더</span>}
+                  {e.role === "인턴" && <span className="ml-1 text-[9px] text-sky-600 font-bold align-top">인턴</span>}
+                </td>
                 <td className="border border-slate-200 px-1 py-1 text-center text-[10px]">
                   {remainByEmp[e.id] ? <RemainBadge n={remainByEmp[e.id].remainHumu} /> : <span className="text-slate-300">-</span>}
                 </td>
@@ -1187,6 +1288,9 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
                 </td>
                 {days.map((day, i) => {
                   const v = schedule[monthKey][e.id]?.[i] || "";
+                  if (!isUnderContractOn(e, day.dateStr)) {
+                    return <td key={day.day} className="border border-slate-200 bg-slate-100 text-center text-slate-300 text-[10px] py-1.5" title="계약기간 밖">-</td>;
+                  }
                   return (
                     <td key={day.day} className="border border-slate-200 p-0">
                       <select
@@ -1211,7 +1315,7 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
               <td className="border border-amber-100" colSpan={days.length}></td>
               <FillerCells count={trailingCols} />
             </tr>
-            {ptList.map((e) => (
+            {visiblePtList.map((e) => (
               <tr key={e.id}>
                 <td className="sticky left-0 bg-white border border-slate-200 px-2 py-1 font-medium z-10">{e.name}</td>
                 <td className="border border-slate-200" colSpan={extraLeftCols}></td>
@@ -1271,6 +1375,21 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
               })}
               <FillerCells count={trailingCols} />
             </tr>
+            {settings.leaderMinEnabled && (
+              <tr>
+                <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] font-semibold z-10">적정확인(리더)</td>
+                <td className="border border-slate-200" colSpan={extraLeftCols}></td>
+                {days.map((day, i) => {
+                  const status = attendStatus2(dayStats[i].leaderAttend, dayStats[i].leaderReq);
+                  return (
+                    <td key={day.day} className={`border border-slate-200 px-1 py-1 text-[9px] text-center font-bold ${STATUS_STYLE[status]}`}>
+                      {status}
+                    </td>
+                  );
+                })}
+                <FillerCells count={trailingCols} />
+              </tr>
+            )}
           </tfoot>
         </table>
       </div>
@@ -1283,6 +1402,9 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
   const meta = monthsMeta.find((m) => m.key === monthKey);
   const [running, setRunning] = useState(false);
   const [msg, setMsg] = useState(null);
+  const [filterDate, setFilterDate] = useState("");
+  const [filterMode, setFilterMode] = useState("all");
+  const ftCodeOptions = (data.ftTemplates || []).map((t) => t.code).filter(Boolean);
 
   // 2개월차 화면일 때만: 1개월차에서 이미 목표보다 더/덜 쓴 만큼을 "이월분"으로 계산해서 잔여수량에 반영
   const priorMonthCarry = useMemo(() => {
@@ -1304,21 +1426,18 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
   const runRestDays = () => {
     setRunning(true);
     setTimeout(() => {
-      const isFixedMode = data.settings?.restMode === "고정휴무";
+      // 이제 "이 매장이 어떤 방식인지"가 아니라 인원별로 고정휴무/로테이션이 나뉘므로,
+      // 두 함수 모두 항상 실행한다 - 각 함수가 자기 대상(고정휴무 인원 / 로테이션 인원)만 알아서 처리한다.
       const { schedule: withPersonal, applied } = applyPersonalTags(schedule, data.employees, data.personalTags, monthsMeta);
 
-      let working = withPersonal;
-      let fixedApplied = 0, fixedSkipped = 0;
-      if (isFixedMode) {
-        const fr = applyFixedRestSchedules(withPersonal, data.employees, data.fixedRestSchedules, data.dayPairOptions, monthsMeta, data.settings, data.tags);
-        working = fr.schedule;
-        fixedApplied = fr.applied;
-        fixedSkipped = fr.skipped || 0;
-      }
+      const fr = applyFixedRestSchedules(withPersonal, data.employees, data.fixedRestSchedules, data.dayPairOptions, monthsMeta, data.settings, data.tags);
+      const working = fr.schedule;
+      const fixedApplied = fr.applied;
+      const fixedSkipped = fr.skipped || 0;
 
       const { schedule: afterRest, message } = assignRestDays(
         working, data.employees, data.tags, data.settings, monthsMeta,
-        isFixedMode ? data.fixedRestSchedules : [], isFixedMode ? data.dayPairOptions : []
+        data.fixedRestSchedules, data.dayPairOptions
       );
 
       // RQ 같은 "휴무/휴일 후보" 태그를 그 사람의 남은 휴무/휴일(→ 부족하면 연차)로 자동 전환
@@ -1328,9 +1447,7 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
       });
 
       setSchedule(rq.schedule);
-      const fixedMsg = isFixedMode
-        ? ` · 고정휴무로 채운 칸: ${fixedApplied}건${fixedSkipped > 0 ? ` (최소인원 확보를 위해 ${fixedSkipped}건은 건너뜀)` : ""}`
-        : "";
+      const fixedMsg = ` · 고정휴무로 채운 칸: ${fixedApplied}건${fixedSkipped > 0 ? ` (최소인원 확보를 위해 ${fixedSkipped}건은 건너뜀)` : ""}`;
       const rqMsg = rq.message ? ` · ${rq.message}` : "";
       setMsg(`개인 지정 태그로 채운 칸: ${applied}건${fixedMsg} · ${message}${rqMsg}`);
       setRunning(false);
@@ -1350,10 +1467,9 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
   const runRemainingRest = () => {
     setRunning(true);
     setTimeout(() => {
-      const isFixedMode = data.settings?.restMode === "고정휴무";
       const r3 = assignRemainingRest(
         schedule, data.employees, data.tags, data.settings, monthsMeta,
-        isFixedMode ? data.fixedRestSchedules : [], isFixedMode ? data.dayPairOptions : []
+        data.fixedRestSchedules, data.dayPairOptions
       );
 
       // 휴무가 늘어난 날은 출근인원이 줄었으므로, 그날 근무조를 새 인원수 기준으로 자동 재배정
@@ -1381,10 +1497,9 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
   const runFinalAdjust = () => {
     setRunning(true);
     setTimeout(() => {
-      const isFixedMode = data.settings?.restMode === "고정휴무";
       const r4 = finalAdjust(
         schedule, data.employees, data.tags, data.settings, monthsMeta,
-        isFixedMode ? data.fixedRestSchedules : [], isFixedMode ? data.dayPairOptions : []
+        data.fixedRestSchedules, data.dayPairOptions
       );
 
       // 자리를 바꾼 날은 근무조도 다시 배정
@@ -1454,15 +1569,41 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
       {msg && (
         <div className="bg-indigo-50 border border-indigo-200 text-indigo-800 text-xs rounded-md px-3 py-2 mb-3 whitespace-pre-wrap">{msg}</div>
       )}
-      <div className="flex gap-4 mb-3 text-xs">
+      <div className="flex gap-4 mb-3 text-xs flex-wrap">
         <span className={`px-2 py-1 rounded-md font-semibold ${val.notOkCount > 0 ? "bg-red-100 text-red-700" : "bg-green-100 text-green-700"}`}>
           최소인원 미달: {val.notOkCount}건
         </span>
+        {data.settings?.leaderMinEnabled && (
+          <span className={`px-2 py-1 rounded-md font-semibold ${val.leaderNotOkCount > 0 ? "bg-red-100 text-red-700" : "bg-green-100 text-green-700"}`}>
+            리더 최소인원 미달: {val.leaderNotOkCount}건
+          </span>
+        )}
         <span className={`px-2 py-1 rounded-md font-semibold ${val.warnList.length > 0 ? "bg-amber-100 text-amber-700" : "bg-green-100 text-green-700"}`}>
           연속근무 상한 초과: {val.warnList.length === 0 ? "없음" : val.warnList.join(", ")}
         </span>
       </div>
-      <ScheduleGrid data={data} setData={setData} schedule={schedule} setSchedule={setSchedule} monthKey={monthKey} days={meta.days} priorMonthCarry={priorMonthCarry} />
+      <div className="flex items-center gap-2 mb-3 text-xs flex-wrap bg-slate-50 border border-slate-200 rounded-md px-3 py-2">
+        <span className="text-slate-500 font-semibold">인원 필터</span>
+        <DateInput value={filterDate} onChange={setFilterDate} />
+        <Select
+          value={filterMode} onChange={setFilterMode}
+          options={[
+            { value: "all", label: "전체" },
+            { value: "working", label: "출근만" },
+            { value: "off", label: "휴무·휴일만" },
+            ...ftCodeOptions.map((c) => ({ value: c, label: `근무조: ${c}` })),
+          ]}
+          className="w-32"
+        />
+        {filterDate && (
+          <button onClick={() => { setFilterDate(""); setFilterMode("all"); }} className="text-slate-400 hover:text-red-500">필터 해제</button>
+        )}
+        <span className="text-[11px] text-slate-400">기준일을 고르면 그날 조건에 맞는 인원만 표에 남습니다(열은 그대로 전체 표시).</span>
+      </div>
+      <ScheduleGrid
+        data={data} setData={setData} schedule={schedule} setSchedule={setSchedule} monthKey={monthKey} days={meta.days} priorMonthCarry={priorMonthCarry}
+        filterDate={filterDate} filterMode={filterMode}
+      />
       </ReadOnlyFence>
     </div>
   );
@@ -1496,11 +1637,18 @@ function SummaryTab({ data, schedule, monthsMeta }) {
     const totalHumu = counts.m1.humu + counts.m2.humu;
     const totalHyuil = counts.m1.hyuil + counts.m2.hyuil;
     const total = totalHumu + totalHyuil;
+    // 인턴처럼 수기 목표(restTargetM1/M2)가 있으면 매장 공통 목표 대신 그 값으로 검증한다
+    let empTargetHumu = 0, empTargetHyuil = 0;
+    monthsMeta.forEach((m) => {
+      const t = restTargetFor(e, m.key, m.days);
+      empTargetHumu += t.humu; empTargetHyuil += t.hyuil;
+    });
+    const empTarget = empTargetHumu + empTargetHyuil;
     return {
-      ...e, counts, total,
-      diffHumu: totalHumu - targetHumu,
-      diffHyuil: totalHyuil - targetHyuil,
-      diff: total - target,
+      ...e, counts, total, empTarget,
+      diffHumu: totalHumu - empTargetHumu,
+      diffHyuil: totalHyuil - empTargetHyuil,
+      diff: total - empTarget,
     };
   });
 
@@ -1527,7 +1675,7 @@ function SummaryTab({ data, schedule, monthsMeta }) {
               <th className="py-2">이름</th><th>구분</th>
               <th>1개월 휴무</th><th>1개월 휴일</th><th>2개월 휴무</th><th>2개월 휴일</th>
               <th>목표대비휴무</th><th>목표대비휴일</th>
-              <th>총합계</th><th>목표대비</th><th>검증</th>
+              <th>총합계</th><th>개인목표</th><th>목표대비</th><th>검증</th>
             </tr>
           </thead>
           <tbody>
@@ -1542,6 +1690,7 @@ function SummaryTab({ data, schedule, monthsMeta }) {
                 <td className="text-center">{r.diffHumu}</td>
                 <td className="text-center">{r.diffHyuil}</td>
                 <td className="text-center font-bold">{r.total}</td>
+                <td className="text-center text-slate-400">{r.empTarget}</td>
                 <td className="text-center">{r.diff}</td>
                 <td className="text-center">
                   <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${r.diff === 0 ? "bg-green-100 text-green-700" : r.diff < 0 ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700"}`}>
@@ -2295,6 +2444,8 @@ function MainApp({ role, onLogout }) {
         ]);
         const finalData = cfg || defaultStoreData();
         finalData.ftTemplates = normalizeFtTemplates(finalData.ftTemplates);
+        // 기존 매장은 인원별 restMode가 없다 - 매장의 기존 restMode를 그대로 채워 넣어 배포 직후 동작이 안 바뀌게 한다
+        finalData.employees = normalizeEmployeeRestModes(finalData.employees, finalData.settings);
         finalData.fixedRestSchedules = finalData.fixedRestSchedules || [];
         finalData.memoRowLabels = finalData.memoRowLabels || [];
         finalData.dayPairOptions = finalData.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS;
