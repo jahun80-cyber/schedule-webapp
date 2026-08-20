@@ -145,6 +145,28 @@ function GhostBtn({ onClick, children, icon: Icon }) {
   );
 }
 
+// 권한이 없어 이 화면(또는 이 화면의 일부)을 수정할 수 없을 때 보여주는 안내문
+function ReadOnlyNotice({ children }) {
+  return (
+    <div className="mb-3 text-xs bg-amber-50 border border-amber-200 text-amber-700 rounded-md px-3 py-2">
+      {children}
+    </div>
+  );
+}
+
+// 자식 요소를 통째로 읽기 전용으로 만든다. IconBtn/GhostBtn/TextInput/NumberInput/Select 등이
+// 전부 순수 button/input/select라서, fieldset으로 감싸면 안의 모든 입력·버튼이 자동으로 비활성화된다.
+// (display:contents는 크로미움에서 fieldset[disabled] 상속을 깨뜨리는 버그가 있어 쓰지 않는다 -
+//  대신 기본 여백/테두리만 지우고 block으로 그대로 둔다. 여기 감싸는 곳은 전부 세로로 쌓이는
+//  일반 블록 레이아웃이라 flex/grid 자식 개수에 영향 없음.)
+function ReadOnlyFence({ locked, children }) {
+  return (
+    <fieldset disabled={locked} className="border-0 m-0 p-0 min-w-0">
+      {children}
+    </fieldset>
+  );
+}
+
 function SectionCard({ title, icon: Icon, children, right }) {
   return (
     <div className="bg-white border border-slate-200 rounded-xl p-5 mb-5">
@@ -216,7 +238,8 @@ function LoginScreen({ onLoggedIn }) {
 /* ============================================================
    설정 탭
    ============================================================ */
-function SettingsTab({ data, setData }) {
+function SettingsTab({ data, setData, role }) {
+  const locked = role === "viewer";
   const s = data.settings;
   const restMode = s.restMode || "로테이션";
   const dayPairOptions = data.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS;
@@ -244,6 +267,8 @@ function SettingsTab({ data, setData }) {
 
   return (
     <div className="max-w-4xl">
+      {locked && <ReadOnlyNotice>이 화면은 열람만 가능합니다. 변경이 필요하면 매장관리자 이상에게 요청하세요.</ReadOnlyNotice>}
+      <ReadOnlyFence locked={locked}>
       <SectionCard title="기본 정보" icon={Store}>
         <div className="grid grid-cols-3 gap-4">
           <Field label="매장명"><TextInput value={s.storeName} onChange={(v) => update({ storeName: v })} /></Field>
@@ -328,6 +353,7 @@ function SettingsTab({ data, setData }) {
           ))}
         </div>
       </SectionCard>
+      </ReadOnlyFence>
     </div>
   );
 }
@@ -335,7 +361,8 @@ function SettingsTab({ data, setData }) {
 /* ============================================================
    직원목록 탭
    ============================================================ */
-function EmployeesTab({ data, setData }) {
+function EmployeesTab({ data, setData, role }) {
+  const locked = role === "viewer";
   const emps = data.employees;
   const ptCodeOptions = ["", ...data.ptTemplates.map((t) => t.code)];
   const update = (id, patch) => setData((d) => ({ ...d, employees: d.employees.map((e) => (e.id === id ? { ...e, ...patch } : e)) }));
@@ -354,6 +381,8 @@ function EmployeesTab({ data, setData }) {
 
   return (
     <div className="max-w-5xl">
+      {locked && <ReadOnlyNotice>이 화면은 열람만 가능합니다. 변경이 필요하면 매장관리자 이상에게 요청하세요.</ReadOnlyNotice>}
+      <ReadOnlyFence locked={locked}>
       <SectionCard title="정직원" icon={Users} right={<GhostBtn onClick={addFT} icon={Plus}>정직원 추가</GhostBtn>}>
         <p className="text-xs text-slate-500 mb-3">
           소속을 "지원근무"나 "스위칭근무"로 두면 휴무/휴일·근무 자동배정에서 제외되고, 스케줄 화면에서 수기로만 입력됩니다.
@@ -429,6 +458,7 @@ function EmployeesTab({ data, setData }) {
           </tbody>
         </table>
       </SectionCard>
+      </ReadOnlyFence>
     </div>
   );
 }
@@ -436,7 +466,8 @@ function EmployeesTab({ data, setData }) {
 /* ============================================================
    태그목록 탭
    ============================================================ */
-function TagsTab({ data, setData }) {
+function TagsTab({ data, setData, role }) {
+  const locked = role !== "admin"; // 태그목록은 총관리자만 수정 가능
   const tags = data.tags;
 
   // 예전 데이터에 id가 없는 태그가 있으면 한 번만 안정적인 id를 부여 (코드 입력 중 커서가 사라지는 문제 방지)
@@ -478,6 +509,8 @@ function TagsTab({ data, setData }) {
 
   return (
     <div className="max-w-5xl">
+      {locked && <ReadOnlyNotice>태그목록은 총관리자만 수정할 수 있습니다. 변경이 필요하면 총관리자에게 요청하세요.</ReadOnlyNotice>}
+      <ReadOnlyFence locked={locked}>
       <SectionCard title="태그목록" icon={Tag} right={<GhostBtn onClick={add} icon={Plus}>태그 추가</GhostBtn>}>
         <p className="text-xs text-slate-500 mb-3">
           "매장출근카운트"를 끄면(아니오) 그 태그가 입력된 사람은 자동으로 출근인원 계산에서 제외됩니다.
@@ -509,7 +542,7 @@ function TagsTab({ data, setData }) {
                 className={`border-b border-slate-100 ${overIndex === i ? "bg-indigo-50" : ""}`}
               >
                 <td
-                  draggable
+                  draggable={!locked}
                   onDragStart={() => onDragStart(i)}
                   onDragEnd={onDragEnd}
                   className="py-1.5 text-slate-300 hover:text-slate-500 cursor-grab active:cursor-grabbing select-none text-center"
@@ -571,6 +604,7 @@ function TagsTab({ data, setData }) {
           휴무/휴일을 다 소진했으면 연차 잔여가 남아있는 만큼만 하루 단위 연차로 등록됩니다 (반차·반반차는 자동 전환하지 않습니다).
         </p>
       </SectionCard>
+      </ReadOnlyFence>
     </div>
   );
 }
@@ -578,7 +612,8 @@ function TagsTab({ data, setData }) {
 /* ============================================================
    공휴일 · 이슈일 · 개인지정태그 탭
    ============================================================ */
-function HolidaysTab({ data, setData }) {
+function HolidaysTab({ data, setData, role }) {
+  const locked = role === "viewer"; // 공휴일/이슈일/고정휴무는 매장관리자 이상만. 개인 지정 태그는 전 역할 허용(아래 별도 처리)
   const { holidays, issueDays, personalTags, employees, tags } = data;
   const fixedRestSchedules = data.fixedRestSchedules || [];
   const dayPairOptions = data.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS;
@@ -630,6 +665,8 @@ function HolidaysTab({ data, setData }) {
 
   return (
     <div className="max-w-5xl">
+      {locked && <ReadOnlyNotice>공휴일·이슈일·고정휴무 설정은 매장관리자 이상만 수정할 수 있습니다. 아래 "개인 지정 태그"는 누구나 등록할 수 있습니다.</ReadOnlyNotice>}
+      <ReadOnlyFence locked={locked}>
       <SectionCard title="공휴일 목록" icon={CalendarDays} right={<GhostBtn onClick={addHol} icon={Plus}>공휴일 추가</GhostBtn>}>
         <div className="grid grid-cols-1 gap-1.5">
           {holidays.map((h, i) => (
@@ -660,6 +697,7 @@ function HolidaysTab({ data, setData }) {
           ))}
         </div>
       </SectionCard>
+      </ReadOnlyFence>
 
       <SectionCard title="개인 지정 태그" icon={Tag} right={<GhostBtn onClick={addPt} icon={Plus}>태그 추가</GhostBtn>}>
         <p className="text-xs text-slate-500 mb-3">
@@ -705,6 +743,7 @@ function HolidaysTab({ data, setData }) {
       </SectionCard>
 
       {isFixedMode && (
+      <ReadOnlyFence locked={locked}>
       <SectionCard title="고정휴무 설정 (정직원)" icon={CalendarDays} right={<GhostBtn onClick={addFixed} icon={Plus}>고정휴무 추가</GhostBtn>}>
         <p className="text-xs text-slate-500 mb-3">
           매주 같은 요일쌍으로 쉬는 직원들을 한 번에 지정합니다 (예: 월화 고정휴무 5명). 개인 지정 태그(요청·이슈)가 항상 먼저 반영되고,
@@ -737,6 +776,7 @@ function HolidaysTab({ data, setData }) {
           {fixedRestSchedules.length === 0 && <p className="text-xs text-slate-400">등록된 고정휴무가 없습니다.</p>}
         </div>
       </SectionCard>
+      </ReadOnlyFence>
       )}
     </div>
   );
@@ -745,7 +785,8 @@ function HolidaysTab({ data, setData }) {
 /* ============================================================
    근무형태템플릿 탭
    ============================================================ */
-function ShiftTemplatesTab({ data, setData }) {
+function ShiftTemplatesTab({ data, setData, role }) {
+  const locked = role === "viewer";
   const { ftTemplates, ptTemplates, prefCode } = data;
   const thresholds = data.ftThresholds || { weekday: [2, 3, 4], weekend: [2, 3, 4] };
 
@@ -807,6 +848,8 @@ function ShiftTemplatesTab({ data, setData }) {
 
   return (
     <div className="max-w-6xl">
+      {locked && <ReadOnlyNotice>이 화면은 열람만 가능합니다. 변경이 필요하면 매장관리자 이상에게 요청하세요.</ReadOnlyNotice>}
+      <ReadOnlyFence locked={locked}>
       <SectionCard title="정직원 근무형태" icon={ClipboardCheck} right={<GhostBtn onClick={addFt} icon={Plus}>근무코드 추가</GhostBtn>}>
         <p className="text-xs text-slate-500 mb-3">
           "평일/주말 몇 인" 기준 칸 개수는 매장마다 다를 수 있어 자유롭게 늘리고 줄일 수 있습니다. 출근인원이 여러 기준 중 가장 가까운 값에 맞춰 그 열의 인원수를 자동으로 사용합니다.
@@ -901,6 +944,7 @@ function ShiftTemplatesTab({ data, setData }) {
           </tbody>
         </table>
       </SectionCard>
+      </ReadOnlyFence>
     </div>
   );
 }
@@ -1224,7 +1268,8 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
   );
 }
 
-function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive, monthsMeta, monthKey }) {
+function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive, monthsMeta, monthKey, role }) {
+  const locked = role === "viewer";
   const meta = monthsMeta.find((m) => m.key === monthKey);
   const [running, setRunning] = useState(false);
   const [msg, setMsg] = useState(null);
@@ -1385,6 +1430,8 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
 
   return (
     <div>
+      {locked && <ReadOnlyNotice>이 화면은 열람만 가능합니다. 자동배정 실행과 스케줄 수정은 매장관리자 이상만 할 수 있습니다.</ReadOnlyNotice>}
+      <ReadOnlyFence locked={locked}>
       <div className="flex items-center gap-2 mb-4 flex-wrap">
         <PrimaryBtn onClick={runRestDays} disabled={running} icon={PlayCircle}>1단계: 휴무/휴일 자동배정</PrimaryBtn>
         <PrimaryBtn onClick={runShiftCodes} disabled={running} icon={Sparkles}>2단계: 근무 자동배정</PrimaryBtn>
@@ -1406,6 +1453,7 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
         </span>
       </div>
       <ScheduleGrid data={data} setData={setData} schedule={schedule} setSchedule={setSchedule} monthKey={monthKey} days={meta.days} priorMonthCarry={priorMonthCarry} />
+      </ReadOnlyFence>
     </div>
   );
 }
@@ -1513,7 +1561,8 @@ function monthsOfYear(year) {
   return arr;
 }
 
-function ArchiveTab({ data, archive, setArchive }) {
+function ArchiveTab({ data, archive, setArchive, role }) {
+  const locked = role === "viewer";
   const [year, setYear] = useState(data.settings?.year || new Date().getFullYear());
   const months = useMemo(() => monthsOfYear(year), [year]);
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth() + 1);
@@ -1581,6 +1630,7 @@ function ArchiveTab({ data, archive, setArchive }) {
       {!entry ? (
         <div className="text-sm text-slate-400 py-16 text-center">{year}년 {selectedMonth}월은 아직 저장된 기록이 없습니다.</div>
       ) : (
+        <ReadOnlyFence locked={locked}>
         <SectionCard
           title={`${year}년 ${selectedMonth}월 기록`}
           icon={Archive}
@@ -1631,8 +1681,11 @@ function ArchiveTab({ data, archive, setArchive }) {
               </tbody>
             </table>
           </div>
-          <p className="text-[11px] text-slate-400 mt-2">여기서 수정한 내용은 자동으로 저장됩니다.</p>
+          <p className="text-[11px] text-slate-400 mt-2">
+            {locked ? "이 기록은 열람만 가능합니다. 수정이 필요하면 매장관리자 이상에게 요청하세요." : "여기서 수정한 내용은 자동으로 저장됩니다."}
+          </p>
         </SectionCard>
+        </ReadOnlyFence>
       )}
     </div>
   );
@@ -1647,7 +1700,8 @@ function formatDaysHours(hours) {
   return `${daysStr}일 (${hours}H)`;
 }
 
-function LeaveTab({ data, setData, archive }) {
+function LeaveTab({ data, setData, archive, role }) {
+  const locked = role === "viewer";
   const [year, setYear] = useState(data.settings?.year || new Date().getFullYear());
 
   const usage = useMemo(
@@ -1704,6 +1758,8 @@ function LeaveTab({ data, setData, archive }) {
         </p>
       </SectionCard>
 
+      {locked && <ReadOnlyNotice>연차 보유량 입력은 매장관리자 이상만 할 수 있습니다.</ReadOnlyNotice>}
+      <ReadOnlyFence locked={locked}>
       {pools.map((poolName) => {
         const poolTags = leaveTags.filter((t) => (t.leavePool || "연차") === poolName);
         const grants = grantsByYear[poolName] || {};
@@ -1759,6 +1815,7 @@ function LeaveTab({ data, setData, archive }) {
           </SectionCard>
         );
       })}
+      </ReadOnlyFence>
     </div>
   );
 }
@@ -1766,7 +1823,8 @@ function LeaveTab({ data, setData, archive }) {
 /* ============================================================
    시프티 코드 변환표 탭 - 우리 코드 ↔ 외부 시스템(시프티) 코드 매핑 + 변환 미리보기
    ============================================================ */
-function ShiftyMapTab({ data, setData, schedule, archive, monthsMeta }) {
+function ShiftyMapTab({ data, setData, schedule, archive, monthsMeta, role }) {
+  const locked = role === "viewer";
   const map = data.shiftyCodeMap || [];
   const updMap = (i, patch) => setData((d) => { const a = [...(d.shiftyCodeMap || [])]; a[i] = { ...a[i], ...patch }; return { ...d, shiftyCodeMap: a }; });
   const rmMap = (i) => setData((d) => ({ ...d, shiftyCodeMap: (d.shiftyCodeMap || []).filter((_, idx) => idx !== i) }));
@@ -1809,6 +1867,8 @@ function ShiftyMapTab({ data, setData, schedule, archive, monthsMeta }) {
 
   return (
     <div className="max-w-6xl">
+      {locked && <ReadOnlyNotice>코드 변환표 수정은 매장관리자 이상만 할 수 있습니다. 아래 "변환 미리보기"는 누구나 이용할 수 있습니다.</ReadOnlyNotice>}
+      <ReadOnlyFence locked={locked}>
       <SectionCard title="코드 변환표" icon={FileSpreadsheet} right={<GhostBtn onClick={addMap} icon={Plus}>매핑 추가</GhostBtn>}>
         <p className="text-xs text-slate-500 mb-3">우리 시스템 코드를 시프티(또는 다른 외부 시스템) 코드로 바꿔서 내보낼 때 쓸 대응표입니다. 매핑이 없는 코드는 원래 값 그대로 나갑니다.</p>
         <table className="text-sm w-full">
@@ -1830,6 +1890,7 @@ function ShiftyMapTab({ data, setData, schedule, archive, monthsMeta }) {
           </tbody>
         </table>
       </SectionCard>
+      </ReadOnlyFence>
 
       <SectionCard
         title="변환 미리보기"
@@ -2236,7 +2297,9 @@ function MainApp({ role, onLogout }) {
         <div className="flex items-center gap-2">
           <Store size={18} className="text-indigo-300" />
           <span className="font-bold text-sm">매장 스케줄링 자동화</span>
-          <span className="text-[10px] bg-slate-700 text-slate-300 px-1.5 py-0.5 rounded ml-1">{isAdmin ? "관리자" : "직원"}</span>
+          <span className="text-[10px] bg-slate-700 text-slate-300 px-1.5 py-0.5 rounded ml-1">
+            {role === "admin" ? "총관리자" : role === "manager" ? "매장관리자" : "사용자"}
+          </span>
         </div>
         <div className="flex items-center gap-2">
           {storeList && storeList.length > 0 && (
@@ -2384,21 +2447,21 @@ function MainApp({ role, onLogout }) {
 
           <div className="flex-1 overflow-auto p-6">
             <h2 className="text-lg font-bold text-slate-800 mb-4">{data.settings.storeName || "매장"} · {TABS.find((t) => t.key === tab)?.label}</h2>
-            {tab === "settings" && <SettingsTab data={data} setData={setData} />}
-            {tab === "employees" && <EmployeesTab data={data} setData={setData} />}
-            {tab === "tags" && <TagsTab data={data} setData={setData} />}
-            {tab === "holidays" && <HolidaysTab data={data} setData={setData} />}
-            {tab === "templates" && <ShiftTemplatesTab data={data} setData={setData} />}
+            {tab === "settings" && <SettingsTab data={data} setData={setData} role={role} />}
+            {tab === "employees" && <EmployeesTab data={data} setData={setData} role={role} />}
+            {tab === "tags" && <TagsTab data={data} setData={setData} role={role} />}
+            {tab === "holidays" && <HolidaysTab data={data} setData={setData} role={role} />}
+            {tab === "templates" && <ShiftTemplatesTab data={data} setData={setData} role={role} />}
             {tab === "m1" && monthsMeta && (
-              <ScheduleTab data={data} setData={setData} schedule={schedule} setSchedule={setSchedule} archive={archive} setArchive={setArchive} monthsMeta={monthsMeta} monthKey="m1" />
+              <ScheduleTab data={data} setData={setData} schedule={schedule} setSchedule={setSchedule} archive={archive} setArchive={setArchive} monthsMeta={monthsMeta} monthKey="m1" role={role} />
             )}
             {tab === "m2" && monthsMeta && (
-              <ScheduleTab data={data} setData={setData} schedule={schedule} setSchedule={setSchedule} archive={archive} setArchive={setArchive} monthsMeta={monthsMeta} monthKey="m2" />
+              <ScheduleTab data={data} setData={setData} schedule={schedule} setSchedule={setSchedule} archive={archive} setArchive={setArchive} monthsMeta={monthsMeta} monthKey="m2" role={role} />
             )}
             {tab === "summary" && monthsMeta && <SummaryTab data={data} schedule={schedule} monthsMeta={monthsMeta} />}
-            {tab === "archive" && <ArchiveTab data={data} archive={archive || {}} setArchive={setArchive} />}
-            {tab === "leave" && <LeaveTab data={data} setData={setData} archive={archive || {}} />}
-            {tab === "shifty" && monthsMeta && <ShiftyMapTab data={data} setData={setData} schedule={schedule} archive={archive || {}} monthsMeta={monthsMeta} />}
+            {tab === "archive" && <ArchiveTab data={data} archive={archive || {}} setArchive={setArchive} role={role} />}
+            {tab === "leave" && <LeaveTab data={data} setData={setData} archive={archive || {}} role={role} />}
+            {tab === "shifty" && monthsMeta && <ShiftyMapTab data={data} setData={setData} schedule={schedule} archive={archive || {}} monthsMeta={monthsMeta} role={role} />}
           </div>
         </div>
       )}

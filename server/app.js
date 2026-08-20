@@ -4,7 +4,7 @@ const fs = require("fs");
 const path = require("path");
 
 const db = require("./db");
-const { roleFromPassword } = require("./auth");
+const { roleFromPassword, hasRole } = require("./auth");
 const { defaultStoreConfig } = require("./seed");
 
 const CLIENT_DIST = path.join(__dirname, "..", "client", "dist");
@@ -58,8 +58,8 @@ function checkAuth(req, requiredRole) {
   const pw = req.headers["x-app-password"] || "";
   const role = roleFromPassword(pw);
   if (!role) return { ok: false, status: 401, error: "비밀번호가 올바르지 않습니다." };
-  if (requiredRole === "admin" && role !== "admin") {
-    return { ok: false, status: 403, error: "관리자만 할 수 있는 작업입니다." };
+  if (!hasRole(role, requiredRole)) {
+    return { ok: false, status: 403, error: "이 작업을 수행할 권한이 없습니다." };
   }
   return { ok: true, role };
 }
@@ -170,7 +170,7 @@ async function handleApi(req, res, pathname, method) {
 
     // GET /api/stores
     if (pathname === "/api/stores" && method === "GET") {
-      const auth = checkAuth(req, "staff");
+      const auth = checkAuth(req, "viewer");
       if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
       const stores = await db.listStores();
       return sendJson(res, 200, stores);
@@ -214,7 +214,7 @@ async function handleApi(req, res, pathname, method) {
       }
 
       if (sub && method === "GET") {
-        const auth = checkAuth(req, "staff");
+        const auth = checkAuth(req, "viewer");
         if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
         const { found, value } = await db.getStoreField(id, sub);
         if (!found) return sendJson(res, 404, { error: "매장을 찾을 수 없습니다." });
@@ -223,8 +223,33 @@ async function handleApi(req, res, pathname, method) {
         return sendJson(res, 200, value || null);
       }
 
+      // PUT .../config - 역할별로 실제 저장되는 필드가 다르다.
+      //   admin:   보낸 config를 그대로 저장
+      //   manager: tags만 기존 값으로 강제 유지(무시), 나머지는 그대로 저장 - 태그목록은 총관리자 전용
+      //   viewer:  personalTags만 반영, 나머지는 전부 기존 값 유지 - 개인 지정 태그(요청휴무)만 허용
+      // 클라이언트 화면이 <fieldset disabled>로 입력을 막아두더라도, 여기서 서버가 한 번 더 강제한다.
+      if (sub === "config" && method === "PUT") {
+        const auth = checkAuth(req, "viewer");
+        if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
+        const body = await readBody(req);
+        const { found: curFound, value: current } = await db.getStoreField(id, "config");
+        if (!curFound) return sendJson(res, 404, { error: "매장을 찾을 수 없습니다." });
+
+        let toSave = body;
+        if (auth.role === "viewer") {
+          toSave = { ...(current || {}), personalTags: body.personalTags };
+        } else if (auth.role === "manager") {
+          toSave = { ...body, tags: (current || {}).tags };
+        }
+
+        const { found, updatedAt } = await db.putStoreField(id, "config", toSave);
+        if (!found) return sendJson(res, 404, { error: "매장을 찾을 수 없습니다." });
+        return sendJson(res, 200, { ok: true, updatedAt });
+      }
+
+      // PUT .../schedule, .../archive - 매장관리자 이상만 가능
       if (sub && method === "PUT") {
-        const auth = checkAuth(req, "staff");
+        const auth = checkAuth(req, "manager");
         if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
         const body = await readBody(req);
         const { found, updatedAt } = await db.putStoreField(id, sub, body);
@@ -236,7 +261,7 @@ async function handleApi(req, res, pathname, method) {
     // GET /api/stores/:id/meta - 마지막 수정 시각만 가볍게 조회 (다른 사람 수정 감지용 폴링)
     const metaMatch = pathname.match(/^\/api\/stores\/([^/]+)\/meta$/);
     if (metaMatch && method === "GET") {
-      const auth = checkAuth(req, "staff");
+      const auth = checkAuth(req, "viewer");
       if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
       const id = decodeURIComponent(metaMatch[1]);
       const meta = await db.getMeta(id);
