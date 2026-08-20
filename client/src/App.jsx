@@ -3,7 +3,7 @@ import {
   Settings, Users, Tag, CalendarDays, ClipboardList, CheckCircle2,
   PlayCircle, Plus, Trash2, Store, Loader2, AlertTriangle,
   Sparkles, Save, ClipboardCheck, LogOut, Lock, Download, Upload, Archive,
-  FileSpreadsheet, Copy, PieChart, History,
+  FileSpreadsheet, Copy, PieChart, History, FolderCog, FolderCheck, HardDriveDownload,
 } from "lucide-react";
 import { api, getPassword, setPassword, clearPassword, getRole, setRole } from "./api";
 import {
@@ -15,6 +15,12 @@ import {
   validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT,
   isOffTag, dowBucket, nextMonth, emptySchedule, reconcileSchedule, isActiveEmployee, isAutoAssignable, computeLeaveUsage,
 } from "./logic";
+import {
+  saveDirHandle, loadDirHandle, clearDirHandle, isFileSystemAccessSupported, ensurePermission,
+} from "./lib/xlsxDirHandle";
+import {
+  fillWorkbook, readWorkbook, workbookToArrayBuffer, outputFileName,
+} from "./lib/shifteeFile";
 
 /* ============================================================
    작은 UI 조각들
@@ -392,6 +398,7 @@ function EmployeesTab({ data, setData, role }) {
           <thead>
             <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
               <th className="py-2 font-semibold">이름</th>
+              <th className="py-2 font-semibold">사원번호</th>
               <th className="py-2 font-semibold">소속</th>
               <th className="py-2 font-semibold">자동배정 포함</th>
               <th className="py-2 font-semibold">재직상태</th>
@@ -405,6 +412,7 @@ function EmployeesTab({ data, setData, role }) {
               return (
                 <tr key={e.id} className="border-b border-slate-100">
                   <td className="py-1.5 pr-2"><TextInput value={e.name} onChange={(v) => update(e.id, { name: v })} className="w-40" /></td>
+                  <td className="py-1.5 pr-2"><TextInput value={e.empNo || ""} onChange={(v) => update(e.id, { empNo: v })} className="w-28" placeholder="예: I501193" /></td>
                   <td className="py-1.5 pr-2">
                     <Select value={memberType} onChange={(v) => update(e.id, { memberType: v })} options={["우리매장", "지원근무", "스위칭근무"]} />
                   </td>
@@ -437,6 +445,7 @@ function EmployeesTab({ data, setData, role }) {
           <thead>
             <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
               <th className="py-2 font-semibold">이름</th>
+              <th className="py-2 font-semibold">사원번호</th>
               <th className="py-2 font-semibold">기본근무형태</th>
               <th className="py-2 font-semibold">연장근무형태</th>
               <th className="py-2 font-semibold">근무요일구분</th>
@@ -448,6 +457,7 @@ function EmployeesTab({ data, setData, role }) {
             {ptList.map((e) => (
               <tr key={e.id} className="border-b border-slate-100">
                 <td className="py-1.5 pr-2"><TextInput value={e.name} onChange={(v) => update(e.id, { name: v })} className="w-32" /></td>
+                <td className="py-1.5 pr-2"><TextInput value={e.empNo || ""} onChange={(v) => update(e.id, { empNo: v })} className="w-24" placeholder="예: P260161" /></td>
                 <td className="py-1.5 pr-2"><Select value={e.fixedCode || ""} onChange={(v) => update(e.id, { fixedCode: v })} options={ptCodeOptions} className="w-24" /></td>
                 <td className="py-1.5 pr-2"><Select value={e.extendedCode || ""} onChange={(v) => update(e.id, { extendedCode: v })} options={ptCodeOptions} className="w-24" /></td>
                 <td className="py-1.5 pr-2"><Select value={e.dayType} onChange={(v) => update(e.id, { dayType: v })} options={["평일", "주말"]} /></td>
@@ -1823,25 +1833,62 @@ function LeaveTab({ data, setData, archive, role }) {
 /* ============================================================
    시프티 코드 변환표 탭 - 우리 코드 ↔ 외부 시스템(시프티) 코드 매핑 + 변환 미리보기
    ============================================================ */
-function ShiftyMapTab({ data, setData, schedule, archive, monthsMeta, role }) {
+function ShiftyMapTab({ data, setData, schedule, archive, monthsMeta, role, currentStoreId, storeList }) {
   const locked = role === "viewer";
+  const isAdmin = role === "admin";
   const map = data.shiftyCodeMap || [];
   const updMap = (i, patch) => setData((d) => { const a = [...(d.shiftyCodeMap || [])]; a[i] = { ...a[i], ...patch }; return { ...d, shiftyCodeMap: a }; });
   const rmMap = (i) => setData((d) => ({ ...d, shiftyCodeMap: (d.shiftyCodeMap || []).filter((_, idx) => idx !== i) }));
   const addMap = () => setData((d) => ({ ...d, shiftyCodeMap: [...(d.shiftyCodeMap || []), { code: "", shiftyCode: "" }] }));
 
-  const [source, setSource] = useState("m1"); // m1 | m2 | archive
+  const [source, setSource] = useState("m1"); // m1 | m2 | both | archive
   const [archiveYear, setArchiveYear] = useState(data.settings?.year || new Date().getFullYear());
   const [archiveMonth, setArchiveMonth] = useState(new Date().getMonth() + 1);
   const [copyMsg, setCopyMsg] = useState("");
 
-  const meta = source === "m1" || source === "m2" ? monthsMeta.find((m) => m.key === source) : null;
   const archiveKey = `${archiveYear}-${String(archiveMonth).padStart(2, "0")}`;
   const archiveEntry = source === "archive" ? (archive || {})[archiveKey] : null;
 
-  const days = source === "archive" ? (archiveEntry?.days || []) : (meta?.days || []);
+  // 1개월차/2개월차/(둘 다 이어붙인) "양쪽" 을 한 로직으로 처리
+  const m1 = monthsMeta.find((m) => m.key === "m1");
+  const m2 = monthsMeta.find((m) => m.key === "m2");
+  let days, scheduleByEmpList; // scheduleByEmpList: [{key, days}] 형태로 이어붙일 구간들
+  if (source === "archive") {
+    days = archiveEntry?.days || [];
+    scheduleByEmpList = [{ key: "archive", days }];
+  } else if (source === "both") {
+    days = [...(m1?.days || []), ...(m2?.days || [])];
+    scheduleByEmpList = [{ key: "m1", days: m1?.days || [] }, { key: "m2", days: m2?.days || [] }];
+  } else {
+    const meta = monthsMeta.find((m) => m.key === source);
+    days = meta?.days || [];
+    scheduleByEmpList = [{ key: source, days: meta?.days || [] }];
+  }
   const employeesList = source === "archive" ? (archiveEntry?.employeesSnapshot || []) : data.employees.filter((e) => isActiveEmployee(e));
-  const scheduleByEmp = source === "archive" ? (archiveEntry?.schedule || {}) : (schedule[source] || {});
+
+  const codeAt = (empId, segIdx) => {
+    // segIdx: days 배열 안에서의 순번 -> 어느 구간(m1/m2/archive)의 몇 번째 칸인지 환산해서 값을 찾는다
+    let offset = 0;
+    for (const seg of scheduleByEmpList) {
+      if (segIdx < offset + seg.days.length) {
+        const localIdx = segIdx - offset;
+        const arr = seg.key === "archive" ? (archiveEntry?.schedule?.[empId] || []) : (schedule[seg.key]?.[empId] || []);
+        return arr[localIdx] || "";
+      }
+      offset += seg.days.length;
+    }
+    return "";
+  };
+
+  // 날짜문자열로 직접 찾기 (엑셀 자동채우기용 - m1/m2를 합쳐서 검색)
+  const codeByDate = (empId, dateStr) => {
+    for (const m of [m1, m2]) {
+      if (!m) continue;
+      const idx = m.days.findIndex((d) => d.dateStr === dateStr);
+      if (idx !== -1) return (schedule[m.key]?.[empId] || [])[idx] || "";
+    }
+    return "";
+  };
 
   const convert = (v) => {
     if (!v) return "";
@@ -1849,28 +1896,187 @@ function ShiftyMapTab({ data, setData, schedule, archive, monthsMeta, role }) {
     return m ? m.shiftyCode : v;
   };
 
+  const rowText = (e) => [e.name, ...days.map((_, i) => convert(codeAt(e.id, i)))].join("\t");
+
   const copyGrid = async () => {
     const header = ["이름", ...days.map((d) => `${d.day}(${d.weekday})`)].join("\t");
-    const rows = employeesList.map((e) => {
-      const arr = scheduleByEmp[e.id] || [];
-      return [e.name, ...days.map((_, i) => convert(arr[i] || ""))].join("\t");
-    });
-    const text = [header, ...rows].join("\n");
+    const text = [header, ...employeesList.map(rowText)].join("\n");
     try {
       await navigator.clipboard.writeText(text);
-      setCopyMsg("복사되었습니다. 시프티 등 원하는 곳에 붙여넣으세요.");
+      setCopyMsg("전체 표가 복사되었습니다.");
     } catch (e) {
       setCopyMsg("복사에 실패했습니다. 표를 직접 드래그해서 복사해주세요.");
     }
     setTimeout(() => setCopyMsg(""), 3000);
   };
 
+  const copyRow = async (e) => {
+    try {
+      await navigator.clipboard.writeText(rowText(e));
+      setCopyMsg(`"${e.name}" 행이 복사되었습니다.`);
+    } catch (err) {
+      setCopyMsg("복사에 실패했습니다.");
+    }
+    setTimeout(() => setCopyMsg(""), 2500);
+  };
+
+  /* ---------- 전체 매장에 코드 변환표 동일 적용 (총관리자 전용) ---------- */
+  const [syncBusy, setSyncBusy] = useState(false);
+  const [syncMsg, setSyncMsg] = useState("");
+  const syncMappingToAllStores = async () => {
+    if (!window.confirm(`이 매장의 코드 변환표를 나머지 ${(storeList?.length || 1) - 1}개 매장에도 동일하게 적용할까요? 각 매장의 코드 변환표만 덮어씁니다.`)) return;
+    setSyncBusy(true);
+    setSyncMsg("");
+    let ok = 0, fail = 0;
+    try {
+      const others = (storeList || []).filter((s) => s.id !== currentStoreId);
+      for (const s of others) {
+        try {
+          const cfg = await api.getConfig(s.id);
+          await api.putConfig(s.id, { ...cfg, shiftyCodeMap: map });
+          ok++;
+        } catch (e) { fail++; }
+      }
+      setSyncMsg(`완료: ${ok}개 매장 적용${fail > 0 ? `, 실패 ${fail}개` : ""}`);
+    } finally {
+      setSyncBusy(false);
+    }
+  };
+
+  /* ---------- 엑셀 자동 채우기 ---------- */
+  const fsaSupported = isFileSystemAccessSupported();
+  const [dirConnected, setDirConnected] = useState(false);
+  const [dirName, setDirName] = useState("");
+  const [fillBusy, setFillBusy] = useState(false);
+  const [fillResult, setFillResult] = useState(null); // { fileName, filledCount, matched, unmatched }
+  const [fillError, setFillError] = useState("");
+  const fileInputRef = useRef(null);
+
+  useEffect(() => {
+    if (!fsaSupported) return;
+    (async () => {
+      const handle = await loadDirHandle().catch(() => null);
+      if (handle) {
+        const ok = await handle.queryPermission({ mode: "readwrite" }).catch(() => "denied");
+        setDirConnected(ok === "granted" || ok === "prompt");
+        setDirName(handle.name || "");
+      }
+    })();
+  }, [fsaSupported]);
+
+  const connectFolder = async () => {
+    try {
+      const handle = await window.showDirectoryPicker({ id: "shiftee-downloads", startIn: "downloads" });
+      await saveDirHandle(handle);
+      setDirConnected(true);
+      setDirName(handle.name || "");
+      setFillError("");
+    } catch (e) {
+      // 사용자가 취소한 경우 등은 조용히 무시
+    }
+  };
+
+  const disconnectFolder = async () => {
+    await clearDirHandle();
+    setDirConnected(false);
+    setDirName("");
+  };
+
+  async function findLatestShifteeFile(dirHandle) {
+    let latest = null;
+    for await (const [name, entryHandle] of dirHandle.entries()) {
+      if (entryHandle.kind !== "file") continue;
+      if (!/^shiftee-schedule-.*\.xlsx$/i.test(name)) continue;
+      const file = await entryHandle.getFile();
+      if (!latest || file.lastModified > latest.file.lastModified) {
+        latest = { name, handle: entryHandle, file };
+      }
+    }
+    return latest;
+  }
+
+  const runFill = async (arrayBuffer, fileName, saveBack) => {
+    const wb = readWorkbook(arrayBuffer);
+    const result = fillWorkbook(wb, {
+      employees: data.employees,
+      getOurCode: codeByDate,
+      convertCode: convert,
+    });
+    const outBuffer = workbookToArrayBuffer(wb);
+    const outName = outputFileName(fileName);
+    await saveBack(outBuffer, outName);
+    setFillResult({
+      fileName: outName,
+      filledCount: result.filledCount,
+      matched: result.matchedEmployees.length,
+      unmatched: result.unmatchedRows,
+      period: result.period,
+    });
+  };
+
+  const loadAndFillFromFolder = async () => {
+    setFillBusy(true); setFillError(""); setFillResult(null);
+    try {
+      const handle = await loadDirHandle();
+      if (!handle) { setFillError("연결된 폴더가 없습니다. 먼저 폴더를 연결하세요."); return; }
+      const granted = await ensurePermission(handle, "readwrite");
+      if (!granted) { setFillError("폴더 접근 권한이 거부되었습니다."); return; }
+      const latest = await findLatestShifteeFile(handle);
+      if (!latest) { setFillError('연결한 폴더에서 "shiftee-schedule-*.xlsx" 파일을 찾지 못했습니다.'); return; }
+      const buf = await latest.file.arrayBuffer();
+      await runFill(buf, latest.name, async (outBuffer, outName) => {
+        const outHandle = await handle.getFileHandle(outName, { create: true });
+        const writable = await outHandle.createWritable();
+        await writable.write(outBuffer);
+        await writable.close();
+      });
+    } catch (e) {
+      setFillError("처리 중 오류가 발생했습니다: " + e.message);
+    } finally {
+      setFillBusy(false);
+    }
+  };
+
+  const pickFileFallback = () => fileInputRef.current?.click();
+
+  const handleFileFallback = async (ev) => {
+    const file = ev.target.files?.[0];
+    ev.target.value = "";
+    if (!file) return;
+    setFillBusy(true); setFillError(""); setFillResult(null);
+    try {
+      const buf = await file.arrayBuffer();
+      await runFill(buf, file.name, async (outBuffer, outName) => {
+        const blob = new Blob([outBuffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = outName;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      });
+    } catch (e) {
+      setFillError("처리 중 오류가 발생했습니다: " + e.message);
+    } finally {
+      setFillBusy(false);
+    }
+  };
+
   return (
     <div className="max-w-6xl">
-      {locked && <ReadOnlyNotice>코드 변환표 수정은 매장관리자 이상만 할 수 있습니다. 아래 "변환 미리보기"는 누구나 이용할 수 있습니다.</ReadOnlyNotice>}
+      {locked && <ReadOnlyNotice>코드 변환표 수정은 매장관리자 이상만 할 수 있습니다. 아래 "변환 미리보기"·"엑셀 자동 채우기"는 누구나 이용할 수 있습니다.</ReadOnlyNotice>}
       <ReadOnlyFence locked={locked}>
-      <SectionCard title="코드 변환표" icon={FileSpreadsheet} right={<GhostBtn onClick={addMap} icon={Plus}>매핑 추가</GhostBtn>}>
+      <SectionCard
+        title="코드 변환표"
+        icon={FileSpreadsheet}
+        right={
+          <div className="flex items-center gap-2">
+            {isAdmin && <GhostBtn onClick={syncMappingToAllStores} icon={FolderCog}>{syncBusy ? "적용 중..." : "전체 매장에 동일 적용"}</GhostBtn>}
+            <GhostBtn onClick={addMap} icon={Plus}>매핑 추가</GhostBtn>
+          </div>
+        }
+      >
         <p className="text-xs text-slate-500 mb-3">우리 시스템 코드를 시프티(또는 다른 외부 시스템) 코드로 바꿔서 내보낼 때 쓸 대응표입니다. 매핑이 없는 코드는 원래 값 그대로 나갑니다.</p>
+        {syncMsg && <p className="text-xs text-indigo-600 mb-2">{syncMsg}</p>}
         <table className="text-sm w-full">
           <thead>
             <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
@@ -1895,10 +2101,19 @@ function ShiftyMapTab({ data, setData, schedule, archive, monthsMeta, role }) {
       <SectionCard
         title="변환 미리보기"
         icon={Copy}
-        right={<PrimaryBtn onClick={copyGrid} icon={Copy}>표 복사하기</PrimaryBtn>}
+        right={<PrimaryBtn onClick={copyGrid} icon={Copy}>표 전체 복사</PrimaryBtn>}
       >
         <div className="flex items-center gap-3 mb-3 flex-wrap">
-          <Select value={source} onChange={setSource} options={[{ value: "m1", label: "스케줄 1개월차" }, { value: "m2", label: "스케줄 2개월차" }, { value: "archive", label: "월별기록" }]} className="w-40" />
+          <Select
+            value={source} onChange={setSource}
+            options={[
+              { value: "m1", label: "스케줄 1개월차" },
+              { value: "m2", label: "스케줄 2개월차" },
+              { value: "both", label: "양쪽 (2개월 전체)" },
+              { value: "archive", label: "월별기록" },
+            ]}
+            className="w-44"
+          />
           {source === "archive" && (
             <>
               <NumberInput value={archiveYear} onChange={(v) => setArchiveYear(v || new Date().getFullYear())} className="w-20" />
@@ -1907,6 +2122,7 @@ function ShiftyMapTab({ data, setData, schedule, archive, monthsMeta, role }) {
           )}
           {copyMsg && <span className="text-xs text-indigo-600">{copyMsg}</span>}
         </div>
+        <p className="text-[11px] text-slate-400 mb-3">각 행 왼쪽의 복사 아이콘을 누르면 그 직원의 날짜별 코드만 탭(TAB) 구분으로 복사됩니다 — 시프티 엑셀에서 그 사람 행에 바로 붙여넣기 좋습니다.</p>
 
         {days.length === 0 ? (
           <p className="text-sm text-slate-400 py-8 text-center">{source === "archive" ? "선택한 달의 저장된 기록이 없습니다." : "표시할 스케줄이 없습니다."}</p>
@@ -1915,28 +2131,77 @@ function ShiftyMapTab({ data, setData, schedule, archive, monthsMeta, role }) {
             <table className="text-xs border-collapse" style={{ tableLayout: "fixed" }}>
               <thead>
                 <tr>
-                  <th style={{ minWidth: 120, maxWidth: 120 }} className="sticky left-0 bg-slate-100 border border-slate-200 px-2 py-1.5 text-left z-10">이름</th>
-                  {days.map((day) => (
-                    <th key={day.day} style={{ minWidth: 50, maxWidth: 50 }} className="border border-slate-200 px-1 py-1.5 font-semibold">
+                  <th style={{ minWidth: 34, maxWidth: 34 }} className="sticky left-0 bg-slate-100 border border-slate-200 z-10"></th>
+                  <th style={{ minWidth: 110, maxWidth: 110 }} className="sticky left-[34px] bg-slate-100 border border-slate-200 px-2 py-1.5 text-left z-10">이름</th>
+                  {days.map((day, i) => (
+                    <th key={i} style={{ minWidth: 50, maxWidth: 50 }} className="border border-slate-200 px-1 py-1.5 font-semibold">
                       {day.day}<br /><span className="font-normal">{day.weekday}</span>
                     </th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {employeesList.map((e) => {
-                  const arr = scheduleByEmp[e.id] || [];
-                  return (
-                    <tr key={e.id}>
-                      <td className="sticky left-0 bg-white border border-slate-200 px-2 py-1 font-medium z-10">{e.name}</td>
-                      {days.map((day, i) => (
-                        <td key={day.day} className="border border-slate-200 px-1 py-1 text-center">{convert(arr[i] || "")}</td>
-                      ))}
-                    </tr>
-                  );
-                })}
+                {employeesList.map((e) => (
+                  <tr key={e.id}>
+                    <td style={{ minWidth: 34, maxWidth: 34 }} className="sticky left-0 bg-white border border-slate-200 text-center z-10">
+                      <button onClick={() => copyRow(e)} title={`${e.name} 행 복사`} className="text-slate-400 hover:text-indigo-600 p-0.5">
+                        <Copy size={12} />
+                      </button>
+                    </td>
+                    <td style={{ minWidth: 110, maxWidth: 110 }} className="sticky left-[34px] bg-white border border-slate-200 px-2 py-1 font-medium z-10">{e.name}</td>
+                    {days.map((day, i) => (
+                      <td key={i} className="border border-slate-200 px-1 py-1 text-center">{convert(codeAt(e.id, i))}</td>
+                    ))}
+                  </tr>
+                ))}
               </tbody>
             </table>
+          </div>
+        )}
+      </SectionCard>
+
+      <SectionCard title="엑셀 자동 채우기" icon={HardDriveDownload}>
+        <p className="text-xs text-slate-500 mb-3">
+          다운로드 폴더에 있는 시프티 업로드용 엑셀 파일(<code className="bg-slate-100 px-1 rounded">shiftee-schedule-*.xlsx</code>)을 열어서,
+          변환된 코드를 사원번호 기준으로 자동으로 채워 넣고 <code className="bg-slate-100 px-1 rounded">-변환완료</code> 파일로 저장합니다.
+          직원목록에 사원번호가 입력되어 있어야 정확히 매칭됩니다(동명이인 방지).
+        </p>
+
+        {fsaSupported ? (
+          <div className="flex items-center gap-2 flex-wrap mb-3">
+            {dirConnected ? (
+              <>
+                <span className="inline-flex items-center gap-1.5 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-md px-2.5 py-1.5">
+                  <FolderCheck size={13} /> 폴더 연결됨{dirName ? ` (${dirName})` : ""}
+                </span>
+                <GhostBtn onClick={connectFolder} icon={FolderCog}>다른 폴더로 변경</GhostBtn>
+                <button onClick={disconnectFolder} className="text-xs text-slate-400 hover:text-red-500 px-2">연결 해제</button>
+                <PrimaryBtn onClick={loadAndFillFromFolder} disabled={fillBusy} icon={HardDriveDownload}>
+                  {fillBusy ? "처리 중..." : "최신 파일 불러오기 → 변환 저장"}
+                </PrimaryBtn>
+              </>
+            ) : (
+              <GhostBtn onClick={connectFolder} icon={FolderCog}>다운로드 폴더 연결</GhostBtn>
+            )}
+          </div>
+        ) : (
+          <p className="text-xs text-amber-600 mb-3">이 브라우저는 폴더 자동 연결을 지원하지 않습니다(크롬/엣지에서 가능). 아래에서 파일을 직접 선택해주세요.</p>
+        )}
+
+        <div className="flex items-center gap-2 flex-wrap">
+          <GhostBtn onClick={pickFileFallback} icon={Upload}>파일 선택해서 변환 (다운로드로 저장)</GhostBtn>
+          <input ref={fileInputRef} type="file" accept=".xlsx" onChange={handleFileFallback} className="hidden" />
+          {fillBusy && <Loader2 className="animate-spin text-indigo-500" size={16} />}
+        </div>
+
+        {fillError && <p className="text-xs text-red-600 mt-3">{fillError}</p>}
+        {fillResult && (
+          <div className="mt-3 text-xs bg-slate-50 border border-slate-200 rounded-md px-3 py-2.5 space-y-1">
+            <p className="text-emerald-700 font-semibold">"{fillResult.fileName}" 로 저장 완료 (기간 {fillResult.period?.start} ~ {fillResult.period?.end})</p>
+            <p>매칭된 직원 {fillResult.matched}명 · 채운 칸 {fillResult.filledCount}개</p>
+            {fillResult.unmatched.length > 0 && (
+              <p className="text-amber-700">매칭 안 된 행: {fillResult.unmatched.map((u) => u.name || u.empNo).join(", ")} — 사원번호/이름을 직원목록과 맞춰주세요.</p>
+            )}
           </div>
         )}
       </SectionCard>
@@ -2478,7 +2743,7 @@ function MainApp({ role, onLogout }) {
             {tab === "summary" && monthsMeta && <SummaryTab data={data} schedule={schedule} monthsMeta={monthsMeta} />}
             {tab === "archive" && <ArchiveTab data={data} archive={archive || {}} setArchive={setArchive} role={role} />}
             {tab === "leave" && <LeaveTab data={data} setData={setData} archive={archive || {}} role={role} />}
-            {tab === "shifty" && monthsMeta && <ShiftyMapTab data={data} setData={setData} schedule={schedule} archive={archive || {}} monthsMeta={monthsMeta} role={role} />}
+            {tab === "shifty" && monthsMeta && <ShiftyMapTab data={data} setData={setData} schedule={schedule} archive={archive || {}} monthsMeta={monthsMeta} role={role} currentStoreId={currentStoreId} storeList={storeList} />}
           </div>
         </div>
       )}
