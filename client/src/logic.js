@@ -412,9 +412,24 @@ function applyFixedRestSchedules(schedule, employees, fixedRestSchedules, dayPai
 
   const timeline = buildTimeline(monthsMeta);
   const ftEmps = employees.filter((e) => e.type === "정직원" && isActiveEmployee(e));
-  // 우선순위 = 직원목록에 등록된 순서 (앞선 사람이 우선)
-  const priorityOf = {};
-  ftEmps.forEach((e, i) => { priorityOf[e.id] = i; });
+  // 우선순위: 자리가 부족해 누군가는 건너뛰어야 할 때 기준이 된다.
+  // 직원목록 순서를 기본으로 삼되, 매번 같은 사람만 계속 손해보지 않도록 연-월 단위로 한 칸씩
+  // 돌려가며(로테이션) 그 달엔 누가 맨 앞 우선순위가 될지 정한다 (별도 저장값 없이 연-월로만 결정되므로
+  // 같은 달을 다시 계산해도 항상 같은 결과가 나온다).
+  const priorityCache = {};
+  const priorityOfMonth = (dateStr) => {
+    const ym = dateStr.slice(0, 7);
+    if (priorityCache[ym]) return priorityCache[ym];
+    const n = ftEmps.length;
+    const map = {};
+    if (n > 0) {
+      const [y, m] = ym.split("-").map(Number);
+      const offset = (y * 12 + m) % n;
+      ftEmps.forEach((e, i) => { map[e.id] = (i - offset + n) % n; });
+    }
+    priorityCache[ym] = map;
+    return map;
+  };
   // 월별 휴무/휴일 목표 (이 개수를 넘겨서 배정하지 않도록)
   const monthTarget = {};
   monthsMeta.forEach(({ key, days }) => {
@@ -441,6 +456,7 @@ function applyFixedRestSchedules(schedule, employees, fixedRestSchedules, dayPai
       });
     });
     if (candidates.length === 0) return;
+    const priorityOf = priorityOfMonth(day.dateStr);
     candidates.sort((a, b) => (priorityOf[a.empId] ?? 999) - (priorityOf[b.empId] ?? 999));
 
     // 그날 이미 확정된 출근 인원수 계산 (빈칸은 아직 미정이므로 출근 가능 인원으로 봄)
