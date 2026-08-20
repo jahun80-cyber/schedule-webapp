@@ -1763,6 +1763,15 @@ function ArchiveTab({ data, archive, setArchive, role }) {
     });
   };
 
+  const deleteEntry = () => {
+    if (!window.confirm(`${year}년 ${selectedMonth}월 기록을 삭제할까요? 이 기록은 [연차현황]·[시프티코드변환]의 "월별기록" 계산에도 쓰이므로, 삭제하면 그 계산에서도 빠집니다. 되돌릴 수 없습니다.`)) return;
+    setArchive((prev) => {
+      const next = { ...prev };
+      delete next[selected];
+      return next;
+    });
+  };
+
   return (
     <div>
       <SectionCard title="연도 · 월 선택" icon={CalendarDays}>
@@ -1793,7 +1802,16 @@ function ArchiveTab({ data, archive, setArchive, role }) {
         <SectionCard
           title={`${year}년 ${selectedMonth}월 기록`}
           icon={Archive}
-          right={<span className="text-[11px] text-slate-400">저장 시각: {entry.savedAt ? new Date(entry.savedAt).toLocaleString("ko-KR") : "-"}</span>}
+          right={
+            <div className="flex items-center gap-3">
+              <span className="text-[11px] text-slate-400">저장 시각: {entry.savedAt ? new Date(entry.savedAt).toLocaleString("ko-KR") : "-"}</span>
+              {!locked && (
+                <button onClick={deleteEntry} className="text-[11px] text-red-500 hover:text-red-700 font-semibold flex items-center gap-1">
+                  <Trash2 size={12} /> 이 달 기록 삭제
+                </button>
+              )}
+            </div>
+          }
         >
           <div className="overflow-x-auto border border-slate-200 rounded-lg">
             <table className="text-xs border-collapse" style={{ tableLayout: "fixed" }}>
