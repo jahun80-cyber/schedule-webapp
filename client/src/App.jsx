@@ -1256,7 +1256,58 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
               <FillerCells count={trailingCols} />
             </tr>
             <tr>
-              <td className="sticky left-0 bg-sky-50 border border-slate-200 px-2 py-1 text-[10px] text-sky-700 font-semibold z-10">연차가능인원</td>
+              <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] font-semibold z-10">출근(FT/PT)</td>
+              <td className="border border-slate-200" colSpan={extraLeftCols}></td>
+              {days.map((day, i) => (
+                <td key={day.day} className="border border-slate-200 px-1 py-1 text-[10px] text-center">
+                  {dayStats[i].ftAttend}/{dayStats[i].ptAttend}
+                </td>
+              ))}
+              <FillerCells count={trailingCols} />
+            </tr>
+            <tr>
+              <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] font-semibold z-10">적정확인(정직원)</td>
+              <td className="border border-slate-200" colSpan={extraLeftCols}></td>
+              {days.map((day, i) => {
+                const status = attendStatus(dayStats[i].ftAttend, dayStats[i].ftReq);
+                return (
+                  <td key={day.day} className={`border border-slate-200 px-1 py-1 text-[9px] text-center font-bold ${STATUS_STYLE[status]}`}>
+                    {status}
+                  </td>
+                );
+              })}
+              <FillerCells count={trailingCols} />
+            </tr>
+            <tr>
+              <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] font-semibold z-10">적정확인(파트타이머)</td>
+              <td className="border border-slate-200" colSpan={extraLeftCols}></td>
+              {days.map((day, i) => {
+                const status = attendStatus2(dayStats[i].ptAttend, dayStats[i].ptReq);
+                return (
+                  <td key={day.day} className={`border border-slate-200 px-1 py-1 text-[9px] text-center font-bold ${STATUS_STYLE[status]}`}>
+                    {status}
+                  </td>
+                );
+              })}
+              <FillerCells count={trailingCols} />
+            </tr>
+            {settings.leaderMinEnabled && (
+              <tr>
+                <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] font-semibold z-10">적정확인(리더)</td>
+                <td className="border border-slate-200" colSpan={extraLeftCols}></td>
+                {days.map((day, i) => {
+                  const status = attendStatus2(dayStats[i].leaderAttend, dayStats[i].leaderReq);
+                  return (
+                    <td key={day.day} className={`border border-slate-200 px-1 py-1 text-[9px] text-center font-bold ${STATUS_STYLE[status]}`}>
+                      {status}
+                    </td>
+                  );
+                })}
+                <FillerCells count={trailingCols} />
+              </tr>
+            )}
+            <tr>
+              <td className="sticky left-0 bg-sky-50 border border-slate-200 px-2 py-1 text-[10px] text-sky-700 font-semibold z-10">여유인원</td>
               <td className="border border-slate-200 bg-sky-50/40" colSpan={extraLeftCols}></td>
               {days.map((day, i) => (
                 <td key={day.day} className="border border-slate-200 px-1 py-1 text-[10px] text-center bg-sky-50/40 text-sky-700 font-semibold">
@@ -1361,59 +1412,6 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
               </tr>
             ))}
           </tbody>
-          <tfoot>
-            <tr>
-              <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] font-semibold z-10">출근(FT/PT)</td>
-              <td className="border border-slate-200" colSpan={extraLeftCols}></td>
-              {days.map((day, i) => (
-                <td key={day.day} className="border border-slate-200 px-1 py-1 text-[10px] text-center">
-                  {dayStats[i].ftAttend}/{dayStats[i].ptAttend}
-                </td>
-              ))}
-              <FillerCells count={trailingCols} />
-            </tr>
-            <tr>
-              <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] font-semibold z-10">적정확인(정직원)</td>
-              <td className="border border-slate-200" colSpan={extraLeftCols}></td>
-              {days.map((day, i) => {
-                const status = attendStatus(dayStats[i].ftAttend, dayStats[i].ftReq);
-                return (
-                  <td key={day.day} className={`border border-slate-200 px-1 py-1 text-[9px] text-center font-bold ${STATUS_STYLE[status]}`}>
-                    {status}
-                  </td>
-                );
-              })}
-              <FillerCells count={trailingCols} />
-            </tr>
-            <tr>
-              <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] font-semibold z-10">적정확인(파트타이머)</td>
-              <td className="border border-slate-200" colSpan={extraLeftCols}></td>
-              {days.map((day, i) => {
-                const status = attendStatus2(dayStats[i].ptAttend, dayStats[i].ptReq);
-                return (
-                  <td key={day.day} className={`border border-slate-200 px-1 py-1 text-[9px] text-center font-bold ${STATUS_STYLE[status]}`}>
-                    {status}
-                  </td>
-                );
-              })}
-              <FillerCells count={trailingCols} />
-            </tr>
-            {settings.leaderMinEnabled && (
-              <tr>
-                <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] font-semibold z-10">적정확인(리더)</td>
-                <td className="border border-slate-200" colSpan={extraLeftCols}></td>
-                {days.map((day, i) => {
-                  const status = attendStatus2(dayStats[i].leaderAttend, dayStats[i].leaderReq);
-                  return (
-                    <td key={day.day} className={`border border-slate-200 px-1 py-1 text-[9px] text-center font-bold ${STATUS_STYLE[status]}`}>
-                      {status}
-                    </td>
-                  );
-                })}
-                <FillerCells count={trailingCols} />
-              </tr>
-            )}
-          </tfoot>
         </table>
       </div>
     </div>
