@@ -1073,18 +1073,23 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
 
         // 초과한 달에서 이 코드로 쉬는 날 하나를 근무로 바꾸고
         const giveSlot = overMonth.days.find((day) => (next[overMonth.key][e.id]?.[day.day - 1] || "") === code);
-        // 부족한 달에서 근무 중이면서 그날 여유가 있는 날 하나를 이 코드로 바꿈
-        const takeSlot = underMonth.days.find((day) => {
-          const v = next[underMonth.key][e.id]?.[day.day - 1] || "";
-          if (!workCodeSet.has(v)) return false;
-          // 그날 한 명 더 쉬어도 최소인원 유지되는지
-          let off = 0;
-          ftEmps.forEach((o) => {
-            const ov = next[underMonth.key][o.id]?.[day.day - 1] || "";
-            if (ov !== "" && isOffTag(tags, ov)) off++;
-          });
-          return (ftEmps.length - off) - 1 >= requiredFT(settings, day);
-        });
+        // 부족한 달에서 근무 중이면서 그날 여유가 있는 날을 후보로 모아, 평일 우선 + 이미 쉬는 사람이
+        // 적은(=덜 몰린) 날 우선으로 고른다 - 그래야 여러 인원의 부족분이 같은 날 하나로 몰리지 않는다.
+        const takeCandidates = underMonth.days
+          .map((day) => {
+            const v = next[underMonth.key][e.id]?.[day.day - 1] || "";
+            if (!workCodeSet.has(v)) return null;
+            let off = 0;
+            ftEmps.forEach((o) => {
+              const ov = next[underMonth.key][o.id]?.[day.day - 1] || "";
+              if (ov !== "" && isOffTag(tags, ov)) off++;
+            });
+            if ((ftEmps.length - off) - 1 < requiredFT(settings, day)) return null;
+            return { day, off, weekend: day.weekday === "토" || day.weekday === "일" ? 1 : 0 };
+          })
+          .filter(Boolean)
+          .sort((a, b) => (a.weekend - b.weekend) || (a.off - b.off));
+        const takeSlot = takeCandidates[0]?.day;
         if (!giveSlot || !takeSlot) continue;
 
         const giveBefore = next[overMonth.key][e.id][giveSlot.day - 1];
@@ -1121,7 +1126,10 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
           // 한 주에 휴무는 최대 2개까지 허용 (휴무+휴무+휴일 구조)
           const humuInWeek = week.filter(({ key: k, day }) => (next[k][e.id]?.[day.day - 1] || "") === "휴무").length;
           if (humuInWeek >= 2) continue;
-          // 이 달에 속한 날 중, 근무 중이면서 그날 여유가 있는 자리를 찾는다
+          // 이 달에 속한 날 중, 근무 중이면서 그날 여유가 있는 자리를 후보로 모은다.
+          // 맨 처음 맞는 날을 바로 쓰지 않고 "평일 우선 + 이미 쉬는 사람이 적은(=덜 몰린) 날 우선"으로
+          // 정렬해서 시도한다 - 그래야 특정 요일 하루에 여러 사람이 몰리지 않고 골고루 퍼진다.
+          const candidates = [];
           for (const { key: k, day } of week) {
             if (k !== key) continue;
             const v = next[k][e.id]?.[day.day - 1] || "";
@@ -1132,7 +1140,10 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
               if (ov !== "" && isOffTag(tags, ov)) off++;
             });
             if ((ftEmps.length - off) - 1 < requiredFT(settings, day)) continue;
-
+            candidates.push({ key: k, day, off, weekend: day.weekday === "토" || day.weekday === "일" ? 1 : 0 });
+          }
+          candidates.sort((a, b) => (a.weekend - b.weekend) || (a.off - b.off));
+          for (const { key: k, day } of candidates) {
             const before = next[k][e.id][day.day - 1];
             next[k][e.id][day.day - 1] = "휴무";
             if (maxStreakOf(e.id) <= limitOf(e) && leaderOk(k, day)) {
@@ -1164,8 +1175,20 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
           const week = weeksAll[wi];
           if (week.filter(({ key: k, day }) => (next[k][e.id]?.[day.day - 1] || "") === "휴무").length >= 2) continue;
 
-          for (const { key: k, day } of week) {
-            if (k !== key) continue;
+          // 평일 우선 + 이미 쉬는 사람이 적은(=덜 몰린) 날 우선으로 시도해 특정 요일에 몰리지 않게 한다.
+          const dayCandidates = week
+            .filter(({ key: k }) => k === key)
+            .map(({ key: k, day }) => {
+              let off = 0;
+              ftEmps.forEach((o) => {
+                const ov = next[k][o.id]?.[day.day - 1] || "";
+                if (ov !== "" && isOffTag(tags, ov)) off++;
+              });
+              return { key: k, day, off, weekend: day.weekday === "토" || day.weekday === "일" ? 1 : 0 };
+            })
+            .sort((a, b) => (a.weekend - b.weekend) || (a.off - b.off));
+
+          for (const { key: k, day } of dayCandidates) {
             const myVal = next[k][e.id]?.[day.day - 1] || "";
             if (!(myVal === "" || workCodeSet.has(myVal))) continue;
 
@@ -1205,7 +1228,12 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
 
   /* --- (D) 그래도 남은 초과분은 근무로 되돌림 (목표보다 더 쉬지 않도록) --- */
   // 주는 사람도 받는 사람도 없는 경우(예: 전원이 동시에 초과) 초과한 쉬는 날을 근무로 되돌린다.
+  // 여러 인원의 "마지막 휴무일"이 같은 요일 로테이션 때문에 월말의 같은 날짜에 몰려있는 경우가 많아서,
+  // 무조건 "가장 늦은 날짜"만 고르면 그 날 하루에 출근인원(여유인원)이 몰아서 쌓인다. 그래서
+  // ① 주말 쪽 자리를 먼저 우선 시도하고(주말은 여유인원이 늘어도 괜찮음), ② 평일 중에서는 이번
+  // 4단계 안에서 이미 여러 번 되돌림 대상이 된 날짜를 피해가며 되돌릴 날짜를 고른다(요일별로 분산).
   let revertedToWork = 0;
+  const revertDayUsage = new Map(); // `${key}|${day}` -> 이번 4단계 안에서 이 날짜가 되돌림 대상으로 쓰인 횟수
   for (let round = 0; round < 60; round++) {
     let reverted = false;
     for (const e of ftEmps) {
@@ -1217,13 +1245,21 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
         const code = overHyuil > 0 ? "휴일" : (overHumu > 0 ? "휴무" : null);
         if (!code) continue;
 
-        // 뒤쪽 날짜부터 되돌려서 앞부분 패턴을 최대한 보존
-        for (let i = days.length - 1; i >= 0; i--) {
-          const day = days[i];
-          if ((next[key][e.id]?.[day.day - 1] || "") !== code) continue;
+        // 이 코드로 쉬는 날 후보를 모아 "주말 우선 → 평일은 덜 몰린 날짜 우선(같으면 늦은 날짜 우선)"으로 정렬
+        const candidates = days
+          .filter((day) => (next[key][e.id]?.[day.day - 1] || "") === code)
+          .map((day) => ({
+            day,
+            weekend: day.weekday === "토" || day.weekday === "일" ? 0 : 1,
+            usage: revertDayUsage.get(`${key}|${day.day}`) || 0,
+          }))
+          .sort((a, b) => (a.weekend - b.weekend) || (a.usage - b.usage) || (b.day.day - a.day.day));
+
+        for (const { day } of candidates) {
           next[key][e.id][day.day - 1] = "";  // 근무로 (2단계 재배정이 코드를 채움)
           if (maxStreakOf(e.id) <= limitOf(e)) {
             changedDays.add(`${key}|${day.day}`);
+            revertDayUsage.set(`${key}|${day.day}`, (revertDayUsage.get(`${key}|${day.day}`) || 0) + 1);
             revertedToWork++;
             reverted = true;
             break;
