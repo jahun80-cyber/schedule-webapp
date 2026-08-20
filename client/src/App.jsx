@@ -1947,19 +1947,31 @@ function ShiftyMapTab({ data, setData, schedule, archive, monthsMeta, role }) {
 /* ============================================================
    메인 앱
    ============================================================ */
-const TABS = [
-  { key: "settings", label: "설정", icon: Settings },
-  { key: "employees", label: "직원목록", icon: Users },
-  { key: "tags", label: "태그목록", icon: Tag },
-  { key: "holidays", label: "공휴일·이슈일", icon: CalendarDays },
-  { key: "templates", label: "근무형태템플릿", icon: ClipboardCheck },
-  { key: "m1", label: "스케줄 1개월차", icon: ClipboardList },
-  { key: "m2", label: "스케줄 2개월차", icon: ClipboardList },
-  { key: "summary", label: "2개월요약", icon: CheckCircle2 },
-  { key: "archive", label: "월별기록", icon: Archive },
-  { key: "leave", label: "연차현황", icon: PieChart },
-  { key: "shifty", label: "시프티코드변환", icon: FileSpreadsheet },
+// 왼쪽 메뉴를 "설정"(매장 셋업·구성)과 "스케줄"(실제 확인·운영)로 폴더처럼 나눈다.
+const TAB_GROUPS = [
+  {
+    label: "설정",
+    tabs: [
+      { key: "settings", label: "설정", icon: Settings },
+      { key: "employees", label: "직원목록", icon: Users },
+      { key: "tags", label: "태그목록", icon: Tag },
+      { key: "holidays", label: "공휴일·이슈일", icon: CalendarDays },
+      { key: "templates", label: "근무형태템플릿", icon: ClipboardCheck },
+      { key: "shifty", label: "시프티코드변환", icon: FileSpreadsheet },
+    ],
+  },
+  {
+    label: "스케줄",
+    tabs: [
+      { key: "m1", label: "스케줄 1개월차", icon: ClipboardList },
+      { key: "m2", label: "스케줄 2개월차", icon: ClipboardList },
+      { key: "summary", label: "2개월요약", icon: CheckCircle2 },
+      { key: "archive", label: "월별기록", icon: Archive },
+      { key: "leave", label: "연차현황", icon: PieChart },
+    ],
+  },
 ];
+const TABS = TAB_GROUPS.flatMap((g) => g.tabs);
 
 function groupedStoreOptions(storeList) {
   const map = new Map();
@@ -2435,13 +2447,18 @@ function MainApp({ role, onLogout }) {
       ) : (
         <div className="flex flex-1 min-h-0">
           <div className="w-52 bg-white border-r border-slate-200 py-4 flex-shrink-0">
-            {TABS.map((t) => (
-              <button
-                key={t.key} onClick={() => setTab(t.key)}
-                className={`w-full flex items-center gap-2 px-4 py-2.5 text-sm font-medium transition-colors ${tab === t.key ? "bg-indigo-50 text-indigo-700 border-r-2 border-indigo-600" : "text-slate-600 hover:bg-slate-50"}`}
-              >
-                <t.icon size={15} /> {t.label}
-              </button>
+            {TAB_GROUPS.map((group, gi) => (
+              <div key={group.label} className={gi > 0 ? "mt-4 pt-4 border-t border-slate-100" : ""}>
+                <div className="px-4 pb-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider">{group.label}</div>
+                {group.tabs.map((t) => (
+                  <button
+                    key={t.key} onClick={() => setTab(t.key)}
+                    className={`w-full flex items-center gap-2 px-4 py-2.5 text-sm font-medium transition-colors ${tab === t.key ? "bg-indigo-50 text-indigo-700 border-r-2 border-indigo-600" : "text-slate-600 hover:bg-slate-50"}`}
+                  >
+                    <t.icon size={15} /> {t.label}
+                  </button>
+                ))}
+              </div>
             ))}
           </div>
 
