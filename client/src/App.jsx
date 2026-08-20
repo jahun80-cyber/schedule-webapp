@@ -693,8 +693,8 @@ function TagsTab({ data, setData, role }) {
    공휴일 · 이슈일 · 개인지정태그 탭
    ============================================================ */
 function HolidaysTab({ data, setData, role }) {
-  const locked = role === "viewer"; // 공휴일/이슈일/고정휴무는 매장관리자 이상만. 개인 지정 태그는 전 역할 허용(아래 별도 처리)
-  const { holidays, issueDays, personalTags, employees, tags } = data;
+  const locked = role === "viewer"; // 공휴일/이슈일/고정휴무 설정은 매장관리자 이상만 (개인 요청은 [요청] 탭으로 분리됨)
+  const { holidays, issueDays, employees } = data;
   const fixedRestSchedules = data.fixedRestSchedules || [];
   const dayPairOptions = data.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS;
 
@@ -705,24 +705,6 @@ function HolidaysTab({ data, setData, role }) {
   const updIss = (i, patch) => setData((d) => { const arr = [...d.issueDays]; arr[i] = { ...arr[i], ...patch }; return { ...d, issueDays: arr }; });
   const rmIss = (i) => setData((d) => ({ ...d, issueDays: d.issueDays.filter((_, idx) => idx !== i) }));
   const addIss = () => setData((d) => ({ ...d, issueDays: [...d.issueDays, { start: "", end: "", name: "", ftOverride: "", ptOverride: "" }] }));
-
-  const updPt = (i, patch) => setData((d) => { const arr = [...d.personalTags]; arr[i] = { ...arr[i], ...patch }; return { ...d, personalTags: arr }; });
-  const rmPt = (i) => setData((d) => ({ ...d, personalTags: d.personalTags.filter((_, idx) => idx !== i) }));
-  const addPt = () => setData((d) => ({ ...d, personalTags: [...d.personalTags, { start: "", end: "", empNames: [], tagCode: tags[0]?.code || "" }] }));
-  const togglePtEmp = (i, name) => setData((d) => {
-    const arr = [...d.personalTags];
-    const cur = arr[i].empNames || (arr[i].empName ? [arr[i].empName] : []);
-    const next = cur.includes(name) ? cur.filter((x) => x !== name) : [...cur, name];
-    arr[i] = { ...arr[i], empNames: next, empName: undefined };
-    return { ...d, personalTags: arr };
-  });
-  const setPtAll = (i, allNames) => setData((d) => {
-    const arr = [...d.personalTags];
-    const cur = arr[i].empNames || (arr[i].empName ? [arr[i].empName] : []);
-    const allSelected = allNames.length > 0 && allNames.every((n) => cur.includes(n));
-    arr[i] = { ...arr[i], empNames: allSelected ? [] : [...allNames], empName: undefined };
-    return { ...d, personalTags: arr };
-  });
 
   const updFixed = (i, patch) => setData((d) => { const arr = [...(d.fixedRestSchedules || [])]; arr[i] = { ...arr[i], ...patch }; return { ...d, fixedRestSchedules: arr }; });
   const rmFixed = (i) => setData((d) => ({ ...d, fixedRestSchedules: (d.fixedRestSchedules || []).filter((_, idx) => idx !== i) }));
@@ -743,7 +725,7 @@ function HolidaysTab({ data, setData, role }) {
 
   return (
     <div className="max-w-5xl">
-      {locked && <ReadOnlyNotice>공휴일·이슈일·고정휴무 설정은 매장관리자 이상만 수정할 수 있습니다. 아래 "개인 지정 태그"는 누구나 등록할 수 있습니다.</ReadOnlyNotice>}
+      {locked && <ReadOnlyNotice>공휴일·이슈일·고정휴무 설정은 매장관리자 이상만 수정할 수 있습니다. 본인 휴무 요청은 [요청] 탭에서 등록하세요.</ReadOnlyNotice>}
       <ReadOnlyFence locked={locked}>
       <SectionCard title="공휴일 목록" icon={CalendarDays} right={<GhostBtn onClick={addHol} icon={Plus}>공휴일 추가</GhostBtn>}>
         <div className="grid grid-cols-1 gap-1.5">
@@ -775,56 +757,11 @@ function HolidaysTab({ data, setData, role }) {
           ))}
         </div>
       </SectionCard>
-      </ReadOnlyFence>
 
-      <SectionCard title="개인 지정 태그" icon={Tag} right={<GhostBtn onClick={addPt} icon={Plus}>태그 추가</GhostBtn>}>
-        <p className="text-xs text-slate-500 mb-3">
-          대상 직원의 해당 기간 스케줄 칸에 자동배정 시 태그가 채워집니다 (기존 값은 덮어쓰지 않음). 백화점 점휴일처럼 매장 전체가 같은 날 쉬어야 할 때는
-          "전체선택"으로 한 번에 지정할 수 있습니다.
-        </p>
-        <div className="space-y-2">
-          {personalTags.map((pt, i) => {
-            const selectedNames = pt.empNames || (pt.empName ? [pt.empName] : []);
-            const allNames = employees.map((e) => e.name);
-            const allSelected = allNames.length > 0 && allNames.every((n) => selectedNames.includes(n));
-            return (
-              <div key={i} className="border border-slate-200 rounded-md px-3 py-2">
-                <div className="flex items-center gap-2 flex-wrap mb-2">
-                  <DateInput value={pt.start} onChange={(v) => updPt(i, { start: v, end: (!pt.end || pt.end === pt.start) ? v : pt.end })} />
-                  <span className="text-slate-400 text-xs">~</span>
-                  <DateInput value={pt.end} onChange={(v) => updPt(i, { end: v })} />
-                  <span className="text-[10px] text-slate-400">(하루만 해당되면 시작일만 입력해도 됩니다)</span>
-                  <span className="text-xs text-slate-400 ml-1">태그</span>
-                  <Select value={pt.tagCode} onChange={(v) => updPt(i, { tagCode: v })} options={tags.map((t) => t.code)} className="w-28" />
-                  <button
-                    onClick={() => setPtAll(i, allNames)}
-                    className={`text-[11px] px-2 py-1 rounded ${allSelected ? "bg-indigo-600 text-white" : "border border-slate-300 text-slate-600 hover:bg-slate-50"}`}
-                  >
-                    전체선택
-                  </button>
-                  <IconBtn onClick={() => rmPt(i)} title="삭제" danger />
-                </div>
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <span className="text-xs text-slate-400 mr-1">인원</span>
-                  {allNames.map((name) => (
-                    <label key={name} className={`text-[11px] px-2 py-1 rounded cursor-pointer select-none ${selectedNames.includes(name) ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-500"}`}>
-                      <input type="checkbox" className="hidden" checked={selectedNames.includes(name)} onChange={() => togglePtEmp(i, name)} />
-                      {name}
-                    </label>
-                  ))}
-                </div>
-              </div>
-            );
-          })}
-          {personalTags.length === 0 && <p className="text-xs text-slate-400">등록된 개인 지정 태그가 없습니다.</p>}
-        </div>
-      </SectionCard>
-
-      <ReadOnlyFence locked={locked}>
       <SectionCard title="고정휴무 설정 (정직원)" icon={CalendarDays} right={<GhostBtn onClick={addFixed} icon={Plus}>고정휴무 추가</GhostBtn>}>
         <p className="text-xs text-slate-500 mb-3">
           [직원목록]에서 "고정휴무"로 지정한 인원만 매주 같은 요일쌍으로 쉬는 패턴을 여기서 지정합니다 (예: 월화 고정휴무 5명).
-          개인 지정 태그(요청·이슈)가 항상 먼저 반영되고, 남은 칸에 여기서 지정한 요일이 자동으로 휴무/휴일로 채워집니다.
+          [요청] 탭에 등록된 개인 요청(요청휴무·이슈)이 항상 먼저 반영되고, 남은 칸에 여기서 지정한 요일이 자동으로 휴무/휴일로 채워집니다.
           기간을 나눠서 여러 개 등록하면 월별로 다른 패턴도 반영할 수 있습니다. 그날 최소 출근인원(또는 리더 최소인원)이
           부족해지면, 그 달 우선순위가 낮은 직원의 휴무만 건너뛰고 나머지는 그대로 배정됩니다(우선순위는 매달 자동으로 돌아가
           특정 인원만 계속 손해보지 않습니다).
@@ -861,6 +798,84 @@ function HolidaysTab({ data, setData, role }) {
         </div>
       </SectionCard>
       </ReadOnlyFence>
+    </div>
+  );
+}
+
+/* ============================================================
+   요청 탭 (구 "개인 지정 태그" - [공휴일·이슈일]에서 분리)
+   설정 화면들과 달리 3개 역할 모두 편집 가능 - 사용자(뷰어)가 본인 휴무 요청을
+   직접 등록할 수 있는 유일한 화면이라, 사이드바에서도 "설정"이 아니라 "스케줄"
+   그룹에 둬서 뷰어에게도 항상 보이게 한다.
+   ============================================================ */
+function RequestsTab({ data, setData }) {
+  const { personalTags, employees, tags } = data;
+
+  const updPt = (i, patch) => setData((d) => { const arr = [...d.personalTags]; arr[i] = { ...arr[i], ...patch }; return { ...d, personalTags: arr }; });
+  const rmPt = (i) => setData((d) => ({ ...d, personalTags: d.personalTags.filter((_, idx) => idx !== i) }));
+  const addPt = () => setData((d) => ({ ...d, personalTags: [...d.personalTags, { start: "", end: "", empNames: [], tagCode: tags[0]?.code || "" }] }));
+  const togglePtEmp = (i, name) => setData((d) => {
+    const arr = [...d.personalTags];
+    const cur = arr[i].empNames || (arr[i].empName ? [arr[i].empName] : []);
+    const next = cur.includes(name) ? cur.filter((x) => x !== name) : [...cur, name];
+    arr[i] = { ...arr[i], empNames: next, empName: undefined };
+    return { ...d, personalTags: arr };
+  });
+  const setPtAll = (i, allNames) => setData((d) => {
+    const arr = [...d.personalTags];
+    const cur = arr[i].empNames || (arr[i].empName ? [arr[i].empName] : []);
+    const allSelected = allNames.length > 0 && allNames.every((n) => cur.includes(n));
+    arr[i] = { ...arr[i], empNames: allSelected ? [] : [...allNames], empName: undefined };
+    return { ...d, personalTags: arr };
+  });
+
+  return (
+    <div className="max-w-5xl">
+      <SectionCard title="요청" icon={Tag} right={<GhostBtn onClick={addPt} icon={Plus}>요청 추가</GhostBtn>}>
+        <p className="text-xs text-slate-500 mb-3">
+          휴무 요청·연차·경조사 등 본인 일정을 등록해두면, [스케줄]에서 자동배정 실행 시 해당 기간의 스케줄 칸에 태그가 채워집니다(기존 값은 덮어쓰지 않음).
+          백화점 점휴일처럼 매장 전체가 같은 날 쉬어야 할 때는 "전체선택"으로 한 번에 지정할 수 있습니다. <b>이 화면은 총관리자·매장관리자·사용자 누구나 등록·삭제할 수 있습니다.</b>
+        </p>
+        <div className="space-y-2">
+          {personalTags.map((pt, i) => {
+            const selectedNames = pt.empNames || (pt.empName ? [pt.empName] : []);
+            const allNames = employees.map((e) => e.name);
+            const allSelected = allNames.length > 0 && allNames.every((n) => selectedNames.includes(n));
+            return (
+              <div key={i} className="border border-slate-200 rounded-md px-3 py-2">
+                <div className="flex items-center gap-2 flex-wrap mb-2">
+                  <DateInput value={pt.start} onChange={(v) => updPt(i, { start: v, end: (!pt.end || pt.end === pt.start) ? v : pt.end })} />
+                  <span className="text-slate-400 text-xs">~</span>
+                  <DateInput value={pt.end} onChange={(v) => updPt(i, { end: v })} />
+                  <span className="text-[10px] text-slate-400">(하루만 해당되면 시작일만 입력해도 됩니다)</span>
+                  <span className="text-xs text-slate-400 ml-1">태그</span>
+                  <Select value={pt.tagCode} onChange={(v) => updPt(i, { tagCode: v })} options={tags.map((t) => t.code)} className="w-28" />
+                  <button
+                    onClick={() => setPtAll(i, allNames)}
+                    className={`text-[11px] px-2 py-1 rounded ${allSelected ? "bg-indigo-600 text-white" : "border border-slate-300 text-slate-600 hover:bg-slate-50"}`}
+                  >
+                    전체선택
+                  </button>
+                  <IconBtn onClick={() => rmPt(i)} title="삭제" danger />
+                </div>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-xs text-slate-400 mr-1">인원</span>
+                  {allNames.map((name) => (
+                    <label key={name} className={`text-[11px] px-2 py-1 rounded cursor-pointer select-none ${selectedNames.includes(name) ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-500"}`}>
+                      <input type="checkbox" className="hidden" checked={selectedNames.includes(name)} onChange={() => togglePtEmp(i, name)} />
+                      {name}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+          {personalTags.length === 0 && <p className="text-xs text-slate-400">등록된 요청이 없습니다.</p>}
+        </div>
+      </SectionCard>
+      <div className="bg-indigo-50 border border-indigo-200 text-indigo-800 text-xs rounded-md px-3 py-2 mt-3">
+        <b>참고.</b> 여기 등록만으로는 스케줄에 반영되지 않습니다. [스케줄 1·2개월차]에서 1단계(휴무/휴일 자동배정)를 실행해야 실제 스케줄 칸에 채워집니다.
+      </div>
     </div>
   );
 }
@@ -2403,6 +2418,7 @@ const TAB_GROUPS = [
   {
     label: "스케줄",
     tabs: [
+      { key: "requests", label: "요청", icon: Tag },
       { key: "m1", label: "스케줄 1개월차", icon: ClipboardList },
       { key: "m2", label: "스케줄 2개월차", icon: ClipboardList },
       { key: "summary", label: "2개월요약", icon: CheckCircle2 },
@@ -2411,6 +2427,10 @@ const TAB_GROUPS = [
     ],
   },
 ];
+// "설정" 그룹은 매장 세팅용 화면이라 사용자(뷰어)는 볼 필요가 없다 - "개인 지정 태그"(요청)만
+// [공휴일·이슈일]에서 분리해 "스케줄" 그룹의 "요청" 탭으로 옮겨뒀으므로, 설정 그룹을 통째로
+// 숨겨도 사용자가 본인 휴무 요청을 등록하는 기능은 그대로 유지된다.
+const VIEWER_TAB_GROUPS = TAB_GROUPS.filter((g) => g.label !== "설정");
 const TABS = TAB_GROUPS.flatMap((g) => g.tabs);
 
 function groupedStoreOptions(storeList) {
@@ -2437,6 +2457,14 @@ function MainApp({ role, onLogout }) {
   const [schedule, setScheduleRaw] = useState(null);
   const [archive, setArchiveRaw] = useState(null);
   const [tab, setTab] = useState("settings");
+  // 사용자(뷰어)는 "설정" 그룹 탭을 아예 볼 수 없으므로, 혹시 거기 있던 탭이 선택된 채로
+  // 뷰어 권한이 되면(처음 진입 포함) 스케줄 그룹의 첫 화면으로 옮겨준다.
+  useEffect(() => {
+    if (role === "viewer" && !VIEWER_TAB_GROUPS.some((g) => g.tabs.some((t) => t.key === tab))) {
+      setTab("m1");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [role]);
   const [loading, setLoading] = useState(true);
   const [saveState, setSaveState] = useState("idle"); // idle | saving | saved | error
   const saveTimer = useRef(null);
@@ -2889,7 +2917,7 @@ function MainApp({ role, onLogout }) {
       ) : (
         <div className="flex flex-1 min-h-0">
           <div className="w-52 bg-white border-r border-slate-200 py-4 flex-shrink-0">
-            {TAB_GROUPS.map((group, gi) => (
+            {(role === "viewer" ? VIEWER_TAB_GROUPS : TAB_GROUPS).map((group, gi) => (
               <div key={group.label} className={gi > 0 ? "mt-4 pt-4 border-t border-slate-100" : ""}>
                 <div className="px-4 pb-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider">{group.label}</div>
                 {group.tabs.map((t) => (
@@ -2910,6 +2938,7 @@ function MainApp({ role, onLogout }) {
             {tab === "employees" && <EmployeesTab data={data} setData={setData} role={role} />}
             {tab === "tags" && <TagsTab data={data} setData={setData} role={role} />}
             {tab === "holidays" && <HolidaysTab data={data} setData={setData} role={role} />}
+            {tab === "requests" && <RequestsTab data={data} setData={setData} role={role} />}
             {tab === "templates" && <ShiftTemplatesTab data={data} setData={setData} role={role} />}
             {tab === "m1" && monthsMeta && (
               <ScheduleTab data={data} setData={setData} schedule={schedule} setSchedule={setSchedule} archive={archive} setArchive={setArchive} monthsMeta={monthsMeta} monthKey="m1" role={role} />
