@@ -1419,6 +1419,13 @@ function assignRemainingRest(schedule, employees, tags, settings, monthsMeta, fi
   };
 
   const timelineAll = buildTimeline(monthsMeta);
+  // 평일과 주말을 나눠서, 평일부터 먼저 채운다 - 주말은 원래도 최소인원 기준이 높아 여유가
+  // 자연히 적은 편이라 굳이 더 끌어다 채우지 않고, "그래도 부족한 사람이 남았을 때"만 마지막에
+  // 주말도 후보에 포함시킨다. 그러면 평일끼리는 고르게 분산되고, 주말은 필요한 만큼만(적게) 채워져
+  // 출근 여유인원이 자연스럽게 더 넉넉하게 남는다.
+  const isWeekendDay = (day) => day.weekday === "토" || day.weekday === "일";
+  const weekdayTimeline = timelineAll.filter((s) => !isWeekendDay(s.day));
+  const weekendTimeline = timelineAll.filter((s) => isWeekendDay(s.day));
   const placedCount = {};
 
   // 날짜를 순서대로 돌면서, 그날 여유가 있으면 "가장 부족한 직원"에게 하나씩 배정한다.
@@ -1428,9 +1435,9 @@ function assignRemainingRest(schedule, employees, tags, settings, monthsMeta, fi
   // 날짜부터 먼저 채워지는 효과가 자연스럽게 생긴다(hasRoom이 그날 실제 여유를 확인하므로).
   // 1차: 한 주에 2일까지만 / 2차: 그래도 부족하면 주 3일까지 허용
   let allowThirdRestDay = false;
-  const runPass = () => {
+  const runPass = (list) => {
   let placedThisPass = 0;
-  timelineAll.forEach(({ key, day }) => {
+  list.forEach(({ key, day }) => {
       if (!hasRoom(key, day)) return;
 
       // 이 날 배정 가능한 후보 = 빈칸이거나 일반 근무코드인 사람 중, 이 달에 아직 부족분이 있는 사람
@@ -1511,14 +1518,27 @@ function assignRemainingRest(schedule, employees, tags, settings, monthsMeta, fi
 
   // 한 바퀴(하루당 최대 1명)를 돌려서 더 이상 아무 곳에도 못 채울 때까지 반복한다.
   // (한 번에 다 채우지 않고 매번 처음부터 다시 돌기 때문에, 부족한 사람들이 여러 날짜에 나뉘어 배정된다)
+  // 1) 평일부터 최대한 채운다(평일끼리 고르게 분산) - 주말은 아직 건드리지 않는다
   for (let round = 0; round < 60; round++) {
-    if (runPass() === 0) break;
+    if (runPass(weekdayTimeline) === 0) break;
   }
-  // 아직 목표를 못 채운 사람이 있으면 주 3일 허용으로 한 번 더(마찬가지로 하루당 1명씩, 여러 바퀴)
+  // 2) 아직 부족하면 주 3일 허용으로 평일을 한 번 더
   if (ftEmps.some((e) => shortOf(e.id).total > 0)) {
     allowThirdRestDay = true;
     for (let round = 0; round < 60; round++) {
-      if (runPass() === 0) break;
+      if (runPass(weekdayTimeline) === 0) break;
+    }
+  }
+  // 3) 그래도 부족하면 그제서야 주말도 채운다(주말은 최소한만 - 나머지는 여유인원으로 남긴다)
+  if (ftEmps.some((e) => shortOf(e.id).total > 0)) {
+    for (let round = 0; round < 60; round++) {
+      if (runPass(weekendTimeline) === 0) break;
+    }
+  }
+  // 4) 그래도 부족하면(드문 경우) 평일·주말 구분 없이 마지막으로 한 번 더
+  if (ftEmps.some((e) => shortOf(e.id).total > 0)) {
+    for (let round = 0; round < 60; round++) {
+      if (runPass(timelineAll) === 0) break;
     }
   }
 
