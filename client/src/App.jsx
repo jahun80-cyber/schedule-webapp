@@ -1219,7 +1219,11 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
         <GhostBtn onClick={addMemoRow} icon={Plus}>메모 줄 추가</GhostBtn>
       </div>
 
-      <div className="overflow-x-auto border border-slate-200 rounded-lg">
+      {/* 세로/가로 스크롤을 이 박스 안에서 직접 담당해야 머리글(thead)의 sticky top이 실제로 동작한다 -
+          바깥 페이지 스크롤에 맡기면 overflow-x:auto가 있는 한 브라우저가 overflow-y도 함께
+          "auto"로 취급해버려서(내용 높이만큼 딱 맞게 커지는 빈 스크롤 컨테이너가 생김), sticky의
+          기준이 되는 스크롤 컨테이너가 바깥 페이지가 아니라 이 텅 빈 컨테이너가 되어 버려 고정이 전혀 안 된다. */}
+      <div className="overflow-auto border border-slate-200 rounded-lg" style={{ maxHeight: "calc(100vh - 300px)" }}>
         <table className="text-xs border-collapse" style={{ tableLayout: "fixed" }}>
           <thead className="sticky top-0 z-30">
             <tr>
