@@ -1186,10 +1186,7 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
 
   const cellW = 54;
   const nameW = 100;
-  const remainColW = 46;
-  // 공휴일/이슈 줄부터 메모 줄까지, "잔여휴무·잔여휴일" 두 칸 자리를 세로로 병합해 보여줄 행 수
-  // (정직원/파트타이머 표에서만 실제로 잔여휴무·잔여휴일 값이 들어가므로, 그 위쪽 요약 줄들은 빈 칸을 합쳐서 보여준다)
-  const theadMergeRowSpan = 6 + (settings.leaderMinEnabled ? 1 : 0) + memoRowLabels.length;
+  const remainColW = 54;
   const extraLeftCols = 2; // 잔여휴무, 잔여휴일
   const trailingCols = ftCodeList.length;
 
@@ -1243,8 +1240,7 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
               ))}
             </tr>
             <tr>
-              <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] text-slate-400 z-10">공휴일/이슈</td>
-              <td className="bg-white border border-slate-200" colSpan={extraLeftCols} rowSpan={theadMergeRowSpan}></td>
+              <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] text-slate-400 z-10" colSpan={extraLeftCols + 1}>공휴일/이슈</td>
               {days.map((day) => (
                 <td key={day.day} className="bg-white border border-slate-200 px-1 py-1 text-[9px] text-center text-slate-500 whitespace-nowrap overflow-hidden">
                   {day.holidayName || day.issueName || ""}
@@ -1253,7 +1249,7 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
               <FillerCells count={trailingCols} bg="bg-white" />
             </tr>
             <tr>
-              <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] text-slate-400 z-10">적정(FT/PT)</td>
+              <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] text-slate-400 z-10" colSpan={extraLeftCols + 1}>적정(FT/PT)</td>
               {days.map((day, i) => (
                 <td key={day.day} className="bg-white border border-slate-200 px-1 py-1 text-[10px] text-center text-slate-500">
                   {dayStats[i].ftReq}/{dayStats[i].ptReq}
@@ -1262,7 +1258,7 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
               <FillerCells count={trailingCols} bg="bg-white" />
             </tr>
             <tr>
-              <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] font-semibold z-10">출근(FT/PT)</td>
+              <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] font-semibold z-10" colSpan={extraLeftCols + 1}>출근(FT/PT)</td>
               {days.map((day, i) => (
                 <td key={day.day} className="bg-white border border-slate-200 px-1 py-1 text-[10px] text-center">
                   {dayStats[i].ftAttend}/{dayStats[i].ptAttend}
@@ -1271,7 +1267,7 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
               <FillerCells count={trailingCols} bg="bg-white" />
             </tr>
             <tr>
-              <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] font-semibold z-10">적정확인(정직원)</td>
+              <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] font-semibold z-10" colSpan={extraLeftCols + 1}>적정확인(정직원)</td>
               {days.map((day, i) => {
                 const status = attendStatus(dayStats[i].ftAttend, dayStats[i].ftReq);
                 return (
@@ -1283,7 +1279,7 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
               <FillerCells count={trailingCols} bg="bg-white" />
             </tr>
             <tr>
-              <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] font-semibold z-10">적정확인(파트타이머)</td>
+              <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] font-semibold z-10" colSpan={extraLeftCols + 1}>적정확인(파트타이머)</td>
               {days.map((day, i) => {
                 const status = attendStatus2(dayStats[i].ptAttend, dayStats[i].ptReq);
                 return (
@@ -1296,7 +1292,7 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
             </tr>
             {settings.leaderMinEnabled && (
               <tr>
-                <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] font-semibold z-10">적정확인(리더)</td>
+                <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] font-semibold z-10" colSpan={extraLeftCols + 1}>적정확인(리더)</td>
                 {days.map((day, i) => {
                   const status = attendStatus2(dayStats[i].leaderAttend, dayStats[i].leaderReq);
                   return (
@@ -1309,7 +1305,7 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
               </tr>
             )}
             <tr>
-              <td className="sticky left-0 bg-sky-50 border border-slate-200 px-2 py-1 text-[10px] text-sky-700 font-semibold z-10">여유인원</td>
+              <td className="sticky left-0 bg-sky-50 border border-slate-200 px-2 py-1 text-[10px] text-sky-700 font-semibold z-10" colSpan={extraLeftCols + 1}>여유인원</td>
               {days.map((day, i) => (
                 <td key={day.day} className="border border-slate-200 px-1 py-1 text-[10px] text-center bg-sky-50 text-sky-700 font-semibold">
                   {dayStats[i].leaveSlack}
@@ -1319,7 +1315,7 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
             </tr>
             {memoRowLabels.map((row) => (
               <tr key={row.id}>
-                <td className="sticky left-0 bg-amber-50 border border-slate-200 px-2 py-1 text-[10px] text-amber-700 font-semibold z-10">
+                <td className="sticky left-0 bg-amber-50 border border-slate-200 px-2 py-1 text-[10px] text-amber-700 font-semibold z-10" colSpan={extraLeftCols + 1}>
                   <div className="flex items-center justify-between gap-1">
                     <span className="truncate">{row.label}</span>
                     <button onClick={() => removeMemoRow(row.id)} className="text-amber-300 hover:text-red-500 flex-shrink-0" title="이 줄 삭제">✕</button>
@@ -1340,8 +1336,8 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
           <tbody>
             <tr className="bg-indigo-50 text-indigo-700 font-bold text-[11px]">
               <td className="px-2 py-1 sticky left-0 bg-indigo-50 border border-indigo-100">정직원</td>
-              <td className="px-1 py-1 text-center border border-indigo-100">잔여휴무</td>
-              <td className="px-1 py-1 text-center border border-indigo-100">잔여휴일</td>
+              <td className="px-1 py-1 text-center border border-indigo-100 whitespace-nowrap overflow-hidden">잔여휴무</td>
+              <td className="px-1 py-1 text-center border border-indigo-100 whitespace-nowrap overflow-hidden">잔여휴일</td>
               <td className="border border-indigo-100" colSpan={days.length}></td>
               {ftCodeList.map((c) => (
                 <td key={c} className="px-1 py-1 text-center border border-indigo-100">{c}</td>
