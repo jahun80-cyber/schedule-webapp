@@ -1208,7 +1208,7 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
     return <span className="text-green-600 font-semibold">OK</span>;
   };
 
-  const FillerCells = ({ count }) => count > 0 ? <>{Array.from({ length: count }).map((_, i) => <td key={i} className="border border-slate-200" />)}</> : null;
+  const FillerCells = ({ count, bg = "" }) => count > 0 ? <>{Array.from({ length: count }).map((_, i) => <td key={i} className={`border border-slate-200 ${bg}`} />)}</> : null;
 
   return (
     <div>
@@ -1221,7 +1221,7 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
 
       <div className="overflow-x-auto border border-slate-200 rounded-lg">
         <table className="text-xs border-collapse" style={{ tableLayout: "fixed" }}>
-          <thead>
+          <thead className="sticky top-0 z-30">
             <tr>
               <th style={{ minWidth: nameW, maxWidth: nameW }} className="sticky left-0 bg-slate-100 border border-slate-200 px-2 py-1.5 text-left z-10">이름</th>
               <th style={{ minWidth: remainColW, maxWidth: remainColW }} className="bg-slate-100 border border-slate-200"></th>
@@ -1237,37 +1237,37 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
             </tr>
             <tr>
               <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] text-slate-400 z-10">공휴일/이슈</td>
-              <td className="border border-slate-200" colSpan={extraLeftCols}></td>
+              <td className="bg-white border border-slate-200" colSpan={extraLeftCols}></td>
               {days.map((day) => (
-                <td key={day.day} className="border border-slate-200 px-1 py-1 text-[9px] text-center text-slate-500 whitespace-nowrap overflow-hidden">
+                <td key={day.day} className="bg-white border border-slate-200 px-1 py-1 text-[9px] text-center text-slate-500 whitespace-nowrap overflow-hidden">
                   {day.holidayName || day.issueName || ""}
                 </td>
               ))}
-              <FillerCells count={trailingCols} />
+              <FillerCells count={trailingCols} bg="bg-white" />
             </tr>
             <tr>
               <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] text-slate-400 z-10">적정(FT/PT)</td>
-              <td className="border border-slate-200" colSpan={extraLeftCols}></td>
+              <td className="bg-white border border-slate-200" colSpan={extraLeftCols}></td>
               {days.map((day, i) => (
-                <td key={day.day} className="border border-slate-200 px-1 py-1 text-[10px] text-center text-slate-500">
+                <td key={day.day} className="bg-white border border-slate-200 px-1 py-1 text-[10px] text-center text-slate-500">
                   {dayStats[i].ftReq}/{dayStats[i].ptReq}
                 </td>
               ))}
-              <FillerCells count={trailingCols} />
+              <FillerCells count={trailingCols} bg="bg-white" />
             </tr>
             <tr>
               <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] font-semibold z-10">출근(FT/PT)</td>
-              <td className="border border-slate-200" colSpan={extraLeftCols}></td>
+              <td className="bg-white border border-slate-200" colSpan={extraLeftCols}></td>
               {days.map((day, i) => (
-                <td key={day.day} className="border border-slate-200 px-1 py-1 text-[10px] text-center">
+                <td key={day.day} className="bg-white border border-slate-200 px-1 py-1 text-[10px] text-center">
                   {dayStats[i].ftAttend}/{dayStats[i].ptAttend}
                 </td>
               ))}
-              <FillerCells count={trailingCols} />
+              <FillerCells count={trailingCols} bg="bg-white" />
             </tr>
             <tr>
               <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] font-semibold z-10">적정확인(정직원)</td>
-              <td className="border border-slate-200" colSpan={extraLeftCols}></td>
+              <td className="bg-white border border-slate-200" colSpan={extraLeftCols}></td>
               {days.map((day, i) => {
                 const status = attendStatus(dayStats[i].ftAttend, dayStats[i].ftReq);
                 return (
@@ -1276,11 +1276,11 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
                   </td>
                 );
               })}
-              <FillerCells count={trailingCols} />
+              <FillerCells count={trailingCols} bg="bg-white" />
             </tr>
             <tr>
               <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] font-semibold z-10">적정확인(파트타이머)</td>
-              <td className="border border-slate-200" colSpan={extraLeftCols}></td>
+              <td className="bg-white border border-slate-200" colSpan={extraLeftCols}></td>
               {days.map((day, i) => {
                 const status = attendStatus2(dayStats[i].ptAttend, dayStats[i].ptReq);
                 return (
@@ -1289,12 +1289,12 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
                   </td>
                 );
               })}
-              <FillerCells count={trailingCols} />
+              <FillerCells count={trailingCols} bg="bg-white" />
             </tr>
             {settings.leaderMinEnabled && (
               <tr>
                 <td className="sticky left-0 bg-slate-50 border border-slate-200 px-2 py-1 text-[10px] font-semibold z-10">적정확인(리더)</td>
-                <td className="border border-slate-200" colSpan={extraLeftCols}></td>
+                <td className="bg-white border border-slate-200" colSpan={extraLeftCols}></td>
                 {days.map((day, i) => {
                   const status = attendStatus2(dayStats[i].leaderAttend, dayStats[i].leaderReq);
                   return (
@@ -1303,18 +1303,18 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
                     </td>
                   );
                 })}
-                <FillerCells count={trailingCols} />
+                <FillerCells count={trailingCols} bg="bg-white" />
               </tr>
             )}
             <tr>
               <td className="sticky left-0 bg-sky-50 border border-slate-200 px-2 py-1 text-[10px] text-sky-700 font-semibold z-10">여유인원</td>
-              <td className="border border-slate-200 bg-sky-50/40" colSpan={extraLeftCols}></td>
+              <td className="border border-slate-200 bg-sky-50" colSpan={extraLeftCols}></td>
               {days.map((day, i) => (
-                <td key={day.day} className="border border-slate-200 px-1 py-1 text-[10px] text-center bg-sky-50/40 text-sky-700 font-semibold">
+                <td key={day.day} className="border border-slate-200 px-1 py-1 text-[10px] text-center bg-sky-50 text-sky-700 font-semibold">
                   {dayStats[i].leaveSlack}
                 </td>
               ))}
-              <FillerCells count={trailingCols} />
+              <FillerCells count={trailingCols} bg="bg-sky-50" />
             </tr>
             {memoRowLabels.map((row) => (
               <tr key={row.id}>
@@ -1324,16 +1324,16 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
                     <button onClick={() => removeMemoRow(row.id)} className="text-amber-300 hover:text-red-500 flex-shrink-0" title="이 줄 삭제">✕</button>
                   </div>
                 </td>
-                <td className="border border-slate-200 bg-amber-50/40" colSpan={extraLeftCols}></td>
+                <td className="border border-slate-200 bg-amber-50" colSpan={extraLeftCols}></td>
                 {days.map((day, i) => (
-                  <td key={day.day} className="border border-slate-200 p-0 bg-amber-50/40 align-top">
+                  <td key={day.day} className="border border-slate-200 p-0 bg-amber-50 align-top">
                     <AutoGrowTextarea
                       value={(schedule[memoKey]?.[row.id] || [])[i] || ""}
                       onChange={(v) => setMemoCell(row.id, i, v)}
                     />
                   </td>
                 ))}
-                <FillerCells count={trailingCols} />
+                <FillerCells count={trailingCols} bg="bg-amber-50" />
               </tr>
             ))}
           </thead>
