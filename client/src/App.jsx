@@ -1157,6 +1157,78 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
     });
   };
 
+  // 엑셀처럼 여러 칸을 드래그로 선택한 뒤 Delete/Backspace로 한 번에 지우는 기능.
+  // 행 순서는 "화면에 보이는 정직원 목록 + 파트타이머 목록" 순서를 그대로 쓴다(중간에
+  // 정직원/파트타이머 구분 줄이 끼어도 선택 사각형 계산에는 영향 없음 - 순번만 본다).
+  const orderedEmpIds = useMemo(
+    () => [...visibleFtList, ...visiblePtList].map((e) => e.id),
+    [visibleFtList, visiblePtList]
+  );
+  const [cellSel, setCellSel] = useState(null); // { r1, c1, r2, c2 } - r/c는 orderedEmpIds/days의 인덱스
+  const draggingRef = useRef(false);
+  const gridWrapRef = useRef(null);
+
+  useEffect(() => {
+    const onMouseUp = () => { draggingRef.current = false; };
+    window.addEventListener("mouseup", onMouseUp);
+    return () => window.removeEventListener("mouseup", onMouseUp);
+  }, []);
+
+  const beginCellSelect = (empId, dayIdx, shiftKey) => {
+    const r = orderedEmpIds.indexOf(empId);
+    draggingRef.current = true;
+    setCellSel((prev) => (shiftKey && prev) ? { ...prev, r2: r, c2: dayIdx } : { r1: r, c1: dayIdx, r2: r, c2: dayIdx });
+  };
+  const extendCellSelect = (empId, dayIdx) => {
+    if (!draggingRef.current) return;
+    const r = orderedEmpIds.indexOf(empId);
+    setCellSel((prev) => (prev ? { ...prev, r2: r, c2: dayIdx } : { r1: r, c1: dayIdx, r2: r, c2: dayIdx }));
+  };
+  const isCellSelected = (empId, dayIdx) => {
+    if (!cellSel) return false;
+    const r = orderedEmpIds.indexOf(empId);
+    const rMin = Math.min(cellSel.r1, cellSel.r2), rMax = Math.max(cellSel.r1, cellSel.r2);
+    const cMin = Math.min(cellSel.c1, cellSel.c2), cMax = Math.max(cellSel.c1, cellSel.c2);
+    return r >= rMin && r <= rMax && dayIdx >= cMin && dayIdx <= cMax;
+  };
+  const selectedCellCount = useMemo(() => {
+    if (!cellSel) return 0;
+    const rMin = Math.min(cellSel.r1, cellSel.r2), rMax = Math.max(cellSel.r1, cellSel.r2);
+    const cMin = Math.min(cellSel.c1, cellSel.c2), cMax = Math.max(cellSel.c1, cellSel.c2);
+    return (rMax - rMin + 1) * (cMax - cMin + 1);
+  }, [cellSel]);
+
+  const clearSelectedCells = () => {
+    if (!cellSel) return;
+    const rMin = Math.min(cellSel.r1, cellSel.r2), rMax = Math.max(cellSel.r1, cellSel.r2);
+    const cMin = Math.min(cellSel.c1, cellSel.c2), cMax = Math.max(cellSel.c1, cellSel.c2);
+    setSchedule((prev) => {
+      const next = { ...prev, [monthKey]: { ...prev[monthKey] } };
+      for (let r = rMin; r <= rMax; r++) {
+        const empId = orderedEmpIds[r];
+        if (!empId) continue;
+        const emp = active.find((e) => e.id === empId);
+        const arr = [...(next[monthKey][empId] || [])];
+        for (let c = cMin; c <= cMax; c++) {
+          const day = days[c];
+          if (!day) continue;
+          if (emp && emp.type === "정직원" && !isUnderContractOn(emp, day.dateStr)) continue; // 계약기간 밖 칸은 건드리지 않음
+          arr[c] = "";
+        }
+        next[monthKey][empId] = arr;
+      }
+      return next;
+    });
+  };
+
+  const onGridKeyDown = (ev) => {
+    if (!cellSel) return;
+    if (ev.key === "Delete" || ev.key === "Backspace") {
+      ev.preventDefault();
+      clearSelectedCells();
+    }
+  };
+
   const setMemoCell = (rowId, dayIdx, value) => {
     setSchedule((prev) => {
       const next = { ...prev, [memoKey]: { ...(prev[memoKey] || {}) } };
@@ -1217,13 +1289,27 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
         <div><span className="text-slate-500">이번달 휴무목표(토요일수):</span> <b className="text-indigo-600">{satT}</b></div>
         <div><span className="text-slate-500">이번달 휴일목표(일요일+공휴일수):</span> <b className="text-indigo-600">{sunHolT}</b></div>
         <GhostBtn onClick={addMemoRow} icon={Plus}>메모 줄 추가</GhostBtn>
+        {cellSel && (
+          <div className="flex items-center gap-2 text-[11px] bg-indigo-50 border border-indigo-200 text-indigo-700 rounded-md px-2 py-1">
+            <span>{selectedCellCount}칸 선택됨 - Delete 키로 지우기</span>
+            <button onClick={clearSelectedCells} className="font-semibold underline hover:text-indigo-900">지금 지우기</button>
+            <button onClick={() => setCellSel(null)} className="text-indigo-400 hover:text-red-500">선택 해제</button>
+          </div>
+        )}
       </div>
+      <div className="text-[11px] text-slate-400 mb-2">엑셀처럼 칸을 마우스로 드래그해 여러 칸을 선택한 뒤 Delete 키를 누르면 선택한 칸이 한 번에 지워집니다.</div>
 
       {/* 세로/가로 스크롤을 이 박스 안에서 직접 담당해야 머리글(thead)의 sticky top이 실제로 동작한다 -
           바깥 페이지 스크롤에 맡기면 overflow-x:auto가 있는 한 브라우저가 overflow-y도 함께
           "auto"로 취급해버려서(내용 높이만큼 딱 맞게 커지는 빈 스크롤 컨테이너가 생김), sticky의
           기준이 되는 스크롤 컨테이너가 바깥 페이지가 아니라 이 텅 빈 컨테이너가 되어 버려 고정이 전혀 안 된다. */}
-      <div className="overflow-auto border border-slate-200 rounded-lg" style={{ maxHeight: "calc(100vh - 300px)" }}>
+      <div
+        ref={gridWrapRef}
+        tabIndex={0}
+        onKeyDown={onGridKeyDown}
+        className="overflow-auto border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300"
+        style={{ maxHeight: "calc(100vh - 300px)" }}
+      >
         <table className="text-xs border-collapse" style={{ tableLayout: "fixed" }}>
           <thead className="sticky top-0 z-30">
             <tr>
@@ -1358,11 +1444,25 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
                 </td>
                 {days.map((day, i) => {
                   const v = schedule[monthKey][e.id]?.[i] || "";
+                  const selected = isCellSelected(e.id, i);
                   if (!isUnderContractOn(e, day.dateStr)) {
-                    return <td key={day.day} className="border border-slate-200 bg-slate-100 text-center text-slate-300 text-[10px] py-1.5" title="계약기간 밖">-</td>;
+                    return (
+                      <td
+                        key={day.day}
+                        onMouseDown={(ev) => beginCellSelect(e.id, i, ev.shiftKey)}
+                        onMouseEnter={() => extendCellSelect(e.id, i)}
+                        className={`border border-slate-200 text-center text-slate-300 text-[10px] py-1.5 ${selected ? "bg-indigo-100" : "bg-slate-100"}`}
+                        title="계약기간 밖"
+                      >-</td>
+                    );
                   }
                   return (
-                    <td key={day.day} className="border border-slate-200 p-0">
+                    <td
+                      key={day.day}
+                      onMouseDown={(ev) => beginCellSelect(e.id, i, ev.shiftKey)}
+                      onMouseEnter={() => extendCellSelect(e.id, i)}
+                      className={`border border-slate-200 p-0 ${selected ? "bg-indigo-100" : ""}`}
+                    >
                       <select
                         value={v}
                         onChange={(ev) => setCell(e.id, i, ev.target.value)}
@@ -1391,8 +1491,14 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
                 <td className="border border-slate-200" colSpan={extraLeftCols}></td>
                 {days.map((day, i) => {
                   const v = schedule[monthKey][e.id]?.[i] || "";
+                  const selected = isCellSelected(e.id, i);
                   return (
-                    <td key={day.day} className="border border-slate-200 p-0">
+                    <td
+                      key={day.day}
+                      onMouseDown={(ev) => beginCellSelect(e.id, i, ev.shiftKey)}
+                      onMouseEnter={() => extendCellSelect(e.id, i)}
+                      className={`border border-slate-200 p-0 ${selected ? "bg-indigo-100" : ""}`}
+                    >
                       <select
                         value={v}
                         onChange={(ev) => setCell(e.id, i, ev.target.value)}
