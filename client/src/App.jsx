@@ -2477,8 +2477,20 @@ function MainApp({ role, onLogout }) {
     })();
   }, []);
 
+  // 매장을 빠르게 여러 번 바꾸면(예: 되돌아가기) 이전 매장 요청이 나중에 도착해서
+  // 지금 선택된 매장 화면에 그 매장의 데이터를 덮어써버릴 수 있다(요청 순서가 응답 순서와
+  // 다를 수 있으므로). 매 요청 시작 시점의 매장 id를 이 ref에 기록해두고, 응답이 왔을 때
+  // 그 사이 더 최신 요청이 시작되지 않았는지(=아직도 내가 최신 요청인지) 확인한 뒤에만 반영한다.
+  const latestStoreRequestId = useRef(null);
+  // "지금 data/schedule state가 실제로 어느 매장 것인지" - 로딩 중(전환 직후 응답 오기 전)에는
+  // null로 비워둬서, 아래 저장 useEffect가 "옛 매장 데이터를 새 매장 id로" 잘못 저장하지 못하게 막는다.
+  const loadedStoreIdRef = useRef(null);
+
   useEffect(() => {
+    latestStoreRequestId.current = currentStoreId;
+    loadedStoreIdRef.current = null;
     if (!currentStoreId) { setDataRaw(null); setScheduleRaw(null); setArchiveRaw(null); return; }
+    const requestedId = currentStoreId;
     (async () => {
       setLoading(true);
       knownUpdatedAt.current = null;
@@ -2490,6 +2502,10 @@ function MainApp({ role, onLogout }) {
           api.getArchive(currentStoreId).catch(() => ({})),
           api.getMeta(currentStoreId).catch(() => ({ updatedAt: 0 })),
         ]);
+        // 이 요청이 시작된 뒤 사용자가 다른 매장으로 또 바꿔서 더 최신 요청이 이미 시작됐다면,
+        // 이 응답은 옛 매장 데이터이므로 절대 반영하지 않고 버린다(최신 요청 쪽이 알아서 반영함).
+        if (latestStoreRequestId.current !== requestedId) return;
+        loadedStoreIdRef.current = requestedId;
         const finalData = cfg || defaultStoreData();
         finalData.ftTemplates = normalizeFtTemplates(finalData.ftTemplates);
         // 기존 매장은 인원별 restMode가 없다 - 매장의 기존 restMode를 그대로 채워 넣어 배포 직후 동작이 안 바뀌게 한다
@@ -2510,7 +2526,7 @@ function MainApp({ role, onLogout }) {
       } catch (e) {
         console.error(e);
       }
-      setLoading(false);
+      if (latestStoreRequestId.current === requestedId) setLoading(false);
     })();
   }, [currentStoreId]);
 
@@ -2562,6 +2578,9 @@ function MainApp({ role, onLogout }) {
 
   useEffect(() => {
     if (!currentStoreId || !data || !schedule) return;
+    // data/schedule이 아직 지금 선택된 매장 것으로 확인되지 않은 상태(매장 전환 직후 응답 대기 중)라면
+    // 절대 저장하지 않는다 - 그렇지 않으면 방금까지 보던 매장의 데이터를 새 매장 id로 덮어쓸 수 있다.
+    if (loadedStoreIdRef.current !== currentStoreId) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       setSaveState("saving");
