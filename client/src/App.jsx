@@ -2945,6 +2945,7 @@ const TAB_GROUPS = [
       { key: "holidays", label: "공휴일·이슈일", icon: CalendarDays },
       { key: "templates", label: "근무형태템플릿", icon: ClipboardCheck },
       { key: "shifty", label: "시프티코드변환", icon: FileSpreadsheet },
+      { key: "support", label: "지원근무 찾기", icon: Building2 },
     ],
   },
   {
@@ -2954,7 +2955,6 @@ const TAB_GROUPS = [
       { key: "m1", label: "스케줄 1개월차", icon: ClipboardList },
       { key: "m2", label: "스케줄 2개월차", icon: ClipboardList },
       { key: "summary", label: "2개월요약", icon: CheckCircle2 },
-      { key: "support", label: "지원근무 찾기", icon: Building2, managerOnly: true },
       { key: "archive", label: "월별기록", icon: Archive },
       { key: "leave", label: "연차현황", icon: PieChart },
     ],
@@ -2963,10 +2963,7 @@ const TAB_GROUPS = [
 // "설정" 그룹은 매장 세팅용 화면이라 사용자(뷰어)는 볼 필요가 없다 - "개인 지정 태그"(요청)만
 // [공휴일·이슈일]에서 분리해 "스케줄" 그룹의 "요청" 탭으로 옮겨뒀으므로, 설정 그룹을 통째로
 // 숨겨도 사용자가 본인 휴무 요청을 등록하는 기능은 그대로 유지된다.
-// (managerOnly 탭은 매장 전체의 인원 현황을 훑어보는 관리자용 화면이라 사용자에게는 숨긴다)
-const VIEWER_TAB_GROUPS = TAB_GROUPS
-  .filter((g) => g.label !== "설정")
-  .map((g) => ({ ...g, tabs: g.tabs.filter((t) => !t.managerOnly) }));
+const VIEWER_TAB_GROUPS = TAB_GROUPS.filter((g) => g.label !== "설정");
 const TABS = TAB_GROUPS.flatMap((g) => g.tabs);
 
 function groupedStoreOptions(storeList) {
