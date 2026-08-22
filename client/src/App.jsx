@@ -544,7 +544,7 @@ function EmployeesTab({ data, setData, role }) {
 }
 
 /* ============================================================
-   파트타이머 근무형태(계약) 탭
+   파트타이머 계약현황 탭
    ============================================================ */
 // 계약종료일까지 남은 일수 (오늘 기준, 지났으면 음수). 계약종료일이 없으면 null(기간 제한 없음).
 function daysUntil(dateStr) {
@@ -562,7 +562,18 @@ function PtContractsTab({ data, setData, role }) {
   const ptCodeOptions = ["", ...data.ptTemplates.map((t) => t.code)];
   const update = (id, patch) => setData((d) => ({ ...d, employees: d.employees.map((e) => (e.id === id ? { ...e, ...patch } : e)) }));
 
-  const ptList = emps.filter((e) => e.type === "파트타이머" && e.status !== "퇴직");
+  // 재계약 확인이 필요하거나(이미 만료) 얼마 남지 않은 인원이 맨 위에 오도록 정렬한다.
+  // 정렬 기준: 계약종료일이 없거나 여유가 충분한 인원은 뒤로(+Infinity), 그 안에서는
+  // 가장 급한(이미 지났거나 남은 일수가 적은) 순서대로 - 나머지는 원래 목록 순서 유지(안정 정렬).
+  const ptList = emps
+    .filter((e) => e.type === "파트타이머" && e.status !== "퇴직")
+    .map((e) => ({ e, remain: daysUntil(e.contractEnd) }))
+    .sort((a, b) => {
+      const ua = a.remain !== null && a.remain <= PT_RENEWAL_WINDOW_DAYS ? a.remain : Infinity;
+      const ub = b.remain !== null && b.remain <= PT_RENEWAL_WINDOW_DAYS ? b.remain : Infinity;
+      return ua - ub;
+    })
+    .map(({ e }) => e);
 
   // 재계약 알림 대상: 계약종료일이 있고, 오늘부터 14일 이내(이미 지난 경우 포함)인 인원
   const renewals = ptList
@@ -598,7 +609,7 @@ function PtContractsTab({ data, setData, role }) {
       )}
 
       <ReadOnlyFence locked={locked}>
-      <SectionCard title="파트타이머 근무형태 · 계약" icon={CalendarClock}>
+      <SectionCard title="파트타이머 계약현황" icon={CalendarClock}>
         <p className="text-xs text-slate-500 mb-3">
           파트타이머 개인별 계약기간·근무 요일 구분·근무 시간대를 한 화면에서 관리합니다(값은 [직원목록]과 같은 데이터를 공유합니다).
           계약종료일을 채워두면 만료 {PT_RENEWAL_WINDOW_DAYS}일 전부터 이 화면 위쪽에 재계약 알림이 뜹니다.
@@ -2630,7 +2641,7 @@ const TAB_GROUPS = [
     tabs: [
       { key: "settings", label: "설정", icon: Settings },
       { key: "employees", label: "직원목록", icon: Users },
-      { key: "ptContracts", label: "파트타이머 근무형태", icon: CalendarClock },
+      { key: "ptContracts", label: "파트타이머 계약현황", icon: CalendarClock },
       { key: "tags", label: "태그목록", icon: Tag },
       { key: "holidays", label: "공휴일·이슈일", icon: CalendarDays },
       { key: "templates", label: "근무형태템플릿", icon: ClipboardCheck },
@@ -2770,7 +2781,7 @@ function MainApp({ role, onLogout }) {
     ];
   }, [data]);
 
-  // 사이드바 "파트타이머 근무형태" 옆에 붙일 재계약 임박 인원 수 배지 (탭을 열지 않아도 바로 보이게)
+  // 사이드바 "파트타이머 계약현황" 옆에 붙일 재계약 임박 인원 수 배지 (탭을 열지 않아도 바로 보이게)
   const ptRenewalCount = useMemo(() => {
     if (!data) return 0;
     return (data.employees || []).filter((e) => {
