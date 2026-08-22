@@ -1983,6 +1983,7 @@ function ArchiveTab({ data, archive, setArchive, role }) {
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth() + 1);
   const selected = `${year}-${String(selectedMonth).padStart(2, "0")}`;
   const entry = archive[selected];
+  const monthDayCount = new Date(year, selectedMonth, 0).getDate();
 
   const allCodes = useMemo(() => {
     const set = new Set(["", ...data.tags.map((t) => t.code)]);
@@ -2028,6 +2029,29 @@ function ArchiveTab({ data, archive, setArchive, role }) {
     });
   };
 
+  // 앱을 쓰기 전(예: 1~7월)의 연차를 [연차현황]에 반영하려면 그 달의 기록이 있어야 하는데,
+  // 지난 달 스케줄을 통째로 다시 입력하는 건 부담이 크다. 그래서 빈 기록만 만들어두고
+  // 연차 쓴 날에만 태그를 찍을 수 있게 한다(연차 집계는 태그가 찍힌 칸만 읽으므로 나머지는 비워둬도 된다).
+  const createEmptyEntry = () => {
+    const days = buildMonthDays(year, selectedMonth, data.holidays || [], data.issueDays || []);
+    const employeesSnapshot = data.employees.map((e) => ({ id: e.id, name: e.name, type: e.type }));
+    const schedule = {};
+    employeesSnapshot.forEach((e) => { schedule[e.id] = Array(days.length).fill(""); });
+    setArchive((prev) => ({
+      ...(prev || {}),
+      [selected]: {
+        savedAt: new Date().toISOString(),
+        label: `${year}년 ${selectedMonth}월`,
+        days,
+        employeesSnapshot,
+        schedule,
+        memoRowLabels: [],
+        memo: {},
+        createdManually: true, // 스케줄에서 저장한 게 아니라 여기서 직접 만든 기록
+      },
+    }));
+  };
+
   return (
     <div>
       <SectionCard title="연도 · 월 선택" icon={CalendarDays}>
@@ -2048,11 +2072,28 @@ function ArchiveTab({ data, archive, setArchive, role }) {
         </div>
         <p className="text-xs text-slate-500 mt-2">
           [스케줄 1·2개월차] 화면에서 "기록으로 저장" 버튼을 누르면 그 시점의 스케줄이 해당 연도·월에 남습니다.
+          앱을 쓰기 전 달의 연차 내역을 남기고 싶다면, 해당 월을 고른 뒤 <b>"새 기록 만들기"</b>로 빈 표를 만들어 연차 쓴 날만 채워 넣으면 됩니다.
         </p>
       </SectionCard>
 
       {!entry ? (
-        <div className="text-sm text-slate-400 py-16 text-center">{year}년 {selectedMonth}월은 아직 저장된 기록이 없습니다.</div>
+        <div className="py-14 text-center">
+          <Archive size={32} className="text-slate-300 mx-auto mb-3" />
+          <p className="text-sm text-slate-400">{year}년 {selectedMonth}월은 아직 저장된 기록이 없습니다.</p>
+          {!locked && (
+            <>
+              <div className="mt-5">
+                <PrimaryBtn onClick={createEmptyEntry} icon={Plus}>새 기록 만들기</PrimaryBtn>
+              </div>
+              <p className="text-xs text-slate-500 mt-4 max-w-lg mx-auto leading-relaxed">
+                앱을 쓰기 전 달의 <b>연차 사용 내역만 남겨두고 싶을 때</b> 사용합니다.
+                {year}년 {selectedMonth}월({monthDayCount}일)의 빈 표를 만들어주며, 직원 목록은 현재 [직원목록] 기준으로 들어갑니다.
+                연차·반차를 쓴 날짜 칸에만 해당 태그를 골라 넣으면 [연차현황]에 바로 반영됩니다.
+                <b> 나머지 근무일 칸은 비워둬도 됩니다.</b>
+              </p>
+            </>
+          )}
+        </div>
       ) : (
         <ReadOnlyFence locked={locked}>
         <SectionCard
@@ -2060,6 +2101,9 @@ function ArchiveTab({ data, archive, setArchive, role }) {
           icon={Archive}
           right={
             <div className="flex items-center gap-3">
+              {entry.createdManually && (
+                <span className="text-[10px] bg-sky-50 border border-sky-200 text-sky-700 font-semibold rounded px-1.5 py-0.5">직접 만든 기록</span>
+              )}
               <span className="text-[11px] text-slate-400">저장 시각: {entry.savedAt ? new Date(entry.savedAt).toLocaleString("ko-KR") : "-"}</span>
               {!locked && (
                 <button onClick={deleteEntry} className="text-[11px] text-red-500 hover:text-red-700 font-semibold flex items-center gap-1">
@@ -2115,7 +2159,11 @@ function ArchiveTab({ data, archive, setArchive, role }) {
             </table>
           </div>
           <p className="text-[11px] text-slate-400 mt-2">
-            {locked ? "이 기록은 열람만 가능합니다. 수정이 필요하면 매장관리자 이상에게 요청하세요." : "여기서 수정한 내용은 자동으로 저장됩니다."}
+            {locked
+              ? "이 기록은 열람만 가능합니다. 수정이 필요하면 매장관리자 이상에게 요청하세요."
+              : entry.createdManually
+                ? "여기서 수정한 내용은 자동으로 저장됩니다. 연차·반차를 쓴 날짜에만 태그를 넣으면 되고, 나머지 근무일 칸은 비워둬도 [연차현황] 집계에는 문제없습니다."
+                : "여기서 수정한 내용은 자동으로 저장됩니다."}
           </p>
         </SectionCard>
         </ReadOnlyFence>
