@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
-  Settings, Users, Tag, CalendarDays, ClipboardList, CheckCircle2,
+  Settings, Users, Tag, CalendarDays, CalendarClock, ClipboardList, CheckCircle2,
   PlayCircle, Plus, Trash2, Store, Loader2, AlertTriangle,
   Sparkles, Save, ClipboardCheck, LogOut, Lock, Download, Upload, Archive,
   FileSpreadsheet, Copy, PieChart, History, FolderCog, FolderCheck, HardDriveDownload,
@@ -537,6 +537,127 @@ function EmployeesTab({ data, setData, role }) {
             ))}
           </tbody>
         </table>
+      </SectionCard>
+      </ReadOnlyFence>
+    </div>
+  );
+}
+
+/* ============================================================
+   파트타이머 근무형태(계약) 탭
+   ============================================================ */
+// 계약종료일까지 남은 일수 (오늘 기준, 지났으면 음수). 계약종료일이 없으면 null(기간 제한 없음).
+function daysUntil(dateStr) {
+  if (!dateStr) return null;
+  const end = new Date(dateStr + "T00:00:00");
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return Math.round((end - today) / 86400000);
+}
+const PT_RENEWAL_WINDOW_DAYS = 14;
+
+function PtContractsTab({ data, setData, role }) {
+  const locked = role === "viewer";
+  const emps = data.employees;
+  const ptCodeOptions = ["", ...data.ptTemplates.map((t) => t.code)];
+  const update = (id, patch) => setData((d) => ({ ...d, employees: d.employees.map((e) => (e.id === id ? { ...e, ...patch } : e)) }));
+
+  const ptList = emps.filter((e) => e.type === "파트타이머" && e.status !== "퇴직");
+
+  // 재계약 알림 대상: 계약종료일이 있고, 오늘부터 14일 이내(이미 지난 경우 포함)인 인원
+  const renewals = ptList
+    .map((e) => ({ e, remain: daysUntil(e.contractEnd) }))
+    .filter(({ remain }) => remain !== null && remain <= PT_RENEWAL_WINDOW_DAYS)
+    .sort((a, b) => a.remain - b.remain);
+
+  return (
+    <div className="max-w-5xl">
+      {locked && <ReadOnlyNotice>이 화면은 열람만 가능합니다. 변경이 필요하면 매장관리자 이상에게 요청하세요.</ReadOnlyNotice>}
+
+      {renewals.length > 0 && (
+        <div className="mb-5 bg-amber-50 border border-amber-300 rounded-lg px-4 py-3">
+          <div className="flex items-center gap-2 mb-2">
+            <AlertTriangle size={16} className="text-amber-600" />
+            <span className="font-bold text-amber-800 text-sm">재계약 진행 필요: {renewals.length}명</span>
+          </div>
+          <ul className="text-xs text-amber-800 space-y-1">
+            {renewals.map(({ e, remain }) => (
+              <li key={e.id}>
+                <b>{e.name || "(이름 없음)"}</b>
+                {" — "}계약종료일 {e.contractEnd}
+                {" · "}
+                {remain < 0
+                  ? <span className="text-red-600 font-semibold">계약 만료 {-remain}일 경과 — 재계약 여부를 바로 확인하세요</span>
+                  : remain === 0
+                    ? <span className="text-red-600 font-semibold">오늘 계약 만료</span>
+                    : <span className="font-semibold">D-{remain} (계약 만료 {remain}일 전)</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <ReadOnlyFence locked={locked}>
+      <SectionCard title="파트타이머 근무형태 · 계약" icon={CalendarClock}>
+        <p className="text-xs text-slate-500 mb-3">
+          파트타이머 개인별 계약기간·근무 요일 구분·근무 시간대를 한 화면에서 관리합니다(값은 [직원목록]과 같은 데이터를 공유합니다).
+          계약종료일을 채워두면 만료 {PT_RENEWAL_WINDOW_DAYS}일 전부터 이 화면 위쪽에 재계약 알림이 뜹니다.
+          새 파트타이머 등록·삭제는 [직원목록]에서 합니다.
+        </p>
+        {ptList.length === 0 ? (
+          <p className="text-xs text-slate-400">등록된 파트타이머가 없습니다.</p>
+        ) : (
+        <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+              <th className="py-2 font-semibold">이름</th>
+              <th className="py-2 font-semibold">계약기간</th>
+              <th className="py-2 font-semibold">근무 요일 구분</th>
+              <th className="py-2 font-semibold">근무 시간대(기본)</th>
+              <th className="py-2 font-semibold">근무 시간대(연장)</th>
+              <th className="py-2 font-semibold">상태</th>
+            </tr>
+          </thead>
+          <tbody>
+            {ptList.map((e) => {
+              const remain = daysUntil(e.contractEnd);
+              const urgent = remain !== null && remain <= PT_RENEWAL_WINDOW_DAYS;
+              return (
+                <tr key={e.id} className="border-b border-slate-100">
+                  <td className="py-1.5 pr-2 font-medium">{e.name || "(이름 없음)"}</td>
+                  <td className="py-1.5 pr-2">
+                    <div className="flex items-center gap-1.5">
+                      <DateInput value={e.contractStart || ""} onChange={(v) => update(e.id, { contractStart: v })} />
+                      <span className="text-slate-400">~</span>
+                      <DateInput value={e.contractEnd || ""} onChange={(v) => update(e.id, { contractEnd: v })} />
+                    </div>
+                  </td>
+                  <td className="py-1.5 pr-2">
+                    <Select value={e.dayType || "평일"} onChange={(v) => update(e.id, { dayType: v })} options={["평일", "주말"]} />
+                  </td>
+                  <td className="py-1.5 pr-2">
+                    <Select value={e.fixedCode || ""} onChange={(v) => update(e.id, { fixedCode: v })} options={ptCodeOptions} className="w-24" />
+                  </td>
+                  <td className="py-1.5 pr-2">
+                    <Select value={e.extendedCode || ""} onChange={(v) => update(e.id, { extendedCode: v })} options={ptCodeOptions} className="w-24" />
+                  </td>
+                  <td className="py-1.5 pr-2 text-xs">
+                    {!e.contractEnd ? (
+                      <span className="text-slate-300">기간 미설정</span>
+                    ) : urgent ? (
+                      <span className="text-red-600 font-semibold">{remain < 0 ? "만료됨" : `D-${remain}`}</span>
+                    ) : (
+                      <span className="text-green-600 font-semibold">정상</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        </div>
+        )}
       </SectionCard>
       </ReadOnlyFence>
     </div>
@@ -2509,6 +2630,7 @@ const TAB_GROUPS = [
     tabs: [
       { key: "settings", label: "설정", icon: Settings },
       { key: "employees", label: "직원목록", icon: Users },
+      { key: "ptContracts", label: "파트타이머 근무형태", icon: CalendarClock },
       { key: "tags", label: "태그목록", icon: Tag },
       { key: "holidays", label: "공휴일·이슈일", icon: CalendarDays },
       { key: "templates", label: "근무형태템플릿", icon: ClipboardCheck },
@@ -2646,6 +2768,16 @@ function MainApp({ role, onLogout }) {
       { key: "m1", label: `${s.year}년 ${s.startMonth}월`, days: days1 },
       { key: "m2", label: `${y2}년 ${m2}월`, days: days2 },
     ];
+  }, [data]);
+
+  // 사이드바 "파트타이머 근무형태" 옆에 붙일 재계약 임박 인원 수 배지 (탭을 열지 않아도 바로 보이게)
+  const ptRenewalCount = useMemo(() => {
+    if (!data) return 0;
+    return (data.employees || []).filter((e) => {
+      if (e.type !== "파트타이머" || e.status === "퇴직") return false;
+      const remain = daysUntil(e.contractEnd);
+      return remain !== null && remain <= PT_RENEWAL_WINDOW_DAYS;
+    }).length;
   }, [data]);
 
   const triggerSave = useCallback(() => { saveTick.current += 1; setSaveState("pending"); }, []);
@@ -3045,6 +3177,9 @@ function MainApp({ role, onLogout }) {
                     className={`w-full flex items-center gap-2 px-4 py-2.5 text-sm font-medium transition-colors ${tab === t.key ? "bg-indigo-50 text-indigo-700 border-r-2 border-indigo-600" : "text-slate-600 hover:bg-slate-50"}`}
                   >
                     <t.icon size={15} /> {t.label}
+                    {t.key === "ptContracts" && ptRenewalCount > 0 && (
+                      <span className="ml-auto bg-red-500 text-white text-[10px] font-bold rounded-full px-1.5 py-0.5 leading-none">{ptRenewalCount}</span>
+                    )}
                   </button>
                 ))}
               </div>
@@ -3055,6 +3190,7 @@ function MainApp({ role, onLogout }) {
             <h2 className="text-lg font-bold text-slate-800 mb-4">{data.settings.storeName || "매장"} · {TABS.find((t) => t.key === tab)?.label}</h2>
             {tab === "settings" && <SettingsTab data={data} setData={setData} role={role} />}
             {tab === "employees" && <EmployeesTab data={data} setData={setData} role={role} />}
+            {tab === "ptContracts" && <PtContractsTab data={data} setData={setData} role={role} />}
             {tab === "tags" && <TagsTab data={data} setData={setData} role={role} />}
             {tab === "holidays" && <HolidaysTab data={data} setData={setData} role={role} />}
             {tab === "requests" && <RequestsTab data={data} setData={setData} role={role} />}
