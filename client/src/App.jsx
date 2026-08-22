@@ -358,7 +358,15 @@ function SettingsTab({ data, setData, role }) {
       </SectionCard>
 
       <SectionCard title="요일 구분 설정" icon={CalendarDays}>
-        <p className="text-xs text-slate-500 mb-3">백화점 채널처럼 금·토·일이 주말인 경우 여기서 직접 바꾸세요.</p>
+        <p className="text-xs text-slate-500 mb-2">백화점 채널처럼 금·토·일이 주말인 경우 여기서 직접 바꾸세요.</p>
+        <ul className="text-[11px] text-slate-500 mb-3 space-y-0.5 leading-relaxed">
+          <li><b>평일</b> — 최소 출근 인원은 평일 기준, 파트타이머는 기본근무형태.</li>
+          <li><b>주말</b> — 최소 출근 인원은 주말 기준, 파트타이머는 연장근무형태.</li>
+          <li>
+            <b>평일(소프트-주말수준)</b> — 최소 출근 인원은 <b>평일 기준 그대로</b>지만, 파트타이머는 <b>연장근무형태</b>로 배정되고
+            휴무 배정도 주말처럼 조금 더 빡빡하게 봅니다. 인원은 평일만큼만 필요한데 <b>영업시간만 길어지는 날</b>(예: 백화점 연장영업하는 금요일)에 쓰세요.
+          </li>
+        </ul>
         <div className="grid grid-cols-7 gap-2">
           {WEEKDAYS.map((wd) => (
             <div key={wd} className="flex flex-col gap-1">

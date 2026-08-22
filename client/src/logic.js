@@ -135,6 +135,14 @@ function dowBucket(settings, wd) { return settings.dow[wd] || "평일"; }
 function isWeekendBucket(settings, day) {
   return dowBucket(settings, day.weekday) === "주말" || !!day.holidayName;
 }
+// 파트타이머가 "연장근무형태"로 나와야 하는 날인지.
+// 최소 출근 인원(isWeekendBucket)과 일부러 분리해둔 판정이다 - 백화점 연장영업처럼
+// "인원 기준은 평일 그대로인데 영업시간만 길어지는" 요일이 있기 때문.
+// 그래서 "평일(소프트-주말수준)"로 지정한 요일은 최소인원은 평일 기준을 그대로 쓰되,
+// 파트타이머 근무형태만 연장근무형태를 쓴다.
+function isExtendedHoursDay(settings, day) {
+  return isWeekendBucket(settings, day) || dowBucket(settings, day.weekday) === "평일(소프트-주말수준)";
+}
 function requiredFT(settings, day) {
   if (day.issueFT !== null) return day.issueFT;
   return isWeekendBucket(settings, day) ? settings.weekendMinFT : settings.weekdayMinFT;
@@ -1737,7 +1745,8 @@ function assignShiftCodes(schedule, employees, tags, settings, ftTemplates, ptTe
     }
 
     // ---- 파트타이머 (개인별로 고정된 근무형태를 그대로 채움 - 형평성 순환 없음) ----
-    const extendedToday = isWeekendBucket(settings, day); // 주말/공휴일/(설정에 따라)금요일 등 연장근무 상황
+    // 주말/공휴일 + "평일(소프트-주말수준)"으로 지정한 요일(예: 백화점 연장영업하는 금요일)
+    const extendedToday = isExtendedHoursDay(settings, day);
     ptEmps.forEach((e) => {
       if (!e.fixedCode) return; // 근무형태가 지정 안 된 파트타이머는 건드리지 않음
       const isWeekdayPerson = e.dayType === "평일" || e.dayType === "평일전담" || e.dayType === "전체가능";
@@ -1900,7 +1909,7 @@ export {
   applyFixedRestSchedules, isFixedRestCovered, isFixedRestEmployee, resolveFixedRestEnd, DEFAULT_DAY_PAIR_OPTIONS,
   emptyMemoRows, reconcileMemoRows,
   validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT, requiredLeaderFT,
-  isOffTag, shiftCodeOf, dowBucket, nextMonth, emptySchedule, isWeekendBucket, isActiveEmployee, pickThresholdIndex, isAutoAssignable,
+  isOffTag, shiftCodeOf, dowBucket, nextMonth, emptySchedule, isWeekendBucket, isExtendedHoursDay, isActiveEmployee, pickThresholdIndex, isAutoAssignable,
   restModeOf, isRotationEmployee, isUnderContractOn, isCountedOn, restTargetFor, fixedRestLimitOf,
   computeLeaveUsage,
 };
