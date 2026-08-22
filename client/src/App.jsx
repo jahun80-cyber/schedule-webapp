@@ -4,6 +4,7 @@ import {
   PlayCircle, Plus, Trash2, Store, Loader2, AlertTriangle,
   Sparkles, Save, ClipboardCheck, LogOut, Lock, Download, Upload, Archive,
   FileSpreadsheet, Copy, PieChart, History, FolderCog, FolderCheck, HardDriveDownload,
+  Building2, Search, ChevronDown, ChevronRight,
 } from "lucide-react";
 import { api, getPassword, setPassword, clearPassword, getRole, setRole } from "./api";
 import {
@@ -2632,6 +2633,304 @@ function ShiftyMapTab({ data, setData, schedule, archive, monthsMeta, role, curr
 }
 
 /* ============================================================
+   매장 간 지원근무 매칭 탭
+   ============================================================ */
+// 오늘 날짜를 YYYY-MM-DD로. (toISOString은 UTC 기준이라 한국 시간대에서 하루 밀릴 수 있어 직접 만든다)
+function todayDateStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+// 매장 목록을 동시에 여러 개씩 처리하되, 한 번에 너무 많은 요청이 몰리지 않게 제한한다.
+async function mapWithConcurrency(items, limit, fn) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    for (;;) {
+      const idx = cursor++;
+      if (idx >= items.length) break;
+      results[idx] = await fn(items[idx], idx);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+// 매장마다 기준연도·시작월이 다르므로, 찾는 날짜가 그 매장의 1개월차/2개월차 중 어디에 속하는지
+// (혹은 이미 [월별기록]으로 저장된 달인지) 판단해서 그 달의 날짜목록과 스케줄 칸을 돌려준다.
+function storeDayContext(cfg, sched, archive, dateStr) {
+  const ym = dateStr.slice(0, 7);
+  const s = cfg?.settings || {};
+  if (s.year && s.startMonth) {
+    const key1 = `${s.year}-${String(s.startMonth).padStart(2, "0")}`;
+    const { year: y2, month: m2 } = nextMonth(s.year, s.startMonth);
+    const key2 = `${y2}-${String(m2).padStart(2, "0")}`;
+    if (ym === key1) {
+      return { source: "live", label: "1개월차", days: buildMonthDays(s.year, s.startMonth, cfg.holidays || [], cfg.issueDays || []), cells: sched?.m1 || {} };
+    }
+    if (ym === key2) {
+      return { source: "live", label: "2개월차", days: buildMonthDays(y2, m2, cfg.holidays || [], cfg.issueDays || []), cells: sched?.m2 || {} };
+    }
+  }
+  const arch = archive?.[ym];
+  if (arch) return { source: "archive", label: "월별기록", days: arch.days || [], cells: arch.schedule || {} };
+  return null;
+}
+
+// 그 날짜의 출근/적정 인원을 계산한다. 계산 기준은 [스케줄] 화면의 "출근(FT/PT)"·"여유인원" 줄과 완전히 동일하게 맞춘다
+// (빈 칸은 아직 미배정이라 출근으로 세지 않고, 계약기간 밖·아직 1인분으로 안 세는 인원은 집계에서 제외).
+function storeDayStats(cfg, ctx, dateStr) {
+  const day = (ctx.days || []).find((d) => d.dateStr === dateStr);
+  if (!day) return null;
+  const settings = cfg?.settings || {};
+  const tags = cfg?.tags || [];
+  const idx = day.day - 1;
+  let ftAttend = 0, ptAttend = 0, filled = 0;
+  const ftWorking = [];
+  (cfg?.employees || []).filter((e) => isActiveEmployee(e)).forEach((e) => {
+    if (e.type === "정직원" && (!isUnderContractOn(e, dateStr) || !isCountedOn(e, dateStr))) return;
+    const v = (ctx.cells?.[e.id] || [])[idx] || "";
+    if (v !== "") filled++;
+    if (v === "" || isOffTag(tags, v)) return;
+    if (e.type === "정직원") { ftAttend++; ftWorking.push({ name: e.name, code: v, role: e.role }); }
+    else if (e.type === "파트타이머") ptAttend++;
+  });
+  const ftReq = requiredFT(settings, day);
+  const ptReq = requiredPT(settings, day);
+  return {
+    day, ftAttend, ptAttend, ftReq, ptReq,
+    ftSlack: ftAttend - ftReq,
+    ptSlack: ptAttend - ptReq,
+    ftWorking,
+    // 그날 칸이 전부 비어 있으면 "인원이 부족한 것"이 아니라 "아직 스케줄을 안 짠 것"이다.
+    // (이걸 구분하지 않으면 아직 세팅 전인 매장이 전부 "여유 없음 -2"로 잘못 보인다)
+    unscheduled: filled === 0,
+  };
+}
+
+function SupportMatchTab({ storeList, currentStoreId }) {
+  const [date, setDate] = useState(todayDateStr);
+  const [groupFilter, setGroupFilter] = useState("전체");
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState({ done: 0, total: 0 });
+  const [result, setResult] = useState(null); // { date, mine, rows }
+  const [err, setErr] = useState("");
+  const [expanded, setExpanded] = useState({});
+
+  const groups = useMemo(() => {
+    const set = [];
+    (storeList || []).forEach((s) => { const g = s.group || "기타"; if (!set.includes(g)) set.push(g); });
+    return ["전체", ...set];
+  }, [storeList]);
+
+  const search = async () => {
+    if (!date) { setErr("먼저 날짜를 선택해주세요."); return; }
+    setBusy(true);
+    setErr("");
+    setResult(null);
+    setExpanded({});
+    const targets = (storeList || []).filter((s) => groupFilter === "전체" || (s.group || "기타") === groupFilter);
+    setProgress({ done: 0, total: targets.length });
+    try {
+      let done = 0;
+      const rows = await mapWithConcurrency(targets, 6, async (s) => {
+        try {
+          const [cfg, sched] = await Promise.all([api.getConfig(s.id), api.getSchedule(s.id)]);
+          let ctx = storeDayContext(cfg, sched, null, date);
+          // 진행중인 1·2개월차에 없는 날짜면 그때만 [월별기록]을 추가로 불러와 확인한다(불필요한 요청을 줄이기 위해).
+          if (!ctx) {
+            const archive = await api.getArchive(s.id).catch(() => ({}));
+            ctx = storeDayContext(cfg, sched, archive, date);
+          }
+          if (!ctx) return { store: s, status: "none" };
+          const stats = storeDayStats(cfg, ctx, date);
+          if (!stats) return { store: s, status: "none" };
+          if (stats.unscheduled) return { store: s, status: "unscheduled", source: ctx.label, ...stats };
+          return { store: s, status: "ok", source: ctx.label, ...stats };
+        } catch (e) {
+          return { store: s, status: "error", message: e.message };
+        } finally {
+          done++;
+          setProgress({ done, total: targets.length });
+        }
+      });
+      const mine = rows.find((r) => r.store.id === currentStoreId) || null;
+      const others = rows.filter((r) => r.store.id !== currentStoreId);
+      // 여유가 많은 매장이 위로 오도록 정렬(정직원 여유 우선, 같으면 파트타이머 여유 순).
+      // 스케줄이 없는 매장·오류는 항상 맨 뒤로 보낸다.
+      others.sort((a, b) => {
+        const rank = (r) => (r.status === "ok" ? 0 : r.status === "unscheduled" ? 1 : 2);
+        if (rank(a) !== rank(b)) return rank(a) - rank(b);
+        if (a.status !== "ok") return (a.store.name || "").localeCompare(b.store.name || "");
+        return (b.ftSlack - a.ftSlack) || (b.ptSlack - a.ptSlack) || (a.store.name || "").localeCompare(b.store.name || "");
+      });
+      setResult({ date, mine, rows: others });
+    } catch (e) {
+      setErr(e.message || "조회 중 오류가 발생했습니다.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const availableRows = result ? result.rows.filter((r) => r.status === "ok" && (r.ftSlack > 0 || r.ptSlack > 0)) : [];
+  const tightRows = result ? result.rows.filter((r) => r.status === "ok" && r.ftSlack <= 0 && r.ptSlack <= 0) : [];
+  const unscheduledRows = result ? result.rows.filter((r) => r.status === "unscheduled") : [];
+  const noDataRows = result ? result.rows.filter((r) => r.status === "none" || r.status === "error") : [];
+
+  const SlackNum = ({ n }) => (
+    n > 0 ? <span className="text-emerald-600 font-bold">+{n}</span>
+      : n === 0 ? <span className="text-slate-400 font-semibold">0</span>
+        : <span className="text-red-600 font-bold">{n}</span>
+  );
+
+  const StoreRow = ({ r, dim }) => {
+    const open = !!expanded[r.store.id];
+    return (
+      <>
+        <tr className={`border-b border-slate-100 ${dim ? "text-slate-400" : ""}`}>
+          <td className="py-1.5 pr-2">
+            <button
+              onClick={() => setExpanded((p) => ({ ...p, [r.store.id]: !p[r.store.id] }))}
+              className="inline-flex items-center gap-1 text-left hover:text-indigo-600"
+              title="그날 출근하는 정직원 보기"
+            >
+              {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+              <span className="font-medium">{r.store.name}</span>
+            </button>
+          </td>
+          <td className="py-1.5 pr-2 text-[11px] text-slate-400">{r.store.group || "-"}</td>
+          <td className="py-1.5 pr-2 text-center"><SlackNum n={r.ftSlack} /></td>
+          <td className="py-1.5 pr-2 text-center text-[11px] text-slate-500">{r.ftAttend} / {r.ftReq}</td>
+          <td className="py-1.5 pr-2 text-center"><SlackNum n={r.ptSlack} /></td>
+          <td className="py-1.5 pr-2 text-center text-[11px] text-slate-500">{r.ptAttend} / {r.ptReq}</td>
+          <td className="py-1.5 pr-2 text-[11px] text-slate-400">{r.source}</td>
+        </tr>
+        {open && (
+          <tr className="border-b border-slate-100 bg-slate-50">
+            <td colSpan={7} className="py-2 px-3 text-[11px] text-slate-600">
+              {r.ftWorking.length === 0 ? (
+                <span className="text-slate-400">이 날 출근하는 정직원이 없습니다.</span>
+              ) : (
+                <>
+                  <span className="font-semibold text-slate-500 mr-2">그날 출근 정직원</span>
+                  {r.ftWorking.map((w, i) => (
+                    <span key={i} className="inline-block mr-2 mb-1 bg-white border border-slate-200 rounded px-1.5 py-0.5">
+                      {w.name}
+                      {w.role === "리더" && <span className="ml-1 text-[9px] text-amber-600 font-bold">리더</span>}
+                      <span className="ml-1 text-slate-400">{w.code}</span>
+                    </span>
+                  ))}
+                </>
+              )}
+            </td>
+          </tr>
+        )}
+      </>
+    );
+  };
+
+  const Header = () => (
+    <thead>
+      <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+        <th className="py-2 font-semibold">매장</th>
+        <th className="py-2 font-semibold">채널</th>
+        <th className="py-2 font-semibold text-center">정직원 여유</th>
+        <th className="py-2 font-semibold text-center">출근/적정</th>
+        <th className="py-2 font-semibold text-center">파트 여유</th>
+        <th className="py-2 font-semibold text-center">출근/적정</th>
+        <th className="py-2 font-semibold">기준</th>
+      </tr>
+    </thead>
+  );
+
+  return (
+    <div className="max-w-5xl">
+      <SectionCard title="지원근무 가능 매장 찾기" icon={Building2}>
+        <p className="text-xs text-slate-500 mb-3">
+          날짜를 고르면 그날 <b>여유 인원이 있는 다른 매장</b>을 찾아 보여줍니다. 여유 인원은 각 매장의
+          [설정]에 정해둔 <b>최소 출근 기준 대비 그날 실제 배정된 출근 인원</b>의 차이입니다(예: 정직원 여유 +3 = 최소인원보다 3명 더 나옴).
+          매장 이름을 누르면 그날 출근하는 정직원 명단도 볼 수 있습니다.
+        </p>
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-xs font-semibold text-slate-500">날짜</span>
+          <DateInput value={date} onChange={setDate} />
+          <span className="text-xs font-semibold text-slate-500 ml-2">채널</span>
+          <Select value={groupFilter} onChange={setGroupFilter} options={groups} className="w-28" />
+          <PrimaryBtn onClick={search} disabled={busy} icon={Search}>{busy ? "조회 중..." : "여유 인원 조회"}</PrimaryBtn>
+          {busy && (
+            <span className="inline-flex items-center gap-1.5 text-xs text-slate-500">
+              <Loader2 className="animate-spin text-indigo-500" size={14} />
+              {progress.done} / {progress.total} 매장
+            </span>
+          )}
+        </div>
+        {err && <p className="text-xs text-red-600 mt-2">{err}</p>}
+        <p className="text-[11px] text-slate-400 mt-2">
+          각 매장이 아직 자동배정을 돌리지 않았거나 빈 칸으로 남겨둔 날은 출근 인원이 실제보다 적게 보일 수 있습니다(빈 칸은 미배정으로 계산).
+        </p>
+      </SectionCard>
+
+      {result && result.mine && result.mine.status === "ok" && (
+        <div className="mb-5 bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-xs">
+          <span className="font-bold text-slate-700">우리 매장({result.mine.store.name})</span>
+          <span className="text-slate-400 mx-2">|</span>
+          <span>{result.date} 정직원 {result.mine.ftAttend}/{result.mine.ftReq}명 (여유 <SlackNum n={result.mine.ftSlack} />)</span>
+          <span className="text-slate-400 mx-2">·</span>
+          <span>파트 {result.mine.ptAttend}/{result.mine.ptReq}명 (여유 <SlackNum n={result.mine.ptSlack} />)</span>
+        </div>
+      )}
+
+      {result && (
+        <>
+          <SectionCard title={`${result.date} 여유 인원이 있는 매장 (${availableRows.length}곳)`} icon={CheckCircle2}>
+            {availableRows.length === 0 ? (
+              <p className="text-xs text-slate-400">이 날짜에 여유 인원이 있는 매장이 없습니다.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <Header />
+                  <tbody>{availableRows.map((r) => <StoreRow key={r.store.id} r={r} />)}</tbody>
+                </table>
+              </div>
+            )}
+          </SectionCard>
+
+          {tightRows.length > 0 && (
+            <SectionCard title={`여유 없음 (${tightRows.length}곳)`} icon={AlertTriangle}>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <Header />
+                  <tbody>{tightRows.map((r) => <StoreRow key={r.store.id} r={r} dim />)}</tbody>
+                </table>
+              </div>
+            </SectionCard>
+          )}
+
+          {unscheduledRows.length > 0 && (
+            <SectionCard title={`아직 스케줄을 짜지 않은 매장 (${unscheduledRows.length}곳)`} icon={Store}>
+              <p className="text-xs text-slate-500 mb-2">
+                이 날짜 칸이 전부 비어 있는 매장입니다. 인원이 부족한 게 아니라 아직 스케줄을 만들지 않은 상태라
+                여유 인원을 알 수 없으니, 지원이 필요하면 해당 매장에 직접 확인해주세요.
+              </p>
+              <p className="text-xs text-slate-400">{unscheduledRows.map((r) => r.store.name).join(", ")}</p>
+            </SectionCard>
+          )}
+
+          {noDataRows.length > 0 && (
+            <SectionCard title={`이 날짜 스케줄이 없는 매장 (${noDataRows.length}곳)`} icon={Store}>
+              <p className="text-xs text-slate-500 mb-2">
+                해당 매장의 진행중인 1·2개월차 기간에 이 날짜가 없고, [월별기록]에도 저장된 기록이 없습니다.
+              </p>
+              <p className="text-xs text-slate-400">{noDataRows.map((r) => r.store.name).join(", ")}</p>
+            </SectionCard>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
    메인 앱
    ============================================================ */
 // 왼쪽 메뉴를 "설정"(매장 셋업·구성)과 "스케줄"(실제 확인·운영)로 폴더처럼 나눈다.
@@ -2655,6 +2954,7 @@ const TAB_GROUPS = [
       { key: "m1", label: "스케줄 1개월차", icon: ClipboardList },
       { key: "m2", label: "스케줄 2개월차", icon: ClipboardList },
       { key: "summary", label: "2개월요약", icon: CheckCircle2 },
+      { key: "support", label: "지원근무 찾기", icon: Building2, managerOnly: true },
       { key: "archive", label: "월별기록", icon: Archive },
       { key: "leave", label: "연차현황", icon: PieChart },
     ],
@@ -2663,7 +2963,10 @@ const TAB_GROUPS = [
 // "설정" 그룹은 매장 세팅용 화면이라 사용자(뷰어)는 볼 필요가 없다 - "개인 지정 태그"(요청)만
 // [공휴일·이슈일]에서 분리해 "스케줄" 그룹의 "요청" 탭으로 옮겨뒀으므로, 설정 그룹을 통째로
 // 숨겨도 사용자가 본인 휴무 요청을 등록하는 기능은 그대로 유지된다.
-const VIEWER_TAB_GROUPS = TAB_GROUPS.filter((g) => g.label !== "설정");
+// (managerOnly 탭은 매장 전체의 인원 현황을 훑어보는 관리자용 화면이라 사용자에게는 숨긴다)
+const VIEWER_TAB_GROUPS = TAB_GROUPS
+  .filter((g) => g.label !== "설정")
+  .map((g) => ({ ...g, tabs: g.tabs.filter((t) => !t.managerOnly) }));
 const TABS = TAB_GROUPS.flatMap((g) => g.tabs);
 
 function groupedStoreOptions(storeList) {
@@ -3213,6 +3516,7 @@ function MainApp({ role, onLogout }) {
               <ScheduleTab data={data} setData={setData} schedule={schedule} setSchedule={setSchedule} archive={archive} setArchive={setArchive} monthsMeta={monthsMeta} monthKey="m2" role={role} />
             )}
             {tab === "summary" && monthsMeta && <SummaryTab data={data} schedule={schedule} monthsMeta={monthsMeta} />}
+            {tab === "support" && <SupportMatchTab storeList={storeList} currentStoreId={currentStoreId} />}
             {tab === "archive" && <ArchiveTab data={data} archive={archive || {}} setArchive={setArchive} role={role} />}
             {tab === "leave" && <LeaveTab data={data} setData={setData} archive={archive || {}} role={role} />}
             {tab === "shifty" && monthsMeta && <ShiftyMapTab data={data} setData={setData} schedule={schedule} archive={archive || {}} monthsMeta={monthsMeta} role={role} currentStoreId={currentStoreId} storeList={storeList} />}
