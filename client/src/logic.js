@@ -587,6 +587,34 @@ function isFixedRestEmployee(fixedRestSchedules, dayPairOptions, empName) {
   );
 }
 
+
+// [요청] 탭(personalTags)으로 등록한 "쉬는 날"의 위치를 모아둔다.
+// 요청으로 넣은 휴무와 자동배정된 휴무는 칸에 똑같은 값("휴무")으로 저장돼서 구분이 안 되기 때문에,
+// 원본 personalTags를 다시 훑어서 "이 칸은 매장이 직접 요청한 자리"라고 표시해둬야 한다.
+// 4단계(finalAdjust)가 쉬는 날을 근무로 되돌릴 때 이 목록에 있는 자리는 건드리지 않는다.
+// (쉬는 형태끼리 바뀌는 것 - 휴무<->휴일 - 은 허용. 쉬는 날이 근무일로 바뀌는 것만 막는다)
+function buildRequestedRestSet(employees, tags, personalTags, monthsMeta) {
+  const set = new Set();
+  for (const pt of personalTags || []) {
+    if (!pt.start || !pt.end || !pt.tagCode) continue;
+    // 요청한 태그가 "쉬는 날"이 아니면(교육/지원근무 등 출근 태그) 보호 대상이 아니다
+    if (!isOffTag(tags, pt.tagCode)) continue;
+    const names = pt.empNames && pt.empNames.length > 0 ? pt.empNames : (pt.empName ? [pt.empName] : []);
+    for (const name of names) {
+      const emp = employees.find((e) => e.name === name);
+      if (!emp) continue;
+      for (const { key, days } of monthsMeta) {
+        for (const day of days) {
+          if (day.dateStr >= pt.start && day.dateStr <= pt.end) {
+            set.add(`${key}|${emp.id}|${day.day}`);
+          }
+        }
+      }
+    }
+  }
+  return set;
+}
+
 function assignRestDays(schedule, employees, tags, settings, monthsMeta, fixedRestSchedules, dayPairOptions) {
   const next = { m1: { ...schedule.m1 }, m2: { ...schedule.m2 } };
   Object.keys(next.m1).forEach((id) => (next.m1[id] = [...schedule.m1[id]]));
@@ -875,7 +903,7 @@ function normalizeWeeklyRest(sched, ftEmps, monthsMeta) {
   });
 }
 
-function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestSchedules, dayPairOptions) {
+function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestSchedules, dayPairOptions, personalTags) {
   const next = { m1: { ...schedule.m1 }, m2: { ...schedule.m2 } };
   Object.keys(next.m1).forEach((id) => (next.m1[id] = [...schedule.m1[id]]));
   Object.keys(next.m2).forEach((id) => (next.m2[id] = [...schedule.m2[id]]));
@@ -909,6 +937,11 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
     return count;
   };
   const leaderOk = (key, day) => !settings?.leaderMinEnabled || leaderAttendOn(key, day) >= requiredLeaderFT(settings, day);
+
+  // [요청]으로 잡아둔 쉬는 날은 이 단계에서 절대 근무일로 되돌리지 않는다.
+  // (매장이 "이 날은 쉰다"고 확정해둔 자리라, 목표 초과분을 메우려고 여기를 헐면 안 된다)
+  const requestedRest = buildRequestedRestSet(employees, tags, personalTags, monthsMeta);
+  const isRequestedRest = (key, empId, dayNum) => requestedRest.has(`${key}|${empId}|${dayNum}`);
 
   // 2개월 전체를 월~일 주 단위로 묶어둔다 (주 규칙 확인용)
   const weeksAll = [];
@@ -962,6 +995,7 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
         if (other.id === over.id) return false;
         const theirVal = next[key][other.id]?.[day.day - 1] || "";
         if (theirVal !== "휴무" && theirVal !== "휴일") return false; // 휴무/휴일만 교환 (연차 등은 제외)
+        if (isRequestedRest(key, other.id, day.day)) return false;   // 요청으로 확정된 쉬는 날은 못 뺏는다
         return true;
       });
 
@@ -1041,6 +1075,7 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
           const slot = timeline.find(({ key: k, day }) => {
             if (k !== key) return false;
             if ((next[k][giver.emp.id]?.[day.day - 1] || "") !== giver.code) return false;
+            if (isRequestedRest(k, giver.emp.id, day.day)) return false; // 요청으로 확정된 쉬는 날은 넘기지 않는다
             const takerVal = next[k][taker.emp.id]?.[day.day - 1] || "";
             return workCodeSet.has(takerVal);
           });
@@ -1080,7 +1115,10 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
         if (!overMonth || !underMonth) continue;
 
         // 초과한 달에서 이 코드로 쉬는 날 하나를 근무로 바꾸고
-        const giveSlot = overMonth.days.find((day) => (next[overMonth.key][e.id]?.[day.day - 1] || "") === code);
+        const giveSlot = overMonth.days.find((day) =>
+          (next[overMonth.key][e.id]?.[day.day - 1] || "") === code &&
+          !isRequestedRest(overMonth.key, e.id, day.day) // 요청으로 확정된 쉬는 날은 이월 대상에서 제외
+        );
         // 부족한 달에서 근무 중이면서 그날 여유가 있는 날을 후보로 모아, 평일 우선 + 이미 쉬는 사람이
         // 적은(=덜 몰린) 날 우선으로 고른다 - 그래야 여러 인원의 부족분이 같은 날 하나로 몰리지 않는다.
         const takeCandidates = underMonth.days
@@ -1205,6 +1243,7 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
               if (o.id === e.id) return false;
               const ov = next[k][o.id]?.[day.day - 1] || "";
               if (ov !== "휴무" && ov !== "휴일") return false;
+              if (isRequestedRest(k, o.id, day.day)) return false; // 요청으로 확정된 쉬는 날은 못 뺏는다
               // 넘겨주면 그 사람은 그 코드가 하나 줄어드는데, 목표보다 많아야 넘길 수 있음
               const oc = countOf(o.id, k);
               const ot = targetOf(o, k);
@@ -1260,6 +1299,8 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
         const rec = Number(e.consecRecommended) || Number(settings?.consecRecommended) || 99;
         const candidates = days
           .filter((day) => (next[key][e.id]?.[day.day - 1] || "") === code)
+          // 요청으로 확정된 쉬는 날은 근무로 되돌리지 않는다(이번 문제의 직접 원인이었던 자리)
+          .filter((day) => !isRequestedRest(key, e.id, day.day))
           .map((day) => {
             const before = next[key][e.id][day.day - 1];
             next[key][e.id][day.day - 1] = "";
@@ -1927,6 +1968,7 @@ export {
   applyFixedRestSchedules, isFixedRestCovered, isFixedRestEmployee, resolveFixedRestEnd, DEFAULT_DAY_PAIR_OPTIONS,
   emptyMemoRows, reconcileMemoRows,
   validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT, requiredLeaderFT,
+  buildRequestedRestSet,
   isOffTag, shiftCodeOf, dowBucket, nextMonth, emptySchedule, isWeekendBucket, isExtendedHoursDay, isActiveEmployee, pickThresholdIndex, isAutoAssignable,
   restModeOf, isRotationEmployee, isUnderContractOn, isCountedOn, restTargetFor, fixedRestLimitOf,
   computeLeaveUsage,

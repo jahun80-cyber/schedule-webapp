@@ -1763,7 +1763,7 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
     setTimeout(() => {
       const r4 = finalAdjust(
         schedule, data.employees, data.tags, data.settings, monthsMeta,
-        data.fixedRestSchedules, data.dayPairOptions
+        data.fixedRestSchedules, data.dayPairOptions, data.personalTags
       );
 
       // 자리를 바꾼 날은 근무조도 다시 배정
