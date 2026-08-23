@@ -64,6 +64,40 @@ function checkAuth(req, requiredRole) {
   return { ok: true, role };
 }
 
+
+/* ---------- 감사로그용: config의 어떤 부분이 바뀌었는지 사람이 읽을 이름으로 알아낸다 ---------- */
+// 화면 이름과 맞춰둬야 나중에 로그만 보고 "어느 화면에서 손댄 건지" 바로 알 수 있다.
+const CONFIG_SECTION_LABELS = {
+  settings: "설정",
+  employees: "직원목록",
+  tags: "태그목록",
+  holidays: "공휴일",
+  issueDays: "이슈일",
+  personalTags: "요청",
+  ftTemplates: "근무형태템플릿(정직원)",
+  ptTemplates: "근무형태템플릿(파트)",
+  ftThresholds: "근무형태 인원기준",
+  shiftyCodeMap: "시프티 코드변환표",
+  fixedRestSchedules: "고정휴무 설정",
+  dayPairOptions: "요일쌍 목록",
+  annualLeaveGrants: "연차 보유량",
+  memoRowLabels: "메모 줄",
+  prefCode: "선호 근무코드",
+};
+
+function diffConfigSections(before, after) {
+  if (!before) return ["전체(최초 저장)"];
+  const keys = new Set([...Object.keys(before || {}), ...Object.keys(after || {})]);
+  const changed = [];
+  for (const k of keys) {
+    // JSON 문자열 비교 - config는 순수 데이터(JSONB)라 이 방식으로 충분하고 빠르다
+    if (JSON.stringify(before[k]) !== JSON.stringify(after[k])) {
+      changed.push(CONFIG_SECTION_LABELS[k] || k);
+    }
+  }
+  return changed;
+}
+
 /* ---------- 정적 파일 서빙 (로컬/Docker 전용 - Vercel에서는 outputDirectory가 대신 서빙) ---------- */
 function serveStatic(req, res, pathname) {
   let filePath = path.join(CLIENT_DIST, pathname === "/" ? "index.html" : pathname);
@@ -134,6 +168,7 @@ async function handleApi(req, res, pathname, method) {
         return sendJson(res, 400, { error: "올바른 백업 파일이 아닙니다." });
       }
       await db.restoreBackup(body);
+      await db.writeAudit({ role: auth.role, action: "backup.restore", detail: "백업 복원(전체 매장 덮어쓰기)", ip: getClientIp(req), coalesce: false });
       return sendJson(res, 200, { ok: true });
     }
 
@@ -169,6 +204,18 @@ async function handleApi(req, res, pathname, method) {
     }
 
     // GET /api/stores
+    // GET /api/audit?storeId=&limit=  - 감사로그 조회 (총관리자 전용)
+    if (pathname === "/api/audit" && method === "GET") {
+      const auth = checkAuth(req, "admin");
+      if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
+      // handleApi에는 pathname/method만 넘어오므로 쿼리스트링은 여기서 직접 파싱한다
+      const q = new URL(req.url, "http://localhost").searchParams;
+      const storeId = q.get("storeId") || "";
+      const limit = q.get("limit") || "200";
+      const rows = await db.listAudit({ storeId, limit });
+      return sendJson(res, 200, rows);
+    }
+
     if (pathname === "/api/stores" && method === "GET") {
       const auth = checkAuth(req, "viewer");
       if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
@@ -188,6 +235,7 @@ async function handleApi(req, res, pathname, method) {
       const cfg = defaultStoreConfig();
       cfg.settings.storeName = name;
       await db.createStore(id, name, group, cfg);
+      await db.writeAudit({ storeId: id, storeName: name, role: auth.role, action: "store.create", detail: `매장 생성 (${name})`, ip: getClientIp(req), coalesce: false });
       return sendJson(res, 200, { id, name, group });
     }
 
@@ -203,6 +251,7 @@ async function handleApi(req, res, pathname, method) {
         const body = await readBody(req);
         const found = await db.updateStoreMeta(id, body);
         if (!found) return sendJson(res, 404, { error: "매장을 찾을 수 없습니다." });
+        await db.writeAudit({ storeId: id, storeName: body?.name, role: auth.role, action: "store.rename", detail: `매장명/채널 변경 (${body?.name || ""})`, ip: getClientIp(req), coalesce: false });
         return sendJson(res, 200, { ok: true });
       }
 
@@ -210,6 +259,7 @@ async function handleApi(req, res, pathname, method) {
         const auth = checkAuth(req, "admin");
         if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
         await db.deleteStore(id);
+        await db.writeAudit({ storeId: id, role: auth.role, action: "store.delete", detail: "매장 삭제", ip: getClientIp(req), coalesce: false });
         return sendJson(res, 200, { ok: true });
       }
 
@@ -244,6 +294,14 @@ async function handleApi(req, res, pathname, method) {
 
         const { found, updatedAt } = await db.putStoreField(id, "config", toSave);
         if (!found) return sendJson(res, 404, { error: "매장을 찾을 수 없습니다." });
+        // 감사로그: config는 저장 전 값(current)을 이미 읽어뒀으므로 추가 조회 없이 바뀐 항목을 알아낼 수 있다.
+        const changed = diffConfigSections(current, toSave);
+        if (changed.length > 0) {
+          await db.writeAudit({
+            storeId: id, storeName: toSave?.settings?.storeName, role: auth.role,
+            action: "config.update", detail: changed.join(", "), ip: getClientIp(req),
+          });
+        }
         return sendJson(res, 200, { ok: true, updatedAt });
       }
 
@@ -254,6 +312,12 @@ async function handleApi(req, res, pathname, method) {
         const body = await readBody(req);
         const { found, updatedAt } = await db.putStoreField(id, sub, body);
         if (!found) return sendJson(res, 404, { error: "매장을 찾을 수 없습니다." });
+        await db.writeAudit({
+          storeId: id, role: auth.role,
+          action: sub === "schedule" ? "schedule.update" : "archive.update",
+          detail: sub === "schedule" ? "스케줄" : "월별기록",
+          ip: getClientIp(req),
+        });
         return sendJson(res, 200, { ok: true, updatedAt });
       }
     }

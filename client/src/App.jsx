@@ -2987,6 +2987,116 @@ function SupportMatchTab({ storeList, currentStoreId }) {
 }
 
 /* ============================================================
+   감사로그 탭 (총관리자 전용)
+   ============================================================ */
+const AUDIT_ROLE_LABEL = { admin: "총관리자", manager: "매장관리자", viewer: "사용자" };
+const AUDIT_ROLE_STYLE = {
+  admin: "bg-red-50 text-red-700 border-red-200",
+  manager: "bg-amber-50 text-amber-700 border-amber-200",
+  viewer: "bg-slate-100 text-slate-600 border-slate-200",
+};
+const AUDIT_ACTION_LABEL = {
+  "config.update": "설정 변경",
+  "schedule.update": "스케줄 수정",
+  "archive.update": "월별기록 수정",
+  "store.create": "매장 생성",
+  "store.rename": "매장명 변경",
+  "store.delete": "매장 삭제",
+  "backup.restore": "백업 복원",
+};
+
+function AuditTab({ storeList, currentStoreId }) {
+  const [scope, setScope] = useState(currentStoreId || "");
+  const [rows, setRows] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const load = async (storeId) => {
+    setBusy(true); setErr("");
+    try {
+      setRows(await api.listAudit(storeId, 300));
+    } catch (e) {
+      setErr(e.status === 500
+        ? "감사로그 표(audit_log)가 아직 만들어지지 않았을 수 있습니다. supabase_audit_log.sql을 Supabase에서 한 번 실행해주세요."
+        : (e.message || "불러오지 못했습니다."));
+      setRows(null);
+    }
+    setBusy(false);
+  };
+  // 탭에 들어오면 현재 매장 기준으로 한 번 불러온다
+  useEffect(() => { load(scope); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+
+  const fmt = (iso) => {
+    const d = new Date(iso);
+    return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  };
+
+  return (
+    <div className="max-w-5xl">
+      <SectionCard title="변경 기록 조회" icon={History}>
+        <p className="text-xs text-slate-500 mb-3">
+          누가(역할) 언제 어느 매장의 무엇을 고쳤는지 남는 기록입니다. 지금은 총관리자/매장관리자/사용자가 공용 비밀번호라
+          <b> 개인 이름까지는 구분되지 않고 역할까지만</b> 기록됩니다. 자동저장이 자주 일어나기 때문에, 같은 매장·같은 역할·같은 작업이
+          10분 안에 반복되면 한 줄로 묶어서 남깁니다(값이 실제로 바뀐 경우에만 기록).
+        </p>
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-xs font-semibold text-slate-500">매장</span>
+          <Select
+            value={scope}
+            onChange={(v) => { setScope(v); load(v); }}
+            options={[{ value: "", label: "전체 매장" }, ...(storeList || []).map((s) => ({ value: s.id, label: s.name }))]}
+            className="w-64"
+          />
+          <GhostBtn onClick={() => load(scope)} icon={History}>새로고침</GhostBtn>
+          {busy && <Loader2 className="animate-spin text-indigo-500" size={16} />}
+        </div>
+        {err && <p className="text-xs text-red-600 mt-2">{err}</p>}
+      </SectionCard>
+
+      {rows && (
+        <SectionCard title={`최근 기록 ${rows.length}건`} icon={ClipboardList}>
+          {rows.length === 0 ? (
+            <p className="text-xs text-slate-400">아직 기록이 없습니다. (표를 만든 이후의 변경부터 쌓입니다)</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+                    <th className="py-2 font-semibold">시각</th>
+                    <th className="py-2 font-semibold">역할</th>
+                    <th className="py-2 font-semibold">매장</th>
+                    <th className="py-2 font-semibold">작업</th>
+                    <th className="py-2 font-semibold">바뀐 항목</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r) => {
+                    const st = (storeList || []).find((x) => x.id === r.store_id);
+                    return (
+                      <tr key={r.id} className="border-b border-slate-100">
+                        <td className="py-1.5 pr-2 text-xs text-slate-500 whitespace-nowrap">{fmt(r.created_at)}</td>
+                        <td className="py-1.5 pr-2">
+                          <span className={`text-[10px] font-bold border rounded px-1.5 py-0.5 ${AUDIT_ROLE_STYLE[r.role] || ""}`}>
+                            {AUDIT_ROLE_LABEL[r.role] || r.role}
+                          </span>
+                        </td>
+                        <td className="py-1.5 pr-2 text-xs">{st?.name || r.store_name || <span className="text-slate-300">-</span>}</td>
+                        <td className="py-1.5 pr-2 text-xs font-medium">{AUDIT_ACTION_LABEL[r.action] || r.action}</td>
+                        <td className="py-1.5 pr-2 text-xs text-slate-500">{r.detail || "-"}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </SectionCard>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
    메인 앱
    ============================================================ */
 // 왼쪽 메뉴를 "설정"(매장 셋업·구성)과 "스케줄"(실제 확인·운영)로 폴더처럼 나눈다.
@@ -3002,6 +3112,7 @@ const TAB_GROUPS = [
       { key: "templates", label: "근무형태템플릿", icon: ClipboardCheck },
       { key: "shifty", label: "시프티코드변환", icon: FileSpreadsheet },
       { key: "support", label: "지원근무 찾기", icon: Building2 },
+      { key: "audit", label: "변경 기록", icon: History, adminOnly: true },
     ],
   },
   {
@@ -3535,7 +3646,10 @@ function MainApp({ role, onLogout }) {
       ) : (
         <div className="flex flex-1 min-h-0">
           <div className="w-52 bg-white border-r border-slate-200 py-4 flex-shrink-0">
-            {(role === "viewer" ? VIEWER_TAB_GROUPS : TAB_GROUPS).map((group, gi) => (
+            {(role === "viewer" ? VIEWER_TAB_GROUPS : TAB_GROUPS)
+              .map((group) => ({ ...group, tabs: group.tabs.filter((t) => !t.adminOnly || role === "admin") }))
+              .filter((group) => group.tabs.length > 0)
+              .map((group, gi) => (
               <div key={group.label} className={gi > 0 ? "mt-4 pt-4 border-t border-slate-100" : ""}>
                 <div className="px-4 pb-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider">{group.label}</div>
                 {group.tabs.map((t) => (
@@ -3558,6 +3672,7 @@ function MainApp({ role, onLogout }) {
             {tab === "settings" && <SettingsTab data={data} setData={setData} role={role} />}
             {tab === "employees" && <EmployeesTab data={data} setData={setData} role={role} />}
             {tab === "ptContracts" && <PtContractsTab data={data} setData={setData} role={role} />}
+            {tab === "audit" && <AuditTab storeList={storeList} currentStoreId={currentStoreId} />}
             {tab === "tags" && <TagsTab data={data} setData={setData} role={role} />}
             {tab === "holidays" && <HolidaysTab data={data} setData={setData} role={role} />}
             {tab === "requests" && <RequestsTab data={data} setData={setData} role={role} />}

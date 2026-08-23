@@ -217,6 +217,68 @@ async function recordLoginFailure(ip) {
   }
 }
 
+
+/* ============================================================
+   감사로그: 누가(역할) 언제 어느 매장의 무엇을 고쳤는지 기록.
+   설계 원칙 두 가지:
+     1) 저장 실패해도 본 작업(설정/스케줄 저장)은 절대 막지 않는다 - 전부 try/catch로 삼킨다.
+     2) 클라이언트가 0.6초마다 자동저장을 하기 때문에 그대로 남기면 표가 순식간에 폭발한다.
+        그래서 "같은 매장 + 같은 역할 + 같은 작업"이 최근 COALESCE_WINDOW 안에 이미 있으면
+        새 줄을 만들지 않고 건너뛴다(= 편집 한 묶음을 한 줄로 본다).
+   ============================================================ */
+const AUDIT_COALESCE_WINDOW_MS = 10 * 60 * 1000; // 10분
+const AUDIT_RETENTION_DAYS = 180;
+
+async function writeAudit({ storeId, storeName, role, action, detail, ip, coalesce = true }) {
+  try {
+    if (coalesce) {
+      const since = new Date(Date.now() - AUDIT_COALESCE_WINDOW_MS).toISOString();
+      let q = supabase
+        .from("audit_log")
+        .select("id", { count: "exact", head: true })
+        .eq("role", role)
+        .eq("action", action)
+        .gte("created_at", since);
+      q = storeId ? q.eq("store_id", storeId) : q.is("store_id", null);
+      const { count, error } = await q;
+      if (!error && (count || 0) > 0) return; // 최근에 같은 작업이 이미 기록됨 - 건너뜀
+    }
+    // supabase-js는 실패해도 예외를 던지지 않고 { error }를 돌려주므로, 직접 확인해서 남긴다.
+    // (안 그러면 표가 없거나 권한이 막혀도 아무 흔적 없이 조용히 안 쌓여서 나중에 원인 찾기가 어렵다)
+    const { error: insErr } = await supabase.from("audit_log").insert({
+      store_id: storeId || null,
+      store_name: storeName || null,
+      role,
+      action,
+      detail: detail || null,
+      ip: ip || null,
+    });
+    if (insErr) {
+      console.error("감사로그 기록 실패 (본 작업에는 영향 없음):", insErr.message);
+      return;
+    }
+    // 오래된 로그는 가끔만 정리 (매번 지우면 저장할 때마다 부담이 되므로 2% 확률로만)
+    if (Math.random() < 0.02) {
+      const cutoff = new Date(Date.now() - AUDIT_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+      await supabase.from("audit_log").delete().lt("created_at", cutoff);
+    }
+  } catch (e) {
+    console.error("감사로그 기록 실패 (본 작업에는 영향 없음):", e.message);
+  }
+}
+
+async function listAudit({ storeId, limit = 200 } = {}) {
+  let q = supabase
+    .from("audit_log")
+    .select("id,created_at,store_id,store_name,role,action,detail")
+    .order("created_at", { ascending: false })
+    .limit(Math.min(Number(limit) || 200, 500));
+  if (storeId) q = q.eq("store_id", storeId);
+  const { data, error } = await q;
+  if (error) throw error;
+  return data || [];
+}
+
 module.exports = {
   listStores,
   createStore,
@@ -232,4 +294,6 @@ module.exports = {
   recordLoginFailure,
   getFullBackup,
   restoreBackup,
+  writeAudit,
+  listAudit,
 };

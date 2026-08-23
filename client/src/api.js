@@ -53,6 +53,8 @@ export const api = {
   getBackup: () => apiFetch("/api/backup"),
   restoreBackup: (backup) => apiFetch("/api/restore", { method: "POST", body: JSON.stringify(backup) }),
   // 안전장치: 백업 복원/매장 삭제 직전 자동 저장되는 스냅샷 (관리자 전용)
+  listAudit: (storeId = "", limit = 200) =>
+    apiFetch(`/api/audit?storeId=${encodeURIComponent(storeId)}&limit=${limit}`),
   listSnapshots: () => apiFetch("/api/snapshots"),
   getSnapshot: (id) => apiFetch(`/api/snapshots/${id}`),
   restoreSnapshot: (id) => apiFetch(`/api/snapshots/${id}/restore`, { method: "POST" }),
