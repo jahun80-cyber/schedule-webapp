@@ -1389,7 +1389,8 @@ function assignRemainingRest(schedule, employees, tags, settings, monthsMeta, fi
   const ftEmps = employees.filter((e) => e.type === "정직원" && isActiveEmployee(e) && isAutoAssignable(e));
   if (ftEmps.length === 0) return { schedule: next, added: 0, message: "정직원이 없어 추가 배정을 건너뛰었습니다." };
 
-  const consecMax = Number(settings.consecMax) || 99;
+  // (연속근무 상한은 여기서 매장 공통값을 쓰지 않는다 - 인원마다 개인 상한이 다를 수 있어
+  //  실제 판정은 아래에서 fixedRestLimitOf(.., emp, settings)로 사람별로 구한다)
   // 근무코드로 인정되는 코드들(= 나중에 휴무로 바꿔도 되는 칸). 확정휴무/개인지정태그는 제외
   const workCodeSet = new Set((tags || []).filter((t) => t.countsAsAttend).map((t) => t.code));
   const changedDays = new Set(); // "key|day" - 근무조 재배정이 필요한 날짜
