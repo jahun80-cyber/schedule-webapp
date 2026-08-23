@@ -37,12 +37,14 @@ function Field({ label, children, hint }) {
   );
 }
 
-function NumberInput({ value, onChange, min = 0, className = "" }) {
+// invalid=true면 값을 꼭 넣어야 하는 칸인데 비어 있다는 뜻 - 빨간 테두리로 눈에 띄게 한다.
+// (placeholder는 원래 받지 않아서 호출부에서 넘겨도 무시되고 있었다)
+function NumberInput({ value, onChange, min = 0, className = "", placeholder = "", invalid = false }) {
   return (
     <input
-      type="number" min={min} value={value}
+      type="number" min={min} value={value} placeholder={placeholder}
       onChange={(e) => onChange(e.target.value === "" ? "" : Number(e.target.value))}
-      className={`border border-slate-300 rounded-md px-2 py-1.5 text-sm w-24 focus:outline-none focus:ring-2 focus:ring-indigo-400 ${className}`}
+      className={`border rounded-md px-2 py-1.5 text-sm w-24 focus:outline-none focus:ring-2 ${invalid ? "border-red-400 bg-red-50 focus:ring-red-400 placeholder:text-red-400" : "border-slate-300 focus:ring-indigo-400"} ${className}`}
     />
   );
 }
@@ -402,10 +404,38 @@ function EmployeesTab({ data, setData, role }) {
   const ftList = emps.filter((e) => e.type === "정직원");
   const ptList = emps.filter((e) => e.type === "파트타이머");
 
+  // 로테이션 인원은 연속근무 권장/최대를 반드시 입력해야 한다.
+  // (비워두면 매장 기본값으로 돌아가긴 하지만, 그 사람에게 맞는 값인지 아무도 확인하지 않은 상태가 된다)
+  const missingConsec = ftList.filter((e) => {
+    if (!isActiveEmployee(e)) return false;
+    // 자동배정에서 빠지는 인원(지원근무/스위칭근무)은 연속근무 상한을 쓸 일이 없으므로 경고 대상이 아니다
+    if (!isAutoAssignable(e)) return false;
+    const rotation = (e.restMode || data.settings?.restMode || "로테이션") !== "고정휴무";
+    if (!rotation) return false;
+    const blank = (v) => v === undefined || v === "" || v === null;
+    return blank(e.consecRecommended) || blank(e.consecMax);
+  });
+
   return (
     <div className="max-w-5xl">
       {locked && <ReadOnlyNotice>이 화면은 열람만 가능합니다. 변경이 필요하면 매장관리자 이상에게 요청하세요.</ReadOnlyNotice>}
       <ReadOnlyFence locked={locked}>
+      {missingConsec.length > 0 && (
+        <div className="mb-4 bg-red-50 border border-red-200 rounded-lg px-4 py-3">
+          <div className="flex items-center gap-2 mb-1">
+            <AlertTriangle size={15} className="text-red-600" />
+            <span className="font-bold text-red-800 text-sm">연속근무 값을 입력해야 하는 인원: {missingConsec.length}명</span>
+          </div>
+          <p className="text-xs text-red-700">
+            휴무방식이 <b>로테이션</b>인 인원은 연속근무 권장/최대를 각자 입력해야 합니다 —
+            <span className="font-semibold"> {missingConsec.map((e) => e.name || "(이름 없음)").join(", ")}</span>
+          </p>
+          <p className="text-[11px] text-red-600 mt-1">
+            비워두면 [설정]의 매장 기본값({data.settings?.consecRecommended ?? "-"}/{data.settings?.consecMax ?? "-"})으로 계산되어 자동배정은 돌아가지만,
+            그 값이 이 사람에게 맞는지 확인되지 않은 상태입니다.
+          </p>
+        </div>
+      )}
       <SectionCard title="정직원" icon={Users} right={<GhostBtn onClick={addFT} icon={Plus}>정직원 추가</GhostBtn>}>
         <p className="text-xs text-slate-500 mb-3">
           소속을 "지원근무"나 "스위칭근무"로 두면 휴무/휴일·근무 자동배정에서 제외되고, 스케줄 화면에서 수기로만 입력됩니다.
@@ -462,14 +492,14 @@ function EmployeesTab({ data, setData, role }) {
                   </td>
                   <td className="py-1.5 pr-2">
                     {restMode === "로테이션" ? (
-                      <NumberInput value={e.consecRecommended ?? ""} onChange={(v) => update(e.id, { consecRecommended: v })} className="w-16" placeholder="기본값" />
+                      <NumberInput value={e.consecRecommended ?? ""} onChange={(v) => update(e.id, { consecRecommended: v })} className="w-16" placeholder="필수" invalid={e.consecRecommended === undefined || e.consecRecommended === "" || e.consecRecommended === null} />
                     ) : (
                       <span className="text-[11px] text-slate-300">-</span>
                     )}
                   </td>
                   <td className="py-1.5 pr-2">
                     {restMode === "로테이션" ? (
-                      <NumberInput value={e.consecMax ?? ""} onChange={(v) => update(e.id, { consecMax: v })} className="w-16" placeholder="기본값" />
+                      <NumberInput value={e.consecMax ?? ""} onChange={(v) => update(e.id, { consecMax: v })} className="w-16" placeholder="필수" invalid={e.consecMax === undefined || e.consecMax === "" || e.consecMax === null} />
                     ) : (
                       <span className="text-[11px] text-slate-300">-</span>
                     )}
@@ -1951,6 +1981,16 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
     setMsg(`${meta.label} 기록을 저장했습니다. 왼쪽 [월별기록] 탭에서 확인할 수 있습니다.`);
   };
 
+  // 로테이션 인원인데 연속근무 값을 안 넣은 사람 - 자동배정을 돌리기 전에 눈에 띄어야 한다
+  const missingConsecNames = useMemo(() => (data.employees || [])
+    .filter((e) => {
+      if (e.type !== "정직원" || !isActiveEmployee(e) || !isAutoAssignable(e)) return false;
+      if ((e.restMode || data.settings?.restMode || "로테이션") === "고정휴무") return false;
+      const blank = (v) => v === undefined || v === "" || v === null;
+      return blank(e.consecRecommended) || blank(e.consecMax);
+    })
+    .map((e) => e.name || "(이름 없음)"), [data.employees, data.settings]);
+
   const val = useMemo(() => validateMonth(schedule, data.employees, data.tags, data.settings, meta.days, monthKey, data.fixedRestSchedules, data.dayPairOptions), [schedule, data, meta, monthKey]);
 
   return (
@@ -1981,6 +2021,14 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
         <span className={`px-2 py-1 rounded-md font-semibold ${val.warnList.length > 0 ? "bg-amber-100 text-amber-700" : "bg-green-100 text-green-700"}`}>
           연속근무 상한 초과: {val.warnList.length === 0 ? "없음" : val.warnList.join(", ")}
         </span>
+        {missingConsecNames.length > 0 && (
+          <span
+            className="px-2 py-1 rounded-md font-semibold bg-red-100 text-red-700"
+            title={`[직원목록]에서 이 인원들의 연속근무 권장/최대를 입력해주세요: ${missingConsecNames.join(", ")}`}
+          >
+            연속근무 값 미입력: {missingConsecNames.length}명
+          </span>
+        )}
       </div>
       <div className="flex items-center gap-2 mb-3 text-xs flex-wrap bg-slate-50 border border-slate-200 rounded-md px-3 py-2">
         <span className="text-slate-500 font-semibold">인원 필터</span>
