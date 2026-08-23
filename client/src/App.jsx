@@ -3313,7 +3313,6 @@ const TAB_GROUPS = [
       { key: "templates", label: "근무형태템플릿", icon: ClipboardCheck },
       { key: "shifty", label: "시프티코드변환", icon: FileSpreadsheet },
       { key: "support", label: "지원근무 찾기", icon: Building2 },
-      { key: "audit", label: "변경 기록", icon: History, adminOnly: true },
     ],
   },
   {
@@ -3325,7 +3324,13 @@ const TAB_GROUPS = [
       { key: "summary", label: "2개월요약", icon: CheckCircle2 },
       { key: "archive", label: "월별기록", icon: Archive },
       { key: "leave", label: "연차현황", icon: PieChart },
+    ],
+  },
+  {
+    label: "관리",
+    tabs: [
       { key: "inquiry", label: "문의함", icon: MessageSquare, managerOnly: true },
+      { key: "audit", label: "변경 기록", icon: History, adminOnly: true },
     ],
   },
 ];
@@ -3334,7 +3339,8 @@ const TAB_GROUPS = [
 // 숨겨도 사용자가 본인 휴무 요청을 등록하는 기능은 그대로 유지된다.
 const VIEWER_TAB_GROUPS = TAB_GROUPS
   .filter((g) => g.label !== "설정")
-  .map((g) => ({ ...g, tabs: g.tabs.filter((t) => !t.managerOnly) }));
+  .map((g) => ({ ...g, tabs: g.tabs.filter((t) => !t.managerOnly && !t.adminOnly) }))
+  .filter((g) => g.tabs.length > 0);
 const TABS = TAB_GROUPS.flatMap((g) => g.tabs);
 
 function groupedStoreOptions(storeList) {
