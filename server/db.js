@@ -279,6 +279,58 @@ async function listAudit({ storeId, limit = 200 } = {}) {
   return data || [];
 }
 
+
+/* ============================================================
+   문의함: 매장이 올린 문의/건의와 답변.
+   답변은 총관리자만 달 수 있고, 매장은 자기 매장 문의만 볼 수 있다(app.js에서 강제).
+   ============================================================ */
+async function createInquiry({ storeId, storeName, role, category, body }) {
+  const { data, error } = await supabase
+    .from("inquiries")
+    .insert({ store_id: storeId || null, store_name: storeName || null, role, category: category || null, body })
+    .select("id,created_at")
+    .maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+async function listInquiries({ storeId, status, limit = 200 } = {}) {
+  let q = supabase
+    .from("inquiries")
+    .select("id,created_at,store_id,store_name,role,category,body,status,answer,answered_at")
+    .order("created_at", { ascending: false })
+    .limit(Math.min(Number(limit) || 200, 500));
+  if (storeId) q = q.eq("store_id", storeId);
+  if (status) q = q.eq("status", status);
+  const { data, error } = await q;
+  if (error) throw error;
+  return data || [];
+}
+
+// 미답변 건수만 가볍게 (사이드바 배지용 - 목록 전체를 받아오지 않는다)
+async function countOpenInquiries(storeId) {
+  let q = supabase.from("inquiries").select("id", { count: "exact", head: true }).eq("status", "open");
+  if (storeId) q = q.eq("store_id", storeId);
+  const { count, error } = await q;
+  if (error) throw error;
+  return count || 0;
+}
+
+async function answerInquiry(id, { answer, status }) {
+  const patch = {};
+  if (answer !== undefined) { patch.answer = answer; patch.answered_at = new Date().toISOString(); }
+  if (status) patch.status = status;
+  else if (answer !== undefined) patch.status = "answered";
+  const { data, error } = await supabase.from("inquiries").update(patch).eq("id", id).select("id");
+  if (error) throw error;
+  return data.length > 0;
+}
+
+async function deleteInquiry(id) {
+  const { error } = await supabase.from("inquiries").delete().eq("id", id);
+  if (error) throw error;
+}
+
 module.exports = {
   listStores,
   createStore,
@@ -296,4 +348,9 @@ module.exports = {
   restoreBackup,
   writeAudit,
   listAudit,
+  createInquiry,
+  listInquiries,
+  countOpenInquiries,
+  answerInquiry,
+  deleteInquiry,
 };

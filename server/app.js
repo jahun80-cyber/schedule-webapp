@@ -204,6 +204,66 @@ async function handleApi(req, res, pathname, method) {
     }
 
     // GET /api/stores
+    /* ---------- 문의함 ----------
+       - 목록/등록: 매장관리자 이상. 단 총관리자가 아니면 storeId를 반드시 지정해야 하고
+         그 매장 것만 볼 수 있다(다른 매장 문의를 훔쳐보지 못하게 서버에서 강제).
+       - 답변/삭제: 총관리자만. */
+    if (pathname === "/api/inquiries" && method === "GET") {
+      const auth = checkAuth(req, "manager");
+      if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
+      const q = new URL(req.url, "http://localhost").searchParams;
+      let storeId = q.get("storeId") || "";
+      if (auth.role !== "admin") {
+        if (!storeId) return sendJson(res, 400, { error: "매장을 지정해야 합니다." });
+      }
+      const rows = await db.listInquiries({ storeId, status: q.get("status") || "", limit: q.get("limit") || "200" });
+      return sendJson(res, 200, rows);
+    }
+
+    if (pathname === "/api/inquiries/open-count" && method === "GET") {
+      const auth = checkAuth(req, "manager");
+      if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
+      const q = new URL(req.url, "http://localhost").searchParams;
+      const storeId = auth.role === "admin" ? (q.get("storeId") || "") : (q.get("storeId") || "");
+      if (auth.role !== "admin" && !storeId) return sendJson(res, 200, { count: 0 });
+      return sendJson(res, 200, { count: await db.countOpenInquiries(storeId) });
+    }
+
+    if (pathname === "/api/inquiries" && method === "POST") {
+      const auth = checkAuth(req, "manager");
+      if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
+      const body = await readBody(req);
+      const text = String(body.body || "").trim();
+      if (!text) return sendJson(res, 400, { error: "문의 내용을 입력하세요." });
+      if (text.length > 5000) return sendJson(res, 400, { error: "문의 내용이 너무 깁니다(5000자 이내)." });
+      const row = await db.createInquiry({
+        storeId: body.storeId || null, storeName: body.storeName || null,
+        role: auth.role, category: body.category || null, body: text,
+      });
+      await db.writeAudit({
+        storeId: body.storeId, storeName: body.storeName, role: auth.role,
+        action: "inquiry.create", detail: "문의 등록", ip: getClientIp(req), coalesce: false,
+      });
+      return sendJson(res, 200, row || { ok: true });
+    }
+
+    const inqMatch = pathname.match(/^\/api\/inquiries\/(\d+)$/);
+    if (inqMatch && (method === "PUT" || method === "DELETE")) {
+      const auth = checkAuth(req, "admin");
+      if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
+      const id = Number(inqMatch[1]);
+      if (method === "DELETE") {
+        await db.deleteInquiry(id);
+        await db.writeAudit({ role: auth.role, action: "inquiry.delete", detail: `문의 삭제 (#${id})`, ip: getClientIp(req), coalesce: false });
+        return sendJson(res, 200, { ok: true });
+      }
+      const body = await readBody(req);
+      const found = await db.answerInquiry(id, { answer: body.answer, status: body.status });
+      if (!found) return sendJson(res, 404, { error: "문의를 찾을 수 없습니다." });
+      await db.writeAudit({ role: auth.role, action: "inquiry.answer", detail: `문의 답변 (#${id})`, ip: getClientIp(req), coalesce: false });
+      return sendJson(res, 200, { ok: true });
+    }
+
     // GET /api/audit?storeId=&limit=  - 감사로그 조회 (총관리자 전용)
     if (pathname === "/api/audit" && method === "GET") {
       const auth = checkAuth(req, "admin");

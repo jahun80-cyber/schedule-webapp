@@ -4,7 +4,7 @@ import {
   PlayCircle, Plus, Trash2, Store, Loader2, AlertTriangle,
   Sparkles, Save, ClipboardCheck, LogOut, Lock, Download, Upload, Archive,
   FileSpreadsheet, Copy, PieChart, History, FolderCog, FolderCheck, HardDriveDownload,
-  Building2, Search, ChevronDown, ChevronRight,
+  Building2, Search, ChevronDown, ChevronRight, MessageSquare,
 } from "lucide-react";
 import { api, getPassword, setPassword, clearPassword, getRole, setRole } from "./api";
 import {
@@ -3097,6 +3097,207 @@ function AuditTab({ storeList, currentStoreId }) {
 }
 
 /* ============================================================
+   문의함 탭 - 매장이 문의/건의를 올리고, 총관리자가 답변한다
+   ============================================================ */
+const INQUIRY_CATEGORIES = ["사용법 문의", "오류 신고", "기능 건의", "기타"];
+
+function InquiryTab({ storeList, currentStoreId, role, storeName }) {
+  const isAdmin = role === "admin";
+  const [rows, setRows] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [scope, setScope] = useState(isAdmin ? "" : currentStoreId || "");
+  const [onlyOpen, setOnlyOpen] = useState(false);
+  // 새 문의 작성
+  const [category, setCategory] = useState(INQUIRY_CATEGORIES[0]);
+  const [body, setBody] = useState("");
+  const [sent, setSent] = useState("");
+  // 답변 작성 (총관리자 전용)
+  const [answering, setAnswering] = useState(null); // { id, text }
+
+  const load = async (storeId = scope, open = onlyOpen) => {
+    setBusy(true); setErr("");
+    try {
+      setRows(await api.listInquiries(storeId, open ? "open" : ""));
+    } catch (e) {
+      setErr(e.status === 500
+        ? "문의함 표(inquiries)가 아직 만들어지지 않았을 수 있습니다. supabase_inquiries.sql을 Supabase에서 한 번 실행해주세요."
+        : (e.message || "불러오지 못했습니다."));
+      setRows(null);
+    }
+    setBusy(false);
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+
+  const submit = async () => {
+    const text = body.trim();
+    if (!text) { setErr("문의 내용을 입력해주세요."); return; }
+    setBusy(true); setErr(""); setSent("");
+    try {
+      await api.createInquiry({ storeId: currentStoreId, storeName, category, body: text });
+      setBody("");
+      setSent("문의가 등록되었습니다. 답변이 등록되면 아래 목록에서 확인하실 수 있습니다.");
+      await load();
+    } catch (e) { setErr(e.message || "등록하지 못했습니다."); }
+    setBusy(false);
+  };
+
+  const saveAnswer = async (id) => {
+    const text = (answering?.text || "").trim();
+    if (!text) return;
+    setBusy(true);
+    try { await api.answerInquiry(id, { answer: text }); setAnswering(null); await load(); }
+    catch (e) { setErr(e.message || "답변을 저장하지 못했습니다."); }
+    setBusy(false);
+  };
+
+  const removeInquiry = async (id) => {
+    if (!window.confirm("이 문의를 삭제할까요? 되돌릴 수 없습니다.")) return;
+    setBusy(true);
+    try { await api.deleteInquiry(id); await load(); }
+    catch (e) { setErr(e.message || "삭제하지 못했습니다."); }
+    setBusy(false);
+  };
+
+  const fmt = (iso) => {
+    const d = new Date(iso);
+    const p2 = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}.${p2(d.getMonth() + 1)}.${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
+  };
+  const openCount = rows ? rows.filter((r) => r.status === "open").length : 0;
+
+  const placeholder =
+    "예) 스케줄 4단계를 눌렀는데 '목표보다 초과해서 쉬는 인원'이 계속 남습니다. 어떻게 해야 하나요?\n\n" +
+    "· 어느 화면에서 생긴 일인지\n· 어떤 버튼을 눌렀을 때인지\n· 화면에 뜬 문구가 있으면 그대로\n" +
+    "를 같이 적어주시면 훨씬 빠르게 답변드릴 수 있습니다.";
+
+  return (
+    <div className="max-w-4xl">
+      <SectionCard title="문의 / 건의 등록" icon={MessageSquare}>
+        <p className="text-xs text-slate-500 mb-3">
+          사용하다가 막히는 부분, 이상한 동작, 이런 기능이 있으면 좋겠다 싶은 것을 자유롭게 적어주세요.
+          {isAdmin
+            ? " 총관리자는 모든 매장의 문의를 보고 답변할 수 있습니다."
+            : ` 등록하시면 ${storeName || "이 매장"} 문의로 접수되고, 답변이 달리면 아래 목록에서 확인하실 수 있습니다.`}
+        </p>
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-xs font-semibold text-slate-500">종류</span>
+          <Select value={category} onChange={setCategory} options={INQUIRY_CATEGORIES} className="w-36" />
+          <span className="text-[11px] text-slate-400">현재 매장: <b>{storeName || "-"}</b></span>
+        </div>
+        <textarea
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          rows={5}
+          maxLength={5000}
+          placeholder={placeholder}
+          className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 resize-y"
+        />
+        <div className="flex items-center gap-2 mt-2">
+          <PrimaryBtn onClick={submit} disabled={busy || !body.trim()} icon={MessageSquare}>문의 등록</PrimaryBtn>
+          <span className="text-[11px] text-slate-400">{body.length}/5000</span>
+          {busy && <Loader2 className="animate-spin text-indigo-500" size={15} />}
+        </div>
+        {sent && <p className="text-xs text-emerald-700 mt-2">{sent}</p>}
+        {err && <p className="text-xs text-red-600 mt-2">{err}</p>}
+      </SectionCard>
+
+      <SectionCard
+        title={isAdmin ? `문의 목록${openCount > 0 ? ` (미답변 ${openCount}건)` : ""}` : "내 매장 문의 내역"}
+        icon={ClipboardList}
+        right={
+          <div className="flex items-center gap-2">
+            {isAdmin && (
+              <>
+                <Select
+                  value={scope}
+                  onChange={(v) => { setScope(v); load(v, onlyOpen); }}
+                  options={[{ value: "", label: "전체 매장" }, ...(storeList || []).map((s) => ({ value: s.id, label: s.name }))]}
+                  className="w-52"
+                />
+                <label className="flex items-center gap-1 text-[11px] text-slate-500">
+                  <input
+                    type="checkbox"
+                    checked={onlyOpen}
+                    onChange={(e) => { setOnlyOpen(e.target.checked); load(scope, e.target.checked); }}
+                    className="w-3.5 h-3.5 accent-indigo-600"
+                  />
+                  미답변만
+                </label>
+              </>
+            )}
+            <GhostBtn onClick={() => load()} icon={History}>새로고침</GhostBtn>
+          </div>
+        }
+      >
+        {!rows ? (
+          <p className="text-xs text-slate-400">불러오는 중...</p>
+        ) : rows.length === 0 ? (
+          <p className="text-xs text-slate-400">아직 등록된 문의가 없습니다.</p>
+        ) : (
+          <div className="space-y-3">
+            {rows.map((r) => (
+              <div key={r.id} className={`border rounded-lg p-3 ${r.status === "open" ? "border-amber-200 bg-amber-50/40" : "border-slate-200"}`}>
+                <div className="flex items-center gap-2 flex-wrap mb-1.5">
+                  <span className={`text-[10px] font-bold rounded px-1.5 py-0.5 border ${r.status === "open" ? "bg-amber-100 text-amber-700 border-amber-200" : "bg-emerald-50 text-emerald-700 border-emerald-200"}`}>
+                    {r.status === "open" ? "답변 대기" : "답변 완료"}
+                  </span>
+                  {r.category && <span className="text-[10px] text-slate-500 border border-slate-200 rounded px-1.5 py-0.5">{r.category}</span>}
+                  {isAdmin && (
+                    <span className="text-[11px] font-semibold text-slate-600">
+                      {r.store_name || (storeList || []).find((x) => x.id === r.store_id)?.name || "-"}
+                    </span>
+                  )}
+                  <span className="text-[11px] text-slate-400 ml-auto">{fmt(r.created_at)}</span>
+                  {isAdmin && (
+                    <button onClick={() => removeInquiry(r.id)} className="text-slate-300 hover:text-red-500" title="삭제">
+                      <Trash2 size={13} />
+                    </button>
+                  )}
+                </div>
+                <p className="text-sm whitespace-pre-wrap text-slate-700">{r.body}</p>
+
+                {r.answer && (
+                  <div className="mt-2.5 border-l-2 border-indigo-300 bg-indigo-50/50 rounded-r px-3 py-2">
+                    <div className="text-[10px] font-bold text-indigo-700 mb-1">답변 {r.answered_at ? `· ${fmt(r.answered_at)}` : ""}</div>
+                    <p className="text-sm whitespace-pre-wrap text-slate-700">{r.answer}</p>
+                  </div>
+                )}
+
+                {isAdmin && (
+                  answering?.id === r.id ? (
+                    <div className="mt-2.5">
+                      <textarea
+                        value={answering.text}
+                        onChange={(e) => setAnswering({ id: r.id, text: e.target.value })}
+                        rows={4}
+                        autoFocus
+                        className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 resize-y"
+                      />
+                      <div className="flex items-center gap-2 mt-1.5">
+                        <PrimaryBtn onClick={() => saveAnswer(r.id)} disabled={busy || !answering.text.trim()} icon={Save}>답변 등록</PrimaryBtn>
+                        <button onClick={() => setAnswering(null)} className="text-xs text-slate-400 hover:text-slate-600">취소</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setAnswering({ id: r.id, text: r.answer || "" })}
+                      className="mt-2 text-[11px] text-indigo-600 hover:text-indigo-800 font-semibold"
+                    >
+                      {r.answer ? "답변 수정" : "답변 달기"}
+                    </button>
+                  )
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </SectionCard>
+    </div>
+  );
+}
+
+/* ============================================================
    메인 앱
    ============================================================ */
 // 왼쪽 메뉴를 "설정"(매장 셋업·구성)과 "스케줄"(실제 확인·운영)로 폴더처럼 나눈다.
@@ -3124,13 +3325,16 @@ const TAB_GROUPS = [
       { key: "summary", label: "2개월요약", icon: CheckCircle2 },
       { key: "archive", label: "월별기록", icon: Archive },
       { key: "leave", label: "연차현황", icon: PieChart },
+      { key: "inquiry", label: "문의함", icon: MessageSquare, managerOnly: true },
     ],
   },
 ];
 // "설정" 그룹은 매장 세팅용 화면이라 사용자(뷰어)는 볼 필요가 없다 - "개인 지정 태그"(요청)만
 // [공휴일·이슈일]에서 분리해 "스케줄" 그룹의 "요청" 탭으로 옮겨뒀으므로, 설정 그룹을 통째로
 // 숨겨도 사용자가 본인 휴무 요청을 등록하는 기능은 그대로 유지된다.
-const VIEWER_TAB_GROUPS = TAB_GROUPS.filter((g) => g.label !== "설정");
+const VIEWER_TAB_GROUPS = TAB_GROUPS
+  .filter((g) => g.label !== "설정")
+  .map((g) => ({ ...g, tabs: g.tabs.filter((t) => !t.managerOnly) }));
 const TABS = TAB_GROUPS.flatMap((g) => g.tabs);
 
 function groupedStoreOptions(storeList) {
@@ -3673,6 +3877,7 @@ function MainApp({ role, onLogout }) {
             {tab === "employees" && <EmployeesTab data={data} setData={setData} role={role} />}
             {tab === "ptContracts" && <PtContractsTab data={data} setData={setData} role={role} />}
             {tab === "audit" && <AuditTab storeList={storeList} currentStoreId={currentStoreId} />}
+            {tab === "inquiry" && <InquiryTab storeList={storeList} currentStoreId={currentStoreId} role={role} storeName={data.settings.storeName} />}
             {tab === "tags" && <TagsTab data={data} setData={setData} role={role} />}
             {tab === "holidays" && <HolidaysTab data={data} setData={setData} role={role} />}
             {tab === "requests" && <RequestsTab data={data} setData={setData} role={role} />}
