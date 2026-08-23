@@ -1269,6 +1269,42 @@ function attendStatus2(attend, required) {
   return attend < required ? "NOT" : "OK";
 }
 
+/* ============================================================
+   근무조 색상 - 스케줄 표에서 누가 어느 조인지 한눈에 보이게
+   ============================================================ */
+// 정직원 근무조와 파트타이머 근무조를 다른 계열로 나눠서, 색만 봐도 둘이 섞이지 않게 한다.
+// 매장마다 근무조가 최대 5개씩이라 계열당 5색이면 충분하다(모자라면 순환).
+// 배경은 연하게, 글자는 진하게 - 30일 x 수십 명 격자라 진한 배경을 깔면 눈이 금방 피로해진다.
+const FT_SHIFT_COLORS = [
+  { bg: "#eaf6fe", fg: "#0369a1" }, // 하늘
+  { bg: "#e9fbef", fg: "#15803d" }, // 초록
+  { bg: "#f2effe", fg: "#6d28d9" }, // 보라
+  { bg: "#fff3e6", fg: "#c2410c" }, // 주황
+  { bg: "#fdeff6", fg: "#be185d" }, // 분홍
+];
+const PT_SHIFT_COLORS = [
+  { bg: "#e3fbf5", fg: "#0f766e" }, // 청록
+  { bg: "#f3fde6", fg: "#4d7c0f" }, // 연두
+  { bg: "#ecefff", fg: "#4338ca" }, // 남색
+  { bg: "#fef8e0", fg: "#b45309" }, // 호박
+  { bg: "#fbf1fe", fg: "#a21caf" }, // 자주
+];
+const LEAVE_COLOR = { bg: "#f8f6ff", fg: "#7c3aed" };   // 연차/반차 등
+const OTHER_TAG_COLOR = { bg: "#fafbfc", fg: "#475569" }; // 교육/지원근무/예비군 등
+
+// 코드 -> 색 지도를 매장 설정(근무형태템플릿)에서 만든다.
+// 템플릿 순서를 그대로 쓰므로 같은 매장에서는 항상 같은 색이 나온다.
+function buildShiftColorMap(ftTemplates, ptTemplates) {
+  const map = {};
+  (ftTemplates || []).map((t) => t.code).filter(Boolean).forEach((code, i) => {
+    map[code] = FT_SHIFT_COLORS[i % FT_SHIFT_COLORS.length];
+  });
+  (ptTemplates || []).map((t) => t.code).filter(Boolean).forEach((code, i) => {
+    if (!map[code]) map[code] = PT_SHIFT_COLORS[i % PT_SHIFT_COLORS.length];
+  });
+  return map;
+}
+
 function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, priorMonthCarry, filterDate, filterMode }) {
   const { employees, tags, settings } = data;
   const memoRowLabels = data.memoRowLabels || [];
@@ -1479,6 +1515,34 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
 
   const cellTextColor = (v) => (v === "휴무" ? "#2563eb" : v === "휴일" ? "#dc2626" : undefined);
 
+  // 근무조 색칠 on/off (브라우저에 기억해둬서 새로고침해도 유지)
+  const [colorOn, setColorOn] = useState(() => {
+    try { return localStorage.getItem("schedule_shift_colors") !== "off"; } catch { return true; }
+  });
+  const toggleColor = () => {
+    setColorOn((v) => {
+      const next = !v;
+      try { localStorage.setItem("schedule_shift_colors", next ? "on" : "off"); } catch { /* 저장 실패는 무시 */ }
+      return next;
+    });
+  };
+  const shiftColorMap = useMemo(
+    () => buildShiftColorMap(data.ftTemplates, data.ptTemplates),
+    [data.ftTemplates, data.ptTemplates]
+  );
+  // 셀 하나의 배경/글자색. 쉬는 날(휴무/휴일)은 일부러 흰 배경으로 남겨서,
+  // "색이 칠해져 있으면 출근 / 비어 보이면 쉬는 날"로 한눈에 구분되게 한다.
+  const cellColors = (v) => {
+    if (!colorOn || !v) return null;
+    if (v === "휴무" || v === "휴일") return null;
+    const shift = shiftColorMap[v];
+    if (shift) return shift;
+    const tag = tags.find((t) => t.code === v);
+    if (tag?.trackAsLeave) return LEAVE_COLOR;
+    if (tag) return OTHER_TAG_COLOR;
+    return null;
+  };
+
   const RemainBadge = ({ n }) => {
     if (n > 0) return <span className="text-amber-600 font-semibold">부족{n}</span>;
     if (n < 0) return <span className="text-red-600 font-semibold">초과{-n}</span>;
@@ -1494,6 +1558,10 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
         <div><span className="text-slate-500">이번달 휴무목표(토요일수):</span> <b className="text-indigo-600">{satT}</b></div>
         <div><span className="text-slate-500">이번달 휴일목표(일요일+공휴일수):</span> <b className="text-indigo-600">{sunHolT}</b></div>
         <GhostBtn onClick={addMemoRow} icon={Plus}>메모 줄 추가</GhostBtn>
+        <label className="flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer select-none">
+          <input type="checkbox" checked={colorOn} onChange={toggleColor} className="w-3.5 h-3.5 accent-indigo-600" />
+          근무조 색 구분
+        </label>
         {cellSel && (
           <div className="flex items-center gap-2 text-[11px] bg-indigo-50 border border-indigo-200 text-indigo-700 rounded-md px-2 py-1">
             <span>{selectedCellCount}칸 선택됨 - Delete 키로 지우기</span>
@@ -1661,17 +1729,19 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
                       >-</td>
                     );
                   }
+                  const cc = cellColors(v);
                   return (
                     <td
                       key={day.day}
                       onMouseDown={(ev) => beginCellSelect(e.id, i, ev.shiftKey)}
                       onMouseEnter={() => extendCellSelect(e.id, i)}
+                      style={selected || !cc ? undefined : { background: cc.bg }}
                       className={`border border-slate-200 p-0 ${selected ? "bg-indigo-100" : ""}`}
                     >
                       <select
                         value={v}
                         onChange={(ev) => setCell(e.id, i, ev.target.value)}
-                        style={{ color: cellTextColor(v) }}
+                        style={{ color: cellTextColor(v) || cc?.fg }}
                         className="w-full h-full text-[10px] text-center border-none bg-transparent focus:outline-none focus:ring-1 focus:ring-indigo-400 py-1.5 font-semibold"
                       >
                         {allCodes.map((c) => <option key={c} value={c}>{c}</option>)}
@@ -1697,17 +1767,19 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
                 {days.map((day, i) => {
                   const v = schedule[monthKey][e.id]?.[i] || "";
                   const selected = isCellSelected(e.id, i);
+                  const cc = cellColors(v);
                   return (
                     <td
                       key={day.day}
                       onMouseDown={(ev) => beginCellSelect(e.id, i, ev.shiftKey)}
                       onMouseEnter={() => extendCellSelect(e.id, i)}
+                      style={selected || !cc ? undefined : { background: cc.bg }}
                       className={`border border-slate-200 p-0 ${selected ? "bg-indigo-100" : ""}`}
                     >
                       <select
                         value={v}
                         onChange={(ev) => setCell(e.id, i, ev.target.value)}
-                        style={{ color: cellTextColor(v) }}
+                        style={{ color: cellTextColor(v) || cc?.fg }}
                         className="w-full h-full text-[10px] text-center border-none bg-transparent focus:outline-none focus:ring-1 focus:ring-indigo-400 py-1.5 font-semibold"
                       >
                         {allCodes.map((c) => <option key={c} value={c}>{c}</option>)}
