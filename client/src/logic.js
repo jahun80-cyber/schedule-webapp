@@ -1253,15 +1253,33 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
         const code = overHyuil > 0 ? "휴일" : (overHumu > 0 ? "휴무" : null);
         if (!code) continue;
 
-        // 이 코드로 쉬는 날 후보를 모아 "주말 우선 → 평일은 덜 몰린 날짜 우선(같으면 늦은 날짜 우선)"으로 정렬
+        // 이 코드로 쉬는 날 후보를 모은다. 쉬는 날 하나를 근무로 되돌리면 앞뒤 근무 블록이 이어붙어
+        // 연속근무가 길어지므로, "되돌린 뒤 연속근무가 몇 일이 되는지"를 미리 재보고
+        // 연속근무 권장 상한에 여유가 남는 자리를 먼저 쓴다(권장 이내 > 짧은 순).
+        // 그 다음에야 기존 기준(주말 우선 → 덜 몰린 날짜 → 늦은 날짜)으로 갈린다.
+        const rec = Number(e.consecRecommended) || Number(settings?.consecRecommended) || 99;
         const candidates = days
           .filter((day) => (next[key][e.id]?.[day.day - 1] || "") === code)
-          .map((day) => ({
-            day,
-            weekend: day.weekday === "토" || day.weekday === "일" ? 0 : 1,
-            usage: revertDayUsage.get(`${key}|${day.day}`) || 0,
-          }))
-          .sort((a, b) => (a.weekend - b.weekend) || (a.usage - b.usage) || (b.day.day - a.day.day));
+          .map((day) => {
+            const before = next[key][e.id][day.day - 1];
+            next[key][e.id][day.day - 1] = "";
+            const streakAfter = maxStreakOf(e.id);
+            next[key][e.id][day.day - 1] = before;
+            return {
+              day,
+              streakAfter,
+              overRec: streakAfter > rec ? 1 : 0,
+              weekend: day.weekday === "토" || day.weekday === "일" ? 0 : 1,
+              usage: revertDayUsage.get(`${key}|${day.day}`) || 0,
+            };
+          })
+          .sort((a, b) =>
+            (a.overRec - b.overRec) ||
+            (a.streakAfter - b.streakAfter) ||
+            (a.weekend - b.weekend) ||
+            (a.usage - b.usage) ||
+            (b.day.day - a.day.day)
+          );
 
         for (const { day } of candidates) {
           next[key][e.id][day.day - 1] = "";  // 근무로 (2단계 재배정이 코드를 채움)
