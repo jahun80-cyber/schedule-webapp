@@ -3108,6 +3108,8 @@ function InquiryTab({ storeList, currentStoreId, role, storeName }) {
   const [err, setErr] = useState("");
   const [scope, setScope] = useState(isAdmin ? "" : currentStoreId || "");
   const [onlyOpen, setOnlyOpen] = useState(false);
+  // 매장 화면에서는 "숨김 처리(closed)"한 문의를 기본적으로 감춘다(삭제가 아니라 감추기만 - 나중에 다시 볼 수 있음)
+  const [showHidden, setShowHidden] = useState(false);
   // 새 문의 작성
   const [category, setCategory] = useState(INQUIRY_CATEGORIES[0]);
   const [body, setBody] = useState("");
@@ -3159,12 +3161,32 @@ function InquiryTab({ storeList, currentStoreId, role, storeName }) {
     setBusy(false);
   };
 
+  // 매장이 답변 확인을 끝낸 문의를 목록에서 감춘다(내용은 그대로 남아 있어 언제든 다시 볼 수 있다)
+  const setHidden = async (id, hidden) => {
+    setBusy(true); setErr("");
+    try { await api.setInquiryHidden(id, currentStoreId || "", hidden); await load(); }
+    catch (e) { setErr(e.message || "처리하지 못했습니다."); }
+    setBusy(false);
+  };
+
+  // 삭제는 총관리자만(매장은 '숨기기'를 쓴다 - 기록을 남겨두기 위해)
+  const canDelete = () => isAdmin;
+  // 매장이 숨기고/되돌릴 수 있는 건 자기 매장의 "답변 완료" 또는 "숨김" 상태 문의뿐
+  const canToggleHide = (r) =>
+    !isAdmin && !!currentStoreId && r.store_id === currentStoreId &&
+    (r.status === "answered" || r.status === "closed");
+
   const fmt = (iso) => {
     const d = new Date(iso);
     const p2 = (n) => String(n).padStart(2, "0");
     return `${d.getFullYear()}.${p2(d.getMonth() + 1)}.${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
   };
   const openCount = rows ? rows.filter((r) => r.status === "open").length : 0;
+  const hiddenCount = rows ? rows.filter((r) => r.status === "closed").length : 0;
+  // 총관리자는 전부 보고, 매장은 숨김 항목을 "숨긴 문의 보기"를 켰을 때만 본다
+  const visibleRows = rows
+    ? rows.filter((r) => isAdmin || showHidden || r.status !== "closed")
+    : null;
 
   const placeholder =
     "예) 스케줄 4단계를 눌렀는데 '목표보다 초과해서 쉬는 인원'이 계속 남습니다. 어떻게 해야 하나요?\n\n" +
@@ -3226,21 +3248,34 @@ function InquiryTab({ storeList, currentStoreId, role, storeName }) {
                 </label>
               </>
             )}
+            {!isAdmin && hiddenCount > 0 && (
+              <label className="flex items-center gap-1 text-[11px] text-slate-500">
+                <input
+                  type="checkbox"
+                  checked={showHidden}
+                  onChange={(e) => setShowHidden(e.target.checked)}
+                  className="w-3.5 h-3.5 accent-indigo-600"
+                />
+                숨긴 문의 보기 ({hiddenCount})
+              </label>
+            )}
             <GhostBtn onClick={() => load()} icon={History}>새로고침</GhostBtn>
           </div>
         }
       >
-        {!rows ? (
+        {!visibleRows ? (
           <p className="text-xs text-slate-400">불러오는 중...</p>
-        ) : rows.length === 0 ? (
-          <p className="text-xs text-slate-400">아직 등록된 문의가 없습니다.</p>
+        ) : visibleRows.length === 0 ? (
+          <p className="text-xs text-slate-400">
+            {hiddenCount > 0 ? "표시할 문의가 없습니다. (숨긴 문의 " + hiddenCount + "건)" : "아직 등록된 문의가 없습니다."}
+          </p>
         ) : (
           <div className="space-y-3">
-            {rows.map((r) => (
-              <div key={r.id} className={`border rounded-lg p-3 ${r.status === "open" ? "border-amber-200 bg-amber-50/40" : "border-slate-200"}`}>
+            {visibleRows.map((r) => (
+              <div key={r.id} className={`border rounded-lg p-3 ${r.status === "open" ? "border-amber-200 bg-amber-50/40" : r.status === "closed" ? "border-slate-200 bg-slate-50/60" : "border-slate-200"}`}>
                 <div className="flex items-center gap-2 flex-wrap mb-1.5">
-                  <span className={`text-[10px] font-bold rounded px-1.5 py-0.5 border ${r.status === "open" ? "bg-amber-100 text-amber-700 border-amber-200" : "bg-emerald-50 text-emerald-700 border-emerald-200"}`}>
-                    {r.status === "open" ? "답변 대기" : "답변 완료"}
+                  <span className={`text-[10px] font-bold rounded px-1.5 py-0.5 border ${r.status === "open" ? "bg-amber-100 text-amber-700 border-amber-200" : r.status === "closed" ? "bg-slate-100 text-slate-500 border-slate-200" : "bg-emerald-50 text-emerald-700 border-emerald-200"}`}>
+                    {r.status === "open" ? "답변 대기" : r.status === "closed" ? "숨김" : "답변 완료"}
                   </span>
                   {r.category && <span className="text-[10px] text-slate-500 border border-slate-200 rounded px-1.5 py-0.5">{r.category}</span>}
                   {isAdmin && (
@@ -3249,7 +3284,7 @@ function InquiryTab({ storeList, currentStoreId, role, storeName }) {
                     </span>
                   )}
                   <span className="text-[11px] text-slate-400 ml-auto">{fmt(r.created_at)}</span>
-                  {isAdmin && (
+                  {canDelete() && (
                     <button onClick={() => removeInquiry(r.id)} className="text-slate-300 hover:text-red-500" title="삭제">
                       <Trash2 size={13} />
                     </button>
@@ -3262,6 +3297,16 @@ function InquiryTab({ storeList, currentStoreId, role, storeName }) {
                     <div className="text-[10px] font-bold text-indigo-700 mb-1">답변 {r.answered_at ? `· ${fmt(r.answered_at)}` : ""}</div>
                     <p className="text-sm whitespace-pre-wrap text-slate-700">{r.answer}</p>
                   </div>
+                )}
+
+                {canToggleHide(r) && (
+                  <button
+                    onClick={() => setHidden(r.id, r.status !== "closed")}
+                    className="mt-2 text-[11px] text-slate-400 hover:text-slate-700 font-semibold"
+                    title="목록에서만 감춥니다. 내용은 지워지지 않고 '숨긴 문의 보기'로 언제든 다시 볼 수 있습니다."
+                  >
+                    {r.status === "closed" ? "다시 표시" : "숨기기"}
+                  </button>
                 )}
 
                 {isAdmin && (

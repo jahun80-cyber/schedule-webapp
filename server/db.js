@@ -326,6 +326,17 @@ async function answerInquiry(id, { answer, status }) {
   return data.length > 0;
 }
 
+// 삭제 권한을 확인하려면 그 문의가 어느 매장 것인지 먼저 알아야 한다
+async function getInquiry(id) {
+  const { data, error } = await supabase
+    .from("inquiries")
+    .select("id,store_id,status")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw error;
+  return data || null;
+}
+
 async function deleteInquiry(id) {
   const { error } = await supabase.from("inquiries").delete().eq("id", id);
   if (error) throw error;
@@ -352,5 +363,6 @@ module.exports = {
   listInquiries,
   countOpenInquiries,
   answerInquiry,
+  getInquiry,
   deleteInquiry,
 };

@@ -248,19 +248,62 @@ async function handleApi(req, res, pathname, method) {
     }
 
     const inqMatch = pathname.match(/^\/api\/inquiries\/(\d+)$/);
-    if (inqMatch && (method === "PUT" || method === "DELETE")) {
+    if (inqMatch && method === "DELETE") {
+      // 삭제는 총관리자 전용. 매장은 삭제 대신 "숨기기"(status=closed)를 쓴다 -
+      // 나중에 다시 찾아볼 수 있어야 하므로 내용을 지우지 않는다.
       const auth = checkAuth(req, "admin");
       if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
       const id = Number(inqMatch[1]);
-      if (method === "DELETE") {
-        await db.deleteInquiry(id);
-        await db.writeAudit({ role: auth.role, action: "inquiry.delete", detail: `문의 삭제 (#${id})`, ip: getClientIp(req), coalesce: false });
+      const inq = await db.getInquiry(id);
+      if (!inq) return sendJson(res, 404, { error: "문의를 찾을 수 없습니다." });
+      await db.deleteInquiry(id);
+      await db.writeAudit({
+        storeId: inq.store_id, role: auth.role, action: "inquiry.delete",
+        detail: `문의 삭제 (#${id})`, ip: getClientIp(req), coalesce: false,
+      });
+      return sendJson(res, 200, { ok: true });
+    }
+
+    if (inqMatch && method === "PUT") {
+      // 총관리자: 답변 작성/수정 + 상태 변경 모두 가능
+      // 매장관리자: 자기 매장 글의 "숨기기(closed) / 다시 표시(answered)"만 가능 (답변은 못 씀)
+      const auth = checkAuth(req, "manager");
+      if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
+      const id = Number(inqMatch[1]);
+      const body = await readBody(req);
+      const inq = await db.getInquiry(id);
+      if (!inq) return sendJson(res, 404, { error: "문의를 찾을 수 없습니다." });
+
+      if (auth.role !== "admin") {
+        const claimed = String(body.storeId || "");
+        if (!claimed || !inq.store_id || inq.store_id !== claimed) {
+          return sendJson(res, 403, { error: "다른 매장의 문의는 변경할 수 없습니다." });
+        }
+        if (body.answer !== undefined) {
+          return sendJson(res, 403, { error: "답변은 총관리자만 등록할 수 있습니다." });
+        }
+        if (body.status !== "closed" && body.status !== "answered") {
+          return sendJson(res, 400, { error: "숨기기/다시 표시만 가능합니다." });
+        }
+        // 아직 답변이 달리지 않은 문의는 숨길 수 없다(답변을 못 받고 묻히는 걸 막기 위해)
+        if (body.status === "closed" && inq.status === "open") {
+          return sendJson(res, 400, { error: "아직 답변되지 않은 문의는 숨길 수 없습니다." });
+        }
+        await db.answerInquiry(id, { status: body.status });
+        await db.writeAudit({
+          storeId: inq.store_id, role: auth.role, action: "inquiry.hide",
+          detail: `문의 ${body.status === "closed" ? "숨김" : "다시 표시"} (#${id})`,
+          ip: getClientIp(req), coalesce: false,
+        });
         return sendJson(res, 200, { ok: true });
       }
-      const body = await readBody(req);
+
       const found = await db.answerInquiry(id, { answer: body.answer, status: body.status });
       if (!found) return sendJson(res, 404, { error: "문의를 찾을 수 없습니다." });
-      await db.writeAudit({ role: auth.role, action: "inquiry.answer", detail: `문의 답변 (#${id})`, ip: getClientIp(req), coalesce: false });
+      await db.writeAudit({
+        storeId: inq.store_id, role: auth.role, action: "inquiry.answer",
+        detail: `문의 답변 (#${id})`, ip: getClientIp(req), coalesce: false,
+      });
       return sendJson(res, 200, { ok: true });
     }
 

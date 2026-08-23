@@ -61,6 +61,11 @@ export const api = {
     apiFetch("/api/inquiries", { method: "POST", body: JSON.stringify(payload) }),
   answerInquiry: (id, payload) =>
     apiFetch(`/api/inquiries/${id}`, { method: "PUT", body: JSON.stringify(payload) }),
+  setInquiryHidden: (id, storeId, hidden) =>
+    apiFetch(`/api/inquiries/${id}`, {
+      method: "PUT",
+      body: JSON.stringify({ storeId, status: hidden ? "closed" : "answered" }),
+    }),
   deleteInquiry: (id) => apiFetch(`/api/inquiries/${id}`, { method: "DELETE" }),
   listAudit: (storeId = "", limit = 200) =>
     apiFetch(`/api/audit?storeId=${encodeURIComponent(storeId)}&limit=${limit}`),
