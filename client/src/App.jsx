@@ -687,7 +687,7 @@ function PtContractsTab({ data, setData, role }) {
 /* ============================================================
    태그목록 탭
    ============================================================ */
-function TagsTab({ data, setData, role }) {
+function TagsTab({ data, setData, role, storeList, currentStoreId }) {
   const locked = role !== "admin"; // 태그목록은 총관리자만 수정 가능
   const tags = data.tags;
 
@@ -728,11 +728,75 @@ function TagsTab({ data, setData, role }) {
   };
   const onDragEnd = () => { dragIndex.current = null; setOverIndex(null); };
 
+  /* ---------- 전체 매장에 태그목록 동일 적용 (총관리자 전용) ----------
+     태그목록은 원래 모든 매장이 같은 기준을 쓰도록 되어 있는데, 매장마다 따로 저장되기 때문에
+     여기서 한 번에 맞춰준다. 각 매장의 "태그목록"만 덮어쓰고 나머지 설정은 건드리지 않는다. */
+  const [syncBusy, setSyncBusy] = useState(false);
+  const [syncMsg, setSyncMsg] = useState("");
+  const [syncProgress, setSyncProgress] = useState({ done: 0, total: 0 });
+  const syncTagsToAllStores = async () => {
+    const others = (storeList || []).filter((s) => s.id !== currentStoreId);
+    if (others.length === 0) { setSyncMsg("적용할 다른 매장이 없습니다."); return; }
+    if (!window.confirm(
+      `이 매장의 태그목록을 나머지 ${others.length}개 매장에도 그대로 적용할까요?\n\n` +
+      `각 매장의 태그목록만 덮어쓰고 설정·직원목록·스케줄은 건드리지 않습니다.\n` +
+      `다만 지금 목록에서 지운 태그를 이미 쓰고 있던 매장이 있으면, 그 매장 스케줄에 남아 있는 해당 코드는 ` +
+      `목록에 없는 값이 되어 화면에서 "선택 안 됨"으로 보일 수 있습니다.`
+    )) return;
+    setSyncBusy(true);
+    setSyncMsg("");
+    setSyncProgress({ done: 0, total: others.length });
+    let ok = 0;
+    const failed = [];
+    try {
+      for (const st of others) {
+        try {
+          const cfg = await api.getConfig(st.id);
+          await api.putConfig(st.id, { ...cfg, tags });
+          ok++;
+        } catch (e) {
+          failed.push(st.name);
+        }
+        setSyncProgress((p) => ({ ...p, done: p.done + 1 }));
+      }
+      setSyncMsg(
+        `완료: ${ok}개 매장에 적용했습니다.` +
+        (failed.length > 0 ? ` 실패 ${failed.length}개 - ${failed.join(", ")}` : "")
+      );
+    } finally {
+      setSyncBusy(false);
+    }
+  };
+
   return (
     <div className="max-w-5xl">
       {locked && <ReadOnlyNotice>태그목록은 총관리자만 수정할 수 있습니다. 변경이 필요하면 총관리자에게 요청하세요.</ReadOnlyNotice>}
       <ReadOnlyFence locked={locked}>
-      <SectionCard title="태그목록" icon={Tag} right={<GhostBtn onClick={add} icon={Plus}>태그 추가</GhostBtn>}>
+      <SectionCard
+        title="태그목록"
+        icon={Tag}
+        right={
+          <div className="flex items-center gap-2">
+            {!locked && (
+              <GhostBtn onClick={syncTagsToAllStores} icon={FolderCog}>
+                {syncBusy ? `적용 중... (${syncProgress.done}/${syncProgress.total})` : "전체 매장에 동일 적용"}
+              </GhostBtn>
+            )}
+            <GhostBtn onClick={add} icon={Plus}>태그 추가</GhostBtn>
+          </div>
+        }
+      >
+        {syncBusy && (
+          <div className="flex items-center gap-2 text-xs text-slate-500 mb-3">
+            <Loader2 className="animate-spin text-indigo-500" size={14} />
+            전체 매장에 적용하는 중입니다. 창을 닫지 마세요. ({syncProgress.done}/{syncProgress.total})
+          </div>
+        )}
+        {syncMsg && (
+          <div className={`text-xs rounded-md px-3 py-2 mb-3 border ${syncMsg.includes("실패") ? "bg-amber-50 border-amber-200 text-amber-800" : "bg-emerald-50 border-emerald-200 text-emerald-800"}`}>
+            {syncMsg}
+          </div>
+        )}
         <p className="text-xs text-slate-500 mb-3">
           "매장출근카운트"를 끄면(아니오) 그 태그가 입력된 사람은 자동으로 출근인원 계산에서 제외됩니다.
           왼쪽 ⠿ 를 눌러서 드래그하면 순서를 바꿀 수 있습니다.
@@ -3929,7 +3993,7 @@ function MainApp({ role, onLogout }) {
             {tab === "ptContracts" && <PtContractsTab data={data} setData={setData} role={role} />}
             {tab === "audit" && <AuditTab storeList={storeList} currentStoreId={currentStoreId} />}
             {tab === "inquiry" && <InquiryTab storeList={storeList} currentStoreId={currentStoreId} role={role} storeName={data.settings.storeName} />}
-            {tab === "tags" && <TagsTab data={data} setData={setData} role={role} />}
+            {tab === "tags" && <TagsTab data={data} setData={setData} role={role} storeList={storeList} currentStoreId={currentStoreId} />}
             {tab === "holidays" && <HolidaysTab data={data} setData={setData} role={role} />}
             {tab === "requests" && <RequestsTab data={data} setData={setData} role={role} />}
             {tab === "templates" && <ShiftTemplatesTab data={data} setData={setData} role={role} />}
