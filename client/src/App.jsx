@@ -902,7 +902,18 @@ function TagsTab({ data, setData, role, storeList, currentStoreId }) {
                   />
                 </td>
                 <td className="py-1.5 pr-2">
-                  {t.trackAsLeave ? <TextInput value={t.leavePool || "연차"} onChange={(v) => update(t.id, { leavePool: v })} className="w-28" placeholder="예: 리프레시/안식휴가" /> : <span className="text-[11px] text-slate-300">-</span>}
+                  {t.trackAsLeave ? (
+                    <div className="flex items-center gap-1">
+                      <TextInput value={t.leavePool || "연차"} onChange={(v) => update(t.id, { leavePool: v })} className="w-28" placeholder="예: 리프레시/안식휴가" />
+                      {(t.extraDeductions || []).length === 0 && (
+                        <button
+                          onClick={() => addExtra(t)}
+                          className="text-[10px] text-violet-600 hover:text-violet-800 font-bold whitespace-nowrap"
+                          title="이 태그를 한 번 쓸 때 다른 휴가에서도 같이 차감되게 하려면 누르세요 (예: 오전 시차 + 오후 반차)"
+                        >＋조합</button>
+                      )}
+                    </div>
+                  ) : <span className="text-[11px] text-slate-300">-</span>}
                 </td>
                 <td className="py-1.5 pr-2">
                   {t.trackAsLeave ? <NumberInput value={t.leaveHours ?? ""} onChange={(v) => update(t.id, { leaveHours: v })} className="w-16" /> : <span className="text-[11px] text-slate-300">-</span>}
@@ -927,7 +938,7 @@ function TagsTab({ data, setData, role, storeList, currentStoreId }) {
                 <td className="py-1.5 pr-2"><TextInput value={t.desc} onChange={(v) => update(t.id, { desc: v })} className="w-40" /></td>
                 <td><IconBtn onClick={() => remove(t.id)} title="삭제" danger /></td>
               </tr>
-              {t.trackAsLeave && (
+              {t.trackAsLeave && (t.extraDeductions || []).length > 0 && (
                 <tr className="border-b border-slate-100 bg-violet-50/40">
                   <td colSpan={13} className="py-2 px-2">
                     <div className="flex items-start gap-3 flex-wrap text-xs">
