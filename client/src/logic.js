@@ -567,14 +567,18 @@ function applyFixedRestSchedules(schedule, employees, fixedRestSchedules, dayPai
     candidates.sort((a, b) => (priorityOf[a.empId] ?? 999) - (priorityOf[b.empId] ?? 999));
 
     // 그날 이미 확정된 출근 인원수 계산 (빈칸은 아직 미정이므로 출근 가능 인원으로 봄)
-    let alreadyOff = 0, blankCount = 0;
+    // 계약기간 밖이거나 아직 "1인분"으로 세지 않는 인원은 그날 출근 가능 인원이 아니다.
+    // 예전에는 전체 정직원 수를 그대로 써서, 계약이 끝난 인원까지 나올 수 있는 것으로 세고
+    // 여유를 실제보다 많게 봤다. 그래서 고정휴무를 한 명 더 넣어 최소 출근인원이 깨졌다.
+    let alreadyOff = 0, blankCount = 0, totalFT = 0;
     ftEmps.forEach((e) => {
+      if (!isUnderContractOn(e, day.dateStr) || !isCountedOn(e, day.dateStr)) return;
+      totalFT++;
       const v = next[key][e.id]?.[day.day - 1] || "";
       if (v === "") blankCount++;
       else if (isOffTag(tags || [], v)) alreadyOff++;
     });
     const required = requiredFT(settings, day);
-    const totalFT = ftEmps.length;
     // 지금 상태에서 최대로 더 쉴 수 있는 인원 = 전체 - 필요인원 - 이미 쉬는 인원
     let slots = totalFT - required - alreadyOff;
     if (slots < 0) slots = 0;

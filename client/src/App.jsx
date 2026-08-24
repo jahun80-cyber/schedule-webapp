@@ -262,6 +262,8 @@ function SettingsTab({ data, setData, role }) {
   const locked = role === "viewer";
   const s = data.settings;
   const update = (patch) => setData((d) => ({ ...d, settings: { ...d.settings, ...patch } }));
+  // 리더 최소인원이 리더 수와 같거나 많으면 리더는 영원히 쉴 수 없다(자동배정이 그 자리를 못 비운다).
+  const leaderCount = (data.employees || []).filter((e) => e.type === "정직원" && isActiveEmployee(e) && e.role === "리더").length;
 
 
   const updateDow = (wd, val) => setData((d) => ({ ...d, settings: { ...d.settings, dow: { ...d.settings.dow, [wd]: val } } }));
@@ -303,6 +305,12 @@ function SettingsTab({ data, setData, role }) {
         {s.leaderMinEnabled && (
           <p className="text-[11px] text-slate-400 mt-2">
             [직원목록]에서 "리더"로 지정한 정직원이 매일 이 인원수 이상 출근하도록 자동배정이 반영합니다. 리더가 아닌 인원은 영향 없습니다.
+          </p>
+        )}
+        {s.leaderMinEnabled && leaderCount <= Math.max(Number(s.weekdayMinLeader) || 0, Number(s.weekendMinLeader) || 0) && (
+          <p className="text-[11px] text-red-600 font-semibold mt-2">
+            리더가 {leaderCount}명인데 최소 리더 인원이 {Math.max(Number(s.weekdayMinLeader) || 0, Number(s.weekendMinLeader) || 0)}명입니다 —
+            이 상태로는 리더가 쉴 수 없어 계속 근무하게 됩니다. 리더를 늘리거나 최소 인원을 줄여주세요.
           </p>
         )}
       </SectionCard>
