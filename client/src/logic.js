@@ -206,6 +206,12 @@ function isCountedOn(emp, dateStr) {
 // 이 직원의 이번 1·2개월차 휴무/휴일 목표. emp.restTargetM1/M2에 값이 있으면 그걸 그대로 쓰고
 // (인턴처럼 계약기간이 있는 인원을 수기로 지정할 때 사용), 없으면 기존처럼 매장 공통 계산식을 쓴다.
 function restTargetFor(emp, key, days) {
+  // 계약기간이 이 달과 전혀 겹치지 않으면 목표가 없다.
+  // (예: 9/18에 계약이 끝난 인원에게 10월 휴무 목표가 그대로 잡혀서, 배정할 수 있는 날이
+  //  하루도 없는데도 화면에 "잔여 휴일 7일"처럼 부족한 것으로 표시되던 문제)
+  if (emp && Array.isArray(days) && days.length > 0 && !days.some((d) => isUnderContractOn(emp, d.dateStr))) {
+    return { humu: 0, hyuil: 0 };
+  }
   const override = key === "m1" ? emp?.restTargetM1 : key === "m2" ? emp?.restTargetM2 : null;
   const humu = override && override.humu !== "" && override.humu != null ? Number(override.humu) : satTarget(days);
   const hyuil = override && override.hyuil !== "" && override.hyuil != null ? Number(override.hyuil) : sunHolTarget(days);

@@ -1623,6 +1623,9 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
     ftList.forEach((e) => {
       // 자동배정 대상이 아닌 인원(지원/스위칭 등)은 목표 자체가 없으므로 잔여를 계산하지 않음
       if (!isAutoAssignable(e)) return;
+      // 이 달에 계약기간이 하루도 걸치지 않으면(예: 지난달에 계약이 끝난 인원) 배정할 수 있는
+      // 날이 없으므로 잔여도 없다. 안 그러면 채울 방법이 없는 "부족"이 계속 표시된다.
+      if (!days.some((d) => isUnderContractOn(e, d.dateStr))) return;
       let humu = 0, hyuil = 0;
       (schedule[monthKey][e.id] || []).forEach((v) => { if (v === "휴무") humu++; if (v === "휴일") hyuil++; });
       const carry = priorMonthCarry?.[e.id] || { humu: 0, hyuil: 0 };
