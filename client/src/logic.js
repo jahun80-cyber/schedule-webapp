@@ -20,6 +20,12 @@ const DEFAULT_TAGS = [
   { id: "tag_default_16", code: "PT입사", category: "확정근무", countsAsAttend: true, restType: "해당없음", desc: "신규 PT 입사/교육" },
   { id: "tag_default_17", code: "민방위", category: "확정휴무", countsAsAttend: false, restType: "해당없음", desc: "민방위 훈련" },
   { id: "tag_default_18", code: "RQ", category: "확정휴무", countsAsAttend: false, restType: "해당없음", desc: "개인 요청 휴무" },
+  // 시차/공가 - 쓸 때마다 발생량이 쌓이는 휴가라 [연차현황]의 발생 장부로 관리한다(usesLedger).
+  // 공가는 사유별로 구분해서 관리하려면 이 태그를 복사해 "공가(예비군)", "공가(건강검진)"처럼 나누면 된다.
+  { id: "tag_default_19", code: "시차", category: "확정휴무", countsAsAttend: false, restType: "해당없음", desc: "초과근무로 발생한 시차 사용(하루)", trackAsLeave: true, leaveHours: 8, leavePool: "시차", usesLedger: true },
+  { id: "tag_default_20", code: "시차(오전)", category: "조정", countsAsAttend: false, restType: "해당없음", desc: "오전 시차 사용", trackAsLeave: true, leaveHours: 4, leavePool: "시차", usesLedger: true, countsAsShift: "B" },
+  { id: "tag_default_21", code: "시차(오후)", category: "조정", countsAsAttend: false, restType: "해당없음", desc: "오후 시차 사용", trackAsLeave: true, leaveHours: 4, leavePool: "시차", usesLedger: true, countsAsShift: "A" },
+  { id: "tag_default_22", code: "공가", category: "확정휴무", countsAsAttend: false, restType: "해당없음", desc: "예비군·건강검진 등 공가 사용(하루)", trackAsLeave: true, leaveHours: 8, leavePool: "공가", usesLedger: true },
 ];
 
 const DEFAULT_EMPLOYEES = [
@@ -1917,8 +1923,74 @@ function validateCombined(schedule, employees, tags, settings, monthsMeta, fixed
    현재 진행중인 스케줄(1·2개월차)과 저장된 월별기록(archive)을 합쳐서
    그 해(year) 동안 각 직원이 어떤 태그를 언제 썼는지 자동 집계
    ============================================================ */
+// 태그 하나가 어떤 휴가에서 몇 시간을 차감하는지. 여러 개일 수 있다.
+// 예) "시차(오전)+반차(오후)" 태그 하나로 시차 4시간 + 연차 4시간을 각각 차감한다.
+// 예전 태그는 leavePool/leaveHours 한 쌍만 갖고 있으므로, 그 경우 한 건짜리 목록으로 바꿔서 돌려준다
+// (기존 데이터는 손대지 않아도 그대로 동작한다).
+function tagDeductions(tag) {
+  if (!tag) return [];
+  const out = [];
+  // 기본 차감 - 기존 필드(연차추적/연차종류/시간)를 그대로 쓴다. 여기가 항상 원본이라 어긋날 일이 없다.
+  if (tag.trackAsLeave) {
+    const hours = Number(tag.leaveHours) || 0;
+    if (hours > 0) out.push({ pool: tag.leavePool || "연차", hours });
+  }
+  // 추가 차감 - 조합 태그에서 두 번째 이후 차감(예: 시차 4시간)을 여기에 담는다
+  (tag.extraDeductions || []).forEach((d) => {
+    if (d && d.pool && Number(d.hours) > 0) out.push({ pool: String(d.pool), hours: Number(d.hours) });
+  });
+  return out;
+}
+
+// 사용량 집계 대상이 되는 태그인지(차감 항목이 하나라도 있으면 대상)
+function isTrackedTag(tag) {
+  return tagDeductions(tag).length > 0;
+}
+
+
+/* ============================================================
+   발생·사용 장부 (시차, 공가처럼 이벤트마다 쌓이는 휴가)
+   ------------------------------------------------------------
+   연차는 "연 1회 보유량을 수기로 입력"하는 방식이라 [연차현황]의 annualLeaveGrants를 쓰지만,
+   시차는 초과근무할 때마다, 공가는 예비군/건강검진 같은 사유가 생길 때마다 발생량이 계속 쌓인다.
+   그래서 발생 건을 한 줄씩 기록해두고(accrualLedger) 그 합계를 보유량으로 쓴다.
+   accrualLedger 한 줄: { id, empId, pool, date, hours, reason }
+   ============================================================ */
+function computeAccrued(year, accrualLedger) {
+  // empId -> pool -> { totalHours, entries: [...] }
+  const result = {};
+  const yearPrefix = String(year) + "-";
+  (accrualLedger || []).forEach((row) => {
+    if (!row || !row.empId || !row.pool || !row.date) return;
+    if (!String(row.date).startsWith(yearPrefix)) return;
+    const hours = Number(row.hours) || 0;
+    if (hours === 0) return;
+    if (!result[row.empId]) result[row.empId] = {};
+    if (!result[row.empId][row.pool]) result[row.empId][row.pool] = { totalHours: 0, entries: [] };
+    const e = result[row.empId][row.pool];
+    e.totalHours += hours;
+    e.entries.push({ id: row.id, date: row.date, hours, reason: row.reason || "" });
+  });
+  Object.values(result).forEach((byPool) =>
+    Object.values(byPool).forEach((e) => e.entries.sort((a, b) => String(a.date).localeCompare(String(b.date))))
+  );
+  return result;
+}
+
+// 이 휴가 종류가 "발생 장부로 관리하는 것"인지. 태그에 usesLedger를 켜두면 그렇게 본다.
+// (연차처럼 보유량을 수기 입력하는 것과 구분하기 위한 표시)
+function ledgerPoolsOf(tags) {
+  const pools = [];
+  (tags || []).forEach((t) => {
+    if (!t.usesLedger) return;
+    tagDeductions(t).forEach(({ pool }) => { if (!pools.includes(pool)) pools.push(pool); });
+    if (t.leavePool && !pools.includes(t.leavePool)) pools.push(t.leavePool);
+  });
+  return pools;
+}
+
 function computeLeaveUsage(year, tags, archive) {
-  const leaveTags = tags.filter((t) => t.trackAsLeave);
+  const leaveTags = (tags || []).filter(isTrackedTag);
   const leaveTagCodes = new Set(leaveTags.map((t) => t.code));
 
   // 오직 [월별기록]에 "저장"된 데이터만 기준으로 계산 (진행중인 스케줄을 지우거나 수정해도 영향받지 않음)
@@ -1940,13 +2012,15 @@ function computeLeaveUsage(year, tags, archive) {
         const v = arr[i];
         if (!v || !leaveTagCodes.has(v)) return;
         const tag = leaveTags.find((t) => t.code === v);
-        const pool = tag.leavePool || "연차";
-        if (!result[e.id]) result[e.id] = { name: e.name, byPool: {} };
-        if (!result[e.id].byPool[pool]) result[e.id].byPool[pool] = { totalHours: 0, byTag: {} };
-        const poolEntry = result[e.id].byPool[pool];
-        if (!poolEntry.byTag[v]) poolEntry.byTag[v] = { hours: Number(tag.leaveHours) || 0, dates: [] };
-        poolEntry.byTag[v].dates.push(day.dateStr);
-        poolEntry.totalHours += Number(tag.leaveHours) || 0;
+        // 한 칸이 여러 휴가에서 동시에 차감될 수 있으므로 차감 목록을 모두 반영한다
+        tagDeductions(tag).forEach(({ pool, hours }) => {
+          if (!result[e.id]) result[e.id] = { name: e.name, byPool: {} };
+          if (!result[e.id].byPool[pool]) result[e.id].byPool[pool] = { totalHours: 0, byTag: {} };
+          const poolEntry = result[e.id].byPool[pool];
+          if (!poolEntry.byTag[v]) poolEntry.byTag[v] = { hours, dates: [] };
+          poolEntry.byTag[v].dates.push(day.dateStr);
+          poolEntry.totalHours += hours;
+        });
       });
     });
   });
@@ -1972,5 +2046,5 @@ export {
   buildRequestedRestSet,
   isOffTag, shiftCodeOf, dowBucket, nextMonth, emptySchedule, isWeekendBucket, isExtendedHoursDay, isActiveEmployee, pickThresholdIndex, isAutoAssignable,
   restModeOf, isRotationEmployee, isUnderContractOn, isCountedOn, restTargetFor, fixedRestLimitOf,
-  computeLeaveUsage,
+  computeLeaveUsage, tagDeductions, isTrackedTag, computeAccrued, ledgerPoolsOf,
 };

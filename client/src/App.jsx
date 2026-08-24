@@ -16,6 +16,7 @@ import {
   validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT, requiredLeaderFT,
   isOffTag, dowBucket, nextMonth, emptySchedule, reconcileSchedule, isActiveEmployee, isAutoAssignable, computeLeaveUsage,
   isUnderContractOn, isCountedOn, restTargetFor,
+  tagDeductions, computeAccrued, ledgerPoolsOf,
 } from "./logic";
 import {
   saveDirHandle, loadDirHandle, clearDirHandle, isFileSystemAccessSupported, ensurePermission,
@@ -739,6 +740,15 @@ function TagsTab({ data, setData, role, storeList, currentStoreId }) {
     tags: [...d.tags, { id: `tag_${Date.now()}`, code: "새태그" + (d.tags.length + 1), category: "확정휴무", countsAsAttend: false, restType: "해당없음", desc: "" }],
   }));
 
+  // 추가 차감 항목 편집 (조합 태그용)
+  const updExtra = (t, idx, patch) => {
+    const arr = [...(t.extraDeductions || [])];
+    arr[idx] = { ...arr[idx], ...patch };
+    update(t.id, { extraDeductions: arr });
+  };
+  const addExtra = (t) => update(t.id, { extraDeductions: [...(t.extraDeductions || []), { pool: "", hours: "" }] });
+  const rmExtra = (t, idx) => update(t.id, { extraDeductions: (t.extraDeductions || []).filter((_, i) => i !== idx) });
+
   const dragIndex = useRef(null);
   const [overIndex, setOverIndex] = useState(null);
 
@@ -850,8 +860,8 @@ function TagsTab({ data, setData, role, storeList, currentStoreId }) {
           </thead>
           <tbody>
             {tags.map((t, i) => (
+              <React.Fragment key={t.id || t.code}>
               <tr
-                key={t.id || t.code}
                 onDragOver={(e) => onDragOver(e, i)}
                 onDrop={() => onDrop(i)}
                 className={`border-b border-slate-100 ${overIndex === i ? "bg-indigo-50" : ""}`}
@@ -907,6 +917,61 @@ function TagsTab({ data, setData, role, storeList, currentStoreId }) {
                 <td className="py-1.5 pr-2"><TextInput value={t.desc} onChange={(v) => update(t.id, { desc: v })} className="w-40" /></td>
                 <td><IconBtn onClick={() => remove(t.id)} title="삭제" danger /></td>
               </tr>
+              {t.trackAsLeave && (
+                <tr className="border-b border-slate-100 bg-violet-50/40">
+                  <td colSpan={12} className="py-2 px-2">
+                    <div className="flex items-start gap-3 flex-wrap text-xs">
+                      <div className="flex items-center gap-1.5 pt-1">
+                        <span className="font-semibold text-violet-700 whitespace-nowrap">추가 차감</span>
+                        <span className="text-[10px] text-slate-400">한 번 쓸 때 다른 휴가에서도 같이 차감되면 여기에 추가</span>
+                      </div>
+                      <div className="flex flex-col gap-1.5">
+                        {(t.extraDeductions || []).map((d, di) => (
+                          <div key={di} className="flex items-center gap-1.5">
+                            <TextInput
+                              value={d.pool || ""}
+                              onChange={(v) => updExtra(t, di, { pool: v })}
+                              className="w-32" placeholder="예: 시차 / 공가(예비군)"
+                            />
+                            <NumberInput
+                              value={d.hours ?? ""}
+                              onChange={(v) => updExtra(t, di, { hours: v })}
+                              className="w-16"
+                            />
+                            <span className="text-[11px] text-slate-400">시간</span>
+                            <button onClick={() => rmExtra(t, di)} className="text-slate-300 hover:text-red-500" title="삭제">
+                              <Trash2 size={13} />
+                            </button>
+                          </div>
+                        ))}
+                        <div className="flex items-center gap-2">
+                          <button onClick={() => addExtra(t)} className="text-[11px] text-violet-700 hover:text-violet-900 font-semibold">
+                            + 차감 항목 추가
+                          </button>
+                          <label className="flex items-center gap-1 text-[11px] text-slate-500">
+                            <input
+                              type="checkbox" checked={!!t.usesLedger}
+                              onChange={(ev) => update(t.id, { usesLedger: ev.target.checked })}
+                              className="w-3.5 h-3.5 accent-violet-600"
+                            />
+                            발생 장부로 관리 (시차·공가처럼 쓸 때마다 쌓이는 휴가)
+                          </label>
+                        </div>
+                      </div>
+                      <div className="text-[10px] text-slate-500 pt-1 leading-relaxed">
+                        이 태그를 하루 쓰면: {tagDeductions(t).length === 0
+                          ? <span className="text-slate-400">차감 없음</span>
+                          : tagDeductions(t).map((d, i) => (
+                              <span key={i} className="inline-block ml-1 bg-white border border-violet-200 rounded px-1.5 py-0.5 font-semibold text-violet-700">
+                                {d.pool} {d.hours}H
+                              </span>
+                            ))}
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              )}
+              </React.Fragment>
             ))}
           </tbody>
         </table>
@@ -2382,13 +2447,37 @@ function LeaveTab({ data, setData, archive, role }) {
     [year, data.tags, archive]
   );
 
-  const leaveTags = data.tags.filter((t) => t.trackAsLeave);
-  // 연차추적 태그들을 "연차종류"별로 묶기 (등장 순서 유지)
-  const pools = [];
+  const leaveTags = data.tags.filter((t) => tagDeductions(t).length > 0);
+  // 태그들이 차감하는 "휴가 종류"를 전부 모은다(조합 태그의 추가 차감 대상까지 포함, 등장 순서 유지)
+  const allPools = [];
   leaveTags.forEach((t) => {
-    const poolName = t.leavePool || "연차";
-    if (!pools.includes(poolName)) pools.push(poolName);
+    tagDeductions(t).forEach(({ pool }) => { if (!allPools.includes(pool)) allPools.push(pool); });
   });
+  // 발생 장부로 관리하는 휴가(시차·공가 등)와, 보유량을 수기 입력하는 휴가(연차 등)를 나눈다
+  const ledgerPools = ledgerPoolsOf(data.tags).filter((x) => allPools.includes(x));
+  const pools = allPools.filter((x) => !ledgerPools.includes(x));
+
+  const accrued = useMemo(
+    () => computeAccrued(year, data.accrualLedger || []),
+    [year, data.accrualLedger]
+  );
+
+  // 발생 장부 편집 (시차: 초과근무 발생 / 공가: 예비군·건강검진 등)
+  const addAccrual = (pool) => setData((d) => ({
+    ...d,
+    accrualLedger: [...(d.accrualLedger || []), {
+      id: "acc_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
+      empId: "", pool, date: "", hours: "", reason: "",
+    }],
+  }));
+  const updAccrual = (id, patch) => setData((d) => ({
+    ...d,
+    accrualLedger: (d.accrualLedger || []).map((r) => (r.id === id ? { ...r, ...patch } : r)),
+  }));
+  const rmAccrual = (id) => setData((d) => ({
+    ...d,
+    accrualLedger: (d.accrualLedger || []).filter((r) => r.id !== id),
+  }));
 
   const grantsByYear = (data.annualLeaveGrants && data.annualLeaveGrants[year]) || {}; // { poolName: { empId: 일수 } }
 
@@ -2433,8 +2522,90 @@ function LeaveTab({ data, setData, archive, role }) {
 
       {locked && <ReadOnlyNotice>연차 보유량 입력은 매장관리자 이상만 할 수 있습니다.</ReadOnlyNotice>}
       <ReadOnlyFence locked={locked}>
+      {ledgerPools.map((poolName) => {
+        const rows = (data.accrualLedger || []).filter((r) => r.pool === poolName && String(r.date || "").startsWith(String(year)));
+        return (
+          <SectionCard
+            key={"ledger-" + poolName}
+            title={`${year}년 "${poolName}" 발생·사용 현황`}
+            icon={History}
+            right={!locked && <GhostBtn onClick={() => addAccrual(poolName)} icon={Plus}>발생 등록</GhostBtn>}
+          >
+            <p className="text-xs text-slate-500 mb-3">
+              쓸 때마다 쌓이는 휴가입니다. 발생한 건을 아래에 한 줄씩 등록해두면, 그 합계에서 실제 사용분을 뺀 잔여가 계산됩니다.
+              사용분은 [월별기록]에 저장된 스케줄에서 자동으로 집계됩니다. 시간은 0.5 단위(30분)로 입력할 수 있습니다.
+            </p>
+
+            <div className="overflow-x-auto mb-4">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+                    <th className="py-2 font-semibold">직원</th>
+                    <th className="py-2 font-semibold text-right">발생</th>
+                    <th className="py-2 font-semibold text-right">사용</th>
+                    <th className="py-2 font-semibold text-right">잔여</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {activeEmps.map((e) => {
+                    const acc = accrued[e.id]?.[poolName]?.totalHours || 0;
+                    const used = usage[e.id]?.byPool?.[poolName]?.totalHours || 0;
+                    const left = acc - used;
+                    if (acc === 0 && used === 0) return null;
+                    return (
+                      <tr key={e.id} className="border-b border-slate-100">
+                        <td className="py-1.5 pr-2 font-medium">{e.name}</td>
+                        <td className="py-1.5 pr-2 text-right text-slate-600">{formatDaysHours(acc)}</td>
+                        <td className="py-1.5 pr-2 text-right text-slate-600">{formatDaysHours(used)}</td>
+                        <td className={`py-1.5 pr-2 text-right font-bold ${left < 0 ? "text-red-600" : "text-emerald-700"}`}>
+                          {formatDaysHours(left)}{left < 0 && <span className="ml-1 text-[10px]">초과 사용</span>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {activeEmps.every((e) => !(accrued[e.id]?.[poolName]?.totalHours) && !(usage[e.id]?.byPool?.[poolName]?.totalHours)) && (
+                    <tr><td colSpan={4} className="py-3 text-xs text-slate-400">아직 발생·사용 내역이 없습니다.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="text-xs font-semibold text-slate-500 mb-1.5">발생 내역</div>
+            {rows.length === 0 ? (
+              <p className="text-xs text-slate-400">등록된 발생 내역이 없습니다. "발생 등록"으로 추가하세요.</p>
+            ) : (
+              <div className="space-y-1.5">
+                {rows.map((r) => (
+                  <div key={r.id} className="flex items-center gap-1.5 flex-wrap">
+                    <Select
+                      value={r.empId || ""}
+                      onChange={(v) => updAccrual(r.id, { empId: v })}
+                      options={[{ value: "", label: "직원 선택" }, ...activeEmps.map((e) => ({ value: e.id, label: e.name }))]}
+                      className="w-36"
+                    />
+                    <DateInput value={r.date || ""} onChange={(v) => updAccrual(r.id, { date: v })} />
+                    <NumberInput value={r.hours ?? ""} onChange={(v) => updAccrual(r.id, { hours: v })} className="w-20" />
+                    <span className="text-[11px] text-slate-400">시간</span>
+                    <TextInput
+                      value={r.reason || ""}
+                      onChange={(v) => updAccrual(r.id, { reason: v })}
+                      className="w-56"
+                      placeholder={poolName.includes("공가") ? "예: 예비군 동원훈련" : "예: 초과근무 2시간"}
+                    />
+                    {(!r.empId || !r.date || !(Number(r.hours) > 0)) && (
+                      <span className="text-[10px] text-red-600 font-semibold">직원·날짜·시간을 채워야 반영됩니다</span>
+                    )}
+                    {!locked && <IconBtn onClick={() => rmAccrual(r.id)} title="삭제" danger />}
+                  </div>
+                ))}
+              </div>
+            )}
+          </SectionCard>
+        );
+      })}
+
       {pools.map((poolName) => {
-        const poolTags = leaveTags.filter((t) => (t.leavePool || "연차") === poolName);
+        const poolTags = leaveTags.filter((t) => tagDeductions(t).some((d) => d.pool === poolName));
         const grants = grantsByYear[poolName] || {};
         return (
           <SectionCard key={poolName} title={`${year}년 "${poolName}" 사용 현황`} icon={PieChart}>
