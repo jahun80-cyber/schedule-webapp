@@ -10,7 +10,7 @@ import { api, getPassword, setPassword, clearPassword, getRole, setRole } from "
 import {
   WEEKDAYS, DOW_OPTIONS,
   defaultStoreData,
-  buildMonthDays, applyPersonalTags, convertRequestTags, assignRestDays, assignShiftCodes,
+  buildMonthDays, applyPersonalTags, applyUsageRecords, convertRequestTags, assignRestDays, assignShiftCodes,
   applyFixedRestSchedules, assignRemainingRest, finalAdjust, normalizeFtTemplates, normalizeEmployeeRestModes, DEFAULT_DAY_PAIR_OPTIONS,
   emptyMemoRows, reconcileMemoRows,
   validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT, requiredLeaderFT,
@@ -1974,7 +1974,10 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
     setTimeout(() => {
       // 이제 "이 매장이 어떤 방식인지"가 아니라 인원별로 고정휴무/로테이션이 나뉘므로,
       // 두 함수 모두 항상 실행한다 - 각 함수가 자기 대상(고정휴무 인원 / 로테이션 인원)만 알아서 처리한다.
-      const { schedule: withPersonal, applied } = applyPersonalTags(schedule, data.employees, data.personalTags, monthsMeta);
+      // 사용 등록을 [요청]보다 먼저 채운다 - 시간 조합까지 확정해둔 더 구체적인 지정이기 때문
+      const { schedule: withUsage, applied: usageApplied } =
+        applyUsageRecords(schedule, data.employees, data.usageRecords || [], monthsMeta);
+      const { schedule: withPersonal, applied } = applyPersonalTags(withUsage, data.employees, data.personalTags, monthsMeta);
 
       const fr = applyFixedRestSchedules(withPersonal, data.employees, data.fixedRestSchedules, data.dayPairOptions, monthsMeta, data.settings, data.tags);
       const working = fr.schedule;
@@ -1995,7 +1998,7 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
       setSchedule(rq.schedule);
       const fixedMsg = ` · 고정휴무로 채운 칸: ${fixedApplied}건${fixedSkipped > 0 ? ` (최소인원 확보를 위해 ${fixedSkipped}건은 건너뜀)` : ""}`;
       const rqMsg = rq.message ? ` · ${rq.message}` : "";
-      setMsg(`개인 지정 태그로 채운 칸: ${applied}건${fixedMsg} · ${message}${rqMsg}`);
+      setMsg(`요청으로 채운 칸: ${applied}건${usageApplied > 0 ? ` · 사용 등록으로 채운 칸: ${usageApplied}건` : ""}${fixedMsg} · ${message}${rqMsg}`);
       setRunning(false);
     }, 30);
   };
@@ -2045,7 +2048,7 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
     setTimeout(() => {
       const r4 = finalAdjust(
         schedule, data.employees, data.tags, data.settings, monthsMeta,
-        data.fixedRestSchedules, data.dayPairOptions, data.personalTags
+        data.fixedRestSchedules, data.dayPairOptions, data.personalTags, data.usageRecords || []
       );
 
       // 자리를 바꾼 날은 근무조도 다시 배정
@@ -2494,7 +2497,7 @@ function LeaveTab({ data, setData, archive, role }) {
   const [year, setYear] = useState(data.settings?.year || new Date().getFullYear());
 
   const usage = useMemo(
-    () => computeLeaveUsage(year, data.tags, archive || {}),
+    () => computeLeaveUsage(year, data.tags, archive || {}, data.usageRecords || []),
     [year, data.tags, archive]
   );
 
@@ -2508,8 +2511,50 @@ function LeaveTab({ data, setData, archive, role }) {
   const ledgerPools = ledgerPoolsOf(data.tags).filter((x) => allPools.includes(x));
   const pools = allPools.filter((x) => !ledgerPools.includes(x));
 
-  // 시차·공가처럼 발생 장부로 관리하는 휴가는 [시차·공가] 탭에서 따로 다룬다.
-  // 여기(연차현황)는 보유량을 수기로 입력하는 휴가만 보여준다 - 한 화면에 다 넣으니 너무 복잡했다.
+  const accrued = useMemo(() => computeAccrued(year, data.accrualLedger || []), [year, data.accrualLedger]);
+
+  /* ---------- 발생 등록 (시차·공가처럼 쓸 때마다 쌓이는 휴가) ---------- */
+  const addAccrual = () => setData((d) => ({
+    ...d,
+    accrualLedger: [{
+      id: "acc_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
+      empId: "", pool: ledgerPools[0] || "", date: "", hours: "", reason: "",
+    }, ...(d.accrualLedger || [])],
+  }));
+  const updAccrual = (id, patch) => setData((d) => ({
+    ...d, accrualLedger: (d.accrualLedger || []).map((r) => (r.id === id ? { ...r, ...patch } : r)),
+  }));
+  const rmAccrual = (id) => setData((d) => ({
+    ...d, accrualLedger: (d.accrualLedger || []).filter((r) => r.id !== id),
+  }));
+
+  /* ---------- 사용 등록 (시간 조합이 자유로운 사용) ---------- */
+  const usageRecords = data.usageRecords || [];
+  const addUsage = () => setData((d) => ({
+    ...d,
+    usageRecords: [{
+      id: "use_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
+      empId: "", date: "", displayTag: "", items: [{ pool: allPools[0] || "", hours: "" }], note: "",
+    }, ...(d.usageRecords || [])],
+  }));
+  const updUsage = (id, patch) => setData((d) => ({
+    ...d, usageRecords: (d.usageRecords || []).map((r) => (r.id === id ? { ...r, ...patch } : r)),
+  }));
+  const rmUsage = (id) => setData((d) => ({
+    ...d, usageRecords: (d.usageRecords || []).filter((r) => r.id !== id),
+  }));
+  const updUsageItem = (r, idx, patch) => {
+    const items = [...(r.items || [])];
+    items[idx] = { ...items[idx], ...patch };
+    updUsage(r.id, { items });
+  };
+  const addUsageItem = (r) => updUsage(r.id, { items: [...(r.items || []), { pool: allPools[0] || "", hours: "" }] });
+  const rmUsageItem = (r, idx) => updUsage(r.id, { items: (r.items || []).filter((_, i) => i !== idx) });
+
+  // 스케줄 칸에 표시할 수 있는 태그(쉬는 날로 잡히는 것만) - 그날 출근 인원 반영 방식도 이 태그가 결정
+  const displayTagOptions = data.tags
+    .filter((t) => !t.countsAsAttend)
+    .map((t) => ({ value: t.code, label: t.code + (t.countsAsShift ? ` (${t.countsAsShift}조 1명으로 인정)` : " (출근 0명)") }));
 
   const grantsByYear = (data.annualLeaveGrants && data.annualLeaveGrants[year]) || {}; // { poolName: { empId: 일수 } }
 
@@ -2525,7 +2570,7 @@ function LeaveTab({ data, setData, archive, role }) {
 
   const activeEmps = data.employees.filter((e) => isActiveEmployee(e));
 
-  if (leaveTags.length === 0) {
+  if (leaveTags.length === 0 && ledgerPools.length === 0) {
     return (
       <div className="max-w-3xl">
         <SectionCard title="연차 사용 현황" icon={PieChart}>
@@ -2554,6 +2599,136 @@ function LeaveTab({ data, setData, archive, role }) {
 
       {locked && <ReadOnlyNotice>연차 보유량 입력은 매장관리자 이상만 할 수 있습니다.</ReadOnlyNotice>}
       <ReadOnlyFence locked={locked}>
+      <ReadOnlyFence locked={locked}>
+      <SectionCard title="사용 등록" icon={ClipboardList}
+        right={!locked && <PrimaryBtn onClick={addUsage} icon={Plus}>사용 등록</PrimaryBtn>}>
+        <p className="text-xs text-slate-500 mb-3">
+          <b>"9/20에 공가 3시간 + 시차 1시간 + 오후 반차"</b> 처럼 시간 조합이 자유로운 사용은 여기에 등록합니다.
+          태그를 새로 만들 필요가 없습니다. 등록하면 <b>자동배정 1단계에서 그 날짜가 먼저 채워지고,
+          3·4단계에서 근무일로 바뀌지 않습니다</b>([요청] 탭과 같습니다).
+          그날 출근 인원을 어떻게 셀지는 "스케줄 표시" 태그가 결정합니다.
+        </p>
+        {usageRecords.length === 0 ? (
+          <p className="text-xs text-slate-400">등록된 사용 내역이 없습니다.</p>
+        ) : (
+          <div className="space-y-2">
+            {usageRecords.map((r) => {
+              const total = (r.items || []).reduce((sum, it) => sum + (Number(it.hours) || 0), 0);
+              const incomplete = !r.empId || !r.date || !r.displayTag || total <= 0;
+              return (
+                <div key={r.id} className={`border rounded-lg p-3 ${incomplete ? "border-red-200 bg-red-50/40" : "border-slate-200"}`}>
+                  <div className="flex items-center gap-1.5 flex-wrap mb-2">
+                    <Select
+                      value={r.empId || ""} onChange={(v) => updUsage(r.id, { empId: v })}
+                      options={[{ value: "", label: "직원 선택" }, ...activeEmps.map((e) => ({ value: e.id, label: e.name }))]}
+                      className="w-32"
+                    />
+                    <DateInput value={r.date || ""} onChange={(v) => updUsage(r.id, { date: v })} />
+                    <span className="text-[11px] text-slate-400 ml-1">스케줄 표시</span>
+                    <Select
+                      value={r.displayTag || ""} onChange={(v) => updUsage(r.id, { displayTag: v })}
+                      options={[{ value: "", label: "태그 선택" }, ...displayTagOptions]}
+                      className="w-56"
+                    />
+                    <span className="ml-auto text-[11px] font-semibold text-slate-500">합계 {total}H</span>
+                    {!locked && <IconBtn onClick={() => rmUsage(r.id)} title="삭제" danger />}
+                  </div>
+                  <div className="flex flex-col gap-1.5 pl-1">
+                    {(r.items || []).map((it, ii) => (
+                      <div key={ii} className="flex items-center gap-1.5">
+                        <span className="text-[11px] text-slate-400 w-10">차감</span>
+                        <Select
+                          value={it.pool || ""} onChange={(v) => updUsageItem(r, ii, { pool: v })}
+                          options={[{ value: "", label: "종류" }, ...allPools.map((x) => ({ value: x, label: x }))]}
+                          className="w-36"
+                        />
+                        <NumberInput value={it.hours ?? ""} onChange={(v) => updUsageItem(r, ii, { hours: v })} className="w-16" invalid={!(Number(it.hours) > 0)} />
+                        <span className="text-[11px] text-slate-400">시간</span>
+                        {(r.items || []).length > 1 && (
+                          <button onClick={() => rmUsageItem(r, ii)} className="text-slate-300 hover:text-red-500" title="삭제"><Trash2 size={13} /></button>
+                        )}
+                      </div>
+                    ))}
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => addUsageItem(r)} className="text-[11px] text-indigo-600 hover:text-indigo-800 font-semibold">+ 차감 항목 추가</button>
+                      <TextInput value={r.note || ""} onChange={(v) => updUsage(r.id, { note: v })} className="w-72" placeholder="메모 (예: 오전 공가+시차, 오후 반차)" />
+                    </div>
+                  </div>
+                  {incomplete && <p className="text-[10px] text-red-600 font-semibold mt-1.5">직원·날짜·스케줄 표시 태그·차감 시간을 모두 채워야 반영됩니다</p>}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </SectionCard>
+
+      {ledgerPools.length > 0 && (
+        <SectionCard title="발생 등록 (시차·공가)" icon={History}
+          right={!locked && <GhostBtn onClick={addAccrual} icon={Plus}>발생 등록</GhostBtn>}>
+          <p className="text-xs text-slate-500 mb-3">
+            초과근무로 시차가 생겼거나 예비군·건강검진 등으로 공가가 생겼을 때 등록합니다. 30분은 <b>0.5</b>로 넣습니다.
+          </p>
+          {(data.accrualLedger || []).filter((r) => String(r.date || "").startsWith(String(year)) || !r.date).length === 0 ? (
+            <p className="text-xs text-slate-400">등록된 발생 내역이 없습니다.</p>
+          ) : (
+            <div className="space-y-1.5">
+              {(data.accrualLedger || [])
+                .filter((r) => String(r.date || "").startsWith(String(year)) || !r.date)
+                .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")))
+                .map((r) => (
+                  <div key={r.id} className="flex items-center gap-1.5 flex-wrap">
+                    <Select
+                      value={r.empId || ""} onChange={(v) => updAccrual(r.id, { empId: v })}
+                      options={[{ value: "", label: "직원 선택" }, ...activeEmps.map((e) => ({ value: e.id, label: e.name }))]}
+                      className="w-32"
+                    />
+                    <Select value={r.pool || ""} onChange={(v) => updAccrual(r.id, { pool: v })} options={ledgerPools} className="w-32" />
+                    <DateInput value={r.date || ""} onChange={(v) => updAccrual(r.id, { date: v })} />
+                    <NumberInput value={r.hours ?? ""} onChange={(v) => updAccrual(r.id, { hours: v })} className="w-16" invalid={!(Number(r.hours) > 0)} />
+                    <span className="text-[11px] text-slate-400">시간</span>
+                    <TextInput value={r.reason || ""} onChange={(v) => updAccrual(r.id, { reason: v })} className="w-56"
+                      placeholder={String(r.pool || "").includes("공가") ? "예: 예비군 동원훈련" : "예: 초과근무 2시간"} />
+                    {!locked && <IconBtn onClick={() => rmAccrual(r.id)} title="삭제" danger />}
+                  </div>
+                ))}
+            </div>
+          )}
+        </SectionCard>
+      )}
+      </ReadOnlyFence>
+
+      {ledgerPools.map((poolName) => (
+        <SectionCard key={"lg-" + poolName} title={`${year}년 "${poolName}" 발생·사용 현황`} icon={PieChart}>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+                <th className="py-2">이름</th><th>발생</th><th>사용</th><th>잔여</th>
+              </tr>
+            </thead>
+            <tbody>
+              {activeEmps.map((e) => {
+                const a = accrued[e.id]?.[poolName]?.totalHours || 0;
+                const u = usage[e.id]?.byPool?.[poolName]?.totalHours || 0;
+                if (a === 0 && u === 0) return null;
+                return (
+                  <tr key={e.id} className="border-b border-slate-100">
+                    <td className="py-2 font-medium whitespace-nowrap">{e.name}</td>
+                    <td className="py-2 whitespace-nowrap">{formatDaysHours(a)}</td>
+                    <td className="py-2 whitespace-nowrap">{formatDaysHours(u)}</td>
+                    <td className={`py-2 whitespace-nowrap font-bold ${a - u < 0 ? "text-red-600" : "text-emerald-700"}`}>
+                      {formatDaysHours(a - u)}{a - u < 0 && <span className="ml-1 text-[10px]">초과</span>}
+                    </td>
+                  </tr>
+                );
+              })}
+              {activeEmps.every((e) => !(accrued[e.id]?.[poolName]?.totalHours) && !(usage[e.id]?.byPool?.[poolName]?.totalHours)) && (
+                <tr><td colSpan={4} className="py-3 text-xs text-slate-400">아직 발생·사용 내역이 없습니다.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </SectionCard>
+      ))}
+
       {pools.map((poolName) => {
         const poolTags = leaveTags.filter((t) => tagDeductions(t).some((d) => d.pool === poolName));
         const grants = grantsByYear[poolName] || {};
@@ -3648,188 +3823,6 @@ function InquiryTab({ storeList, currentStoreId, role, storeName }) {
 }
 
 /* ============================================================
-   시차·공가 탭 - 발생(생성) 등록과 잔여 확인
-   ------------------------------------------------------------
-   연차는 연 1회 보유량을 입력하면 끝이지만, 시차는 초과근무할 때마다,
-   공가는 예비군·건강검진 같은 사유가 생길 때마다 발생량이 계속 쌓인다.
-   그래서 발생 건을 한 줄씩 남기는 화면을 따로 뒀다.
-   ============================================================ */
-function AccrualTab({ data, setData, archive, role }) {
-  const locked = role === "viewer";
-  const [year, setYear] = useState(data.settings?.year || new Date().getFullYear());
-  const [filterPool, setFilterPool] = useState("");
-
-  const ledgerPools = useMemo(() => ledgerPoolsOf(data.tags), [data.tags]);
-  const usage = useMemo(() => computeLeaveUsage(year, data.tags, archive || {}), [year, data.tags, archive]);
-  const accrued = useMemo(() => computeAccrued(year, data.accrualLedger || []), [year, data.accrualLedger]);
-  const activeEmps = data.employees.filter((e) => isActiveEmployee(e));
-
-  const add = (pool) => setData((d) => ({
-    ...d,
-    accrualLedger: [{
-      id: "acc_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
-      empId: "", pool: pool || ledgerPools[0] || "", date: "", hours: "", reason: "",
-    }, ...(d.accrualLedger || [])],
-  }));
-  const upd = (id, patch) => setData((d) => ({
-    ...d,
-    accrualLedger: (d.accrualLedger || []).map((r) => (r.id === id ? { ...r, ...patch } : r)),
-  }));
-  const rm = (id) => setData((d) => ({
-    ...d,
-    accrualLedger: (d.accrualLedger || []).filter((r) => r.id !== id),
-  }));
-
-  if (ledgerPools.length === 0) {
-    return (
-      <div className="max-w-4xl">
-        <SectionCard title="시차·공가" icon={History}>
-          <p className="text-sm text-slate-500">
-            아직 발생 장부로 관리하는 휴가가 없습니다. [태그목록]에서 시차·공가 태그를 만들고
-            "발생 장부로 관리"를 켜주세요. 공가를 사유별로 나누려면 <b>공가(예비군)</b>,
-            <b> 공가(건강검진)</b> 처럼 태그를 나눠 만들면 됩니다.
-          </p>
-        </SectionCard>
-      </div>
-    );
-  }
-
-  const rows = (data.accrualLedger || [])
-    .filter((r) => String(r.date || "").startsWith(String(year)) || !r.date)
-    .filter((r) => !filterPool || r.pool === filterPool)
-    .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
-
-  return (
-    <div className="max-w-5xl">
-      <SectionCard title="시차 · 공가 발생 등록" icon={History}
-        right={!locked && <PrimaryBtn onClick={() => add(filterPool)} icon={Plus}>발생 등록</PrimaryBtn>}>
-        <p className="text-xs text-slate-500 mb-3">
-          초과근무로 시차가 생겼거나, 예비군·건강검진 등으로 공가가 생겼을 때 여기에 한 줄씩 남깁니다.
-          <b> 발생한 만큼 쌓이고, 실제로 쓴 만큼 빠져서 잔여가 계산됩니다.</b>
-          사용분은 [월별기록]에 저장된 스케줄에서 자동으로 집계되니 여기서 따로 입력하지 않습니다.
-          시간은 30분 단위로 <b>0.5</b> 처럼 넣을 수 있습니다.
-        </p>
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-xs font-semibold text-slate-500">연도</span>
-          <NumberInput value={year} onChange={(v) => setYear(v || new Date().getFullYear())} className="w-24" />
-          <span className="text-xs font-semibold text-slate-500 ml-2">종류</span>
-          <Select
-            value={filterPool}
-            onChange={setFilterPool}
-            options={[{ value: "", label: "전체" }, ...ledgerPools.map((x) => ({ value: x, label: x }))]}
-            className="w-40"
-          />
-        </div>
-      </SectionCard>
-
-      <SectionCard title={`${year}년 잔여 현황`} icon={PieChart}>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
-                <th className="py-2 font-semibold">직원</th>
-                {ledgerPools.map((pool) => (
-                  <th key={pool} className="py-2 font-semibold text-right">{pool}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {activeEmps.map((e) => {
-                const cells = ledgerPools.map((pool) => {
-                  const acc = accrued[e.id]?.[pool]?.totalHours || 0;
-                  const used = usage[e.id]?.byPool?.[pool]?.totalHours || 0;
-                  return { pool, acc, used, left: acc - used };
-                });
-                if (cells.every((c) => c.acc === 0 && c.used === 0)) return null;
-                return (
-                  <tr key={e.id} className="border-b border-slate-100">
-                    <td className="py-1.5 pr-2 font-medium">{e.name}</td>
-                    {cells.map((c) => (
-                      <td key={c.pool} className="py-1.5 pr-2 text-right">
-                        <span className={`font-bold ${c.left < 0 ? "text-red-600" : c.left > 0 ? "text-emerald-700" : "text-slate-400"}`}>
-                          {c.left % 1 === 0 ? c.left : c.left.toFixed(1)}H
-                        </span>
-                        <span className="text-[10px] text-slate-400 ml-1">(발생 {c.acc % 1 === 0 ? c.acc : c.acc.toFixed(1)} / 사용 {c.used % 1 === 0 ? c.used : c.used.toFixed(1)})</span>
-                        {c.left < 0 && <span className="ml-1 text-[10px] text-red-600 font-semibold">초과</span>}
-                      </td>
-                    ))}
-                  </tr>
-                );
-              })}
-              {activeEmps.every((e) => ledgerPools.every((pool) => !(accrued[e.id]?.[pool]?.totalHours) && !(usage[e.id]?.byPool?.[pool]?.totalHours))) && (
-                <tr><td colSpan={ledgerPools.length + 1} className="py-3 text-xs text-slate-400">아직 발생·사용 내역이 없습니다.</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </SectionCard>
-
-      <ReadOnlyFence locked={locked}>
-      <SectionCard title={`발생 내역 (${rows.length}건)`} icon={ClipboardList}>
-        {rows.length === 0 ? (
-          <p className="text-xs text-slate-400">등록된 발생 내역이 없습니다. 위 "발생 등록"으로 추가하세요.</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
-                  <th className="py-2 font-semibold">직원</th>
-                  <th className="py-2 font-semibold">종류</th>
-                  <th className="py-2 font-semibold">발생일</th>
-                  <th className="py-2 font-semibold">발생량</th>
-                  <th className="py-2 font-semibold">사유</th>
-                  <th className="py-2 w-8"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => {
-                  const incomplete = !r.empId || !r.date || !(Number(r.hours) > 0);
-                  return (
-                    <tr key={r.id} className={`border-b border-slate-100 ${incomplete ? "bg-red-50/50" : ""}`}>
-                      <td className="py-1.5 pr-2">
-                        <Select
-                          value={r.empId || ""}
-                          onChange={(v) => upd(r.id, { empId: v })}
-                          options={[{ value: "", label: "선택" }, ...activeEmps.map((e) => ({ value: e.id, label: e.name }))]}
-                          className="w-32"
-                        />
-                      </td>
-                      <td className="py-1.5 pr-2">
-                        <Select value={r.pool || ""} onChange={(v) => upd(r.id, { pool: v })} options={ledgerPools} className="w-32" />
-                      </td>
-                      <td className="py-1.5 pr-2"><DateInput value={r.date || ""} onChange={(v) => upd(r.id, { date: v })} /></td>
-                      <td className="py-1.5 pr-2">
-                        <div className="flex items-center gap-1">
-                          <NumberInput value={r.hours ?? ""} onChange={(v) => upd(r.id, { hours: v })} className="w-16" invalid={!(Number(r.hours) > 0)} />
-                          <span className="text-[11px] text-slate-400">시간</span>
-                        </div>
-                      </td>
-                      <td className="py-1.5 pr-2">
-                        <TextInput
-                          value={r.reason || ""}
-                          onChange={(v) => upd(r.id, { reason: v })}
-                          className="w-52"
-                          placeholder={String(r.pool || "").includes("공가") ? "예: 예비군 동원훈련" : "예: 초과근무 2시간"}
-                        />
-                      </td>
-                      <td><IconBtn onClick={() => rm(r.id)} title="삭제" danger /></td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-        <p className="text-[11px] text-slate-400 mt-2">
-          직원·발생일·발생량이 모두 채워진 줄만 잔여 계산에 반영됩니다(빨간 줄은 아직 미완성).
-        </p>
-      </SectionCard>
-      </ReadOnlyFence>
-    </div>
-  );
-}
-
-/* ============================================================
    메인 앱
    ============================================================ */
 // 왼쪽 메뉴를 "설정"(매장 셋업·구성)과 "스케줄"(실제 확인·운영)로 폴더처럼 나눈다.
@@ -3855,8 +3848,7 @@ const TAB_GROUPS = [
       { key: "m2", label: "스케줄 2개월차", icon: ClipboardList },
       { key: "summary", label: "2개월요약", icon: CheckCircle2 },
       { key: "archive", label: "월별기록", icon: Archive },
-      { key: "leave", label: "연차현황", icon: PieChart },
-      { key: "accrual", label: "시차·공가", icon: History, managerOnly: true },
+      { key: "leave", label: "휴가관리", icon: PieChart },
     ],
   },
   {
@@ -4431,7 +4423,6 @@ function MainApp({ role, onLogout }) {
             {tab === "support" && <SupportMatchTab storeList={storeList} currentStoreId={currentStoreId} />}
             {tab === "archive" && <ArchiveTab data={data} archive={archive || {}} setArchive={setArchive} role={role} />}
             {tab === "leave" && <LeaveTab data={data} setData={setData} archive={archive || {}} role={role} />}
-            {tab === "accrual" && <AccrualTab data={data} setData={setData} archive={archive || {}} role={role} />}
             {tab === "shifty" && monthsMeta && <ShiftyMapTab data={data} setData={setData} schedule={schedule} archive={archive || {}} monthsMeta={monthsMeta} role={role} currentStoreId={currentStoreId} storeList={storeList} />}
           </div>
         </div>

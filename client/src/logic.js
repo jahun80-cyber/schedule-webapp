@@ -293,6 +293,36 @@ function reconcileMemoRows(oldMemo, memoRowLabels, days1, days2) {
 /* ============================================================
    핵심: 휴무/휴일 자동배정 (하루씩 순서대로 훑는 엔진)
    ============================================================ */
+
+// 사용 등록(usageRecords)을 스케줄에 채운다. [요청] 탭과 동일하게, 등록해두면 자동배정 1단계에서
+// 그 칸이 먼저 채워지고 이후 단계에서 근무일로 바뀌지 않는다(finalAdjust 보호 대상에 포함).
+// 한 줄: { id, empId, date, displayTag, items:[{pool,hours}] }
+//   displayTag = 스케줄 칸에 표시할 태그. 그날 출근 인원 반영 방식도 이 태그가 결정한다
+//                (예: 반차(오후) -> 근무조 환산 B로 오후 1명 인정 / 연차 -> 0명)
+function applyUsageRecords(schedule, employees, usageRecords, monthsMeta) {
+  let applied = 0;
+  const next = { m1: { ...schedule.m1 }, m2: { ...schedule.m2 } };
+  Object.keys(next.m1).forEach((id) => (next.m1[id] = [...schedule.m1[id]]));
+  Object.keys(next.m2).forEach((id) => (next.m2[id] = [...schedule.m2[id]]));
+
+  for (const r of usageRecords || []) {
+    if (!r || !r.empId || !r.date || !r.displayTag) continue;
+    const emp = employees.find((e) => e.id === r.empId);
+    if (!emp) continue;
+    for (const { key, days } of monthsMeta) {
+      for (const day of days) {
+        if (day.dateStr !== r.date) continue;
+        if (!next[key][emp.id]) continue;
+        if (!next[key][emp.id][day.day - 1]) {
+          next[key][emp.id][day.day - 1] = r.displayTag;
+          applied++;
+        }
+      }
+    }
+  }
+  return { schedule: next, applied };
+}
+
 function applyPersonalTags(schedule, employees, personalTags, monthsMeta) {
   let applied = 0;
   const next = { m1: { ...schedule.m1 }, m2: { ...schedule.m2 } };
@@ -599,8 +629,19 @@ function isFixedRestEmployee(fixedRestSchedules, dayPairOptions, empName) {
 // 원본 personalTags를 다시 훑어서 "이 칸은 매장이 직접 요청한 자리"라고 표시해둬야 한다.
 // 4단계(finalAdjust)가 쉬는 날을 근무로 되돌릴 때 이 목록에 있는 자리는 건드리지 않는다.
 // (쉬는 형태끼리 바뀌는 것 - 휴무<->휴일 - 은 허용. 쉬는 날이 근무일로 바뀌는 것만 막는다)
-function buildRequestedRestSet(employees, tags, personalTags, monthsMeta) {
+function buildRequestedRestSet(employees, tags, personalTags, monthsMeta, usageRecords) {
   const set = new Set();
+  // 사용 등록도 [요청]과 똑같이 보호한다 - 매장이 "이 날 이만큼 쓴다"고 확정한 자리이므로
+  // 자동배정이 근무일로 되돌리면 안 된다.
+  for (const r of usageRecords || []) {
+    if (!r || !r.empId || !r.date || !r.displayTag) continue;
+    if (!isOffTag(tags, r.displayTag)) continue; // 출근으로 잡히는 태그면 보호 대상이 아니다
+    for (const { key, days } of monthsMeta) {
+      for (const day of days) {
+        if (day.dateStr === r.date) set.add(`${key}|${r.empId}|${day.day}`);
+      }
+    }
+  }
   for (const pt of personalTags || []) {
     if (!pt.start || !pt.end || !pt.tagCode) continue;
     // 요청한 태그가 "쉬는 날"이 아니면(교육/지원근무 등 출근 태그) 보호 대상이 아니다
@@ -909,7 +950,7 @@ function normalizeWeeklyRest(sched, ftEmps, monthsMeta) {
   });
 }
 
-function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestSchedules, dayPairOptions, personalTags) {
+function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestSchedules, dayPairOptions, personalTags, usageRecords) {
   const next = { m1: { ...schedule.m1 }, m2: { ...schedule.m2 } };
   Object.keys(next.m1).forEach((id) => (next.m1[id] = [...schedule.m1[id]]));
   Object.keys(next.m2).forEach((id) => (next.m2[id] = [...schedule.m2[id]]));
@@ -946,7 +987,7 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
 
   // [요청]으로 잡아둔 쉬는 날은 이 단계에서 절대 근무일로 되돌리지 않는다.
   // (매장이 "이 날은 쉰다"고 확정해둔 자리라, 목표 초과분을 메우려고 여기를 헐면 안 된다)
-  const requestedRest = buildRequestedRestSet(employees, tags, personalTags, monthsMeta);
+  const requestedRest = buildRequestedRestSet(employees, tags, personalTags, monthsMeta, usageRecords);
   const isRequestedRest = (key, empId, dayNum) => requestedRest.has(`${key}|${empId}|${dayNum}`);
 
   // 2개월 전체를 월~일 주 단위로 묶어둔다 (주 규칙 확인용)
@@ -1989,9 +2030,23 @@ function ledgerPoolsOf(tags) {
   return pools;
 }
 
-function computeLeaveUsage(year, tags, archive) {
+// 사용 등록(usageOverrides) 한 줄: { id, empId, date, items: [{pool, hours}], note }
+//
+// 왜 필요한가: "9/20에 공가 3시간 + 시차 1시간 + 오후 반차" 처럼 시간 조합이 자유로운 사용은
+// 태그로 표현하려면 조합마다 태그를 새로 만들어야 하고 가짓수가 사실상 무한하다.
+// 그래서 그런 날은 사용 내역을 직접 한 줄 등록하고, 그 날짜는 태그 기본 차감을 쓰지 않는다.
+//
+// 규칙: (직원, 날짜)에 사용 등록이 있으면 그 등록 내용만 반영하고 그날 태그의 기본 차감은 무시한다.
+//       사용 등록이 없으면 기존처럼 [월별기록]에 저장된 태그의 기본 차감을 쓴다.
+function computeLeaveUsage(year, tags, archive, usageOverrides) {
   const leaveTags = (tags || []).filter(isTrackedTag);
   const leaveTagCodes = new Set(leaveTags.map((t) => t.code));
+
+  // 사용 등록이 있는 (직원|날짜) 목록 - 그 칸은 태그 기본 차감을 건너뛴다
+  const overrideKeys = new Set();
+  (usageOverrides || []).forEach((r) => {
+    if (r && r.empId && r.date) overrideKeys.add(r.empId + "|" + r.date);
+  });
 
   // 오직 [월별기록]에 "저장"된 데이터만 기준으로 계산 (진행중인 스케줄을 지우거나 수정해도 영향받지 않음)
   const result = {}; // empId -> { name, byPool: { poolName: { totalHours, byTag: { code: { hours, dates: [] } } } } }
@@ -2011,6 +2066,8 @@ function computeLeaveUsage(year, tags, archive) {
       days.forEach((day, i) => {
         const v = arr[i];
         if (!v || !leaveTagCodes.has(v)) return;
+        // 이 날짜에 사용 등록이 따로 있으면 태그 기본 차감은 쓰지 않는다(이중 집계 방지)
+        if (overrideKeys.has(e.id + "|" + day.dateStr)) return;
         const tag = leaveTags.find((t) => t.code === v);
         // 한 칸이 여러 휴가에서 동시에 차감될 수 있으므로 차감 목록을 모두 반영한다
         tagDeductions(tag).forEach(({ pool, hours }) => {
@@ -2022,6 +2079,26 @@ function computeLeaveUsage(year, tags, archive) {
           poolEntry.totalHours += hours;
         });
       });
+    });
+  });
+
+  // 사용 등록분 반영. [월별기록]에 저장돼 있지 않아도 등록만 하면 바로 집계된다
+  // (발생 등록과 짝을 맞춘 것 - 시차·공가는 스케줄에 안 찍고 쓰는 경우도 있다)
+  const yearPrefixForUsage = String(year) + "-";
+  (usageOverrides || []).forEach((r) => {
+    if (!r || !r.empId || !r.date) return;
+    if (!String(r.date).startsWith(yearPrefixForUsage)) return;
+    (r.items || []).forEach((it) => {
+      if (!it || !it.pool) return;
+      const hours = Number(it.hours) || 0;
+      if (hours <= 0) return;
+      if (!result[r.empId]) result[r.empId] = { name: r.empName || "", byPool: {} };
+      if (!result[r.empId].byPool[it.pool]) result[r.empId].byPool[it.pool] = { totalHours: 0, byTag: {} };
+      const poolEntry = result[r.empId].byPool[it.pool];
+      const label = "직접 등록";
+      if (!poolEntry.byTag[label]) poolEntry.byTag[label] = { hours, dates: [] };
+      poolEntry.byTag[label].dates.push(r.date);
+      poolEntry.totalHours += hours;
     });
   });
 
@@ -2039,7 +2116,7 @@ export {
   WEEKDAYS, DOW_OPTIONS,
   DEFAULT_TAGS, DEFAULT_EMPLOYEES, DEFAULT_HOLIDAYS, DEFAULT_FT_TEMPLATES, DEFAULT_PT_TEMPLATES,
   defaultSettings, defaultStoreData, reconcileSchedule, normalizeFtTemplates, normalizeEmployeeRestModes,
-  buildMonthDays, applyPersonalTags, convertRequestTags, assignRestDays, assignShiftCodes, assignRemainingRest, finalAdjust,
+  buildMonthDays, applyPersonalTags, applyUsageRecords, convertRequestTags, assignRestDays, assignShiftCodes, assignRemainingRest, finalAdjust,
   applyFixedRestSchedules, isFixedRestCovered, isFixedRestEmployee, resolveFixedRestEnd, DEFAULT_DAY_PAIR_OPTIONS,
   emptyMemoRows, reconcileMemoRows,
   validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT, requiredLeaderFT,
