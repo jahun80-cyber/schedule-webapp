@@ -850,9 +850,10 @@ function TagsTab({ data, setData, role, storeList, currentStoreId }) {
               <th className="py-2 font-semibold">매장출근카운트</th>
               <th className="py-2 font-semibold">휴무/휴일구분</th>
               <th className="py-2 font-semibold">휴무/휴일 후보</th>
-              <th className="py-2 font-semibold">연차추적</th>
-              <th className="py-2 font-semibold">연차종류</th>
+              <th className="py-2 font-semibold">사용량 추적</th>
+              <th className="py-2 font-semibold">휴가 종류</th>
               <th className="py-2 font-semibold">시간(H)</th>
+              <th className="py-2 font-semibold">발생장부</th>
               <th className="py-2 font-semibold">근무조 환산</th>
               <th className="py-2 font-semibold">설명</th>
               <th className="py-2 w-8"></th>
@@ -906,6 +907,15 @@ function TagsTab({ data, setData, role, storeList, currentStoreId }) {
                 <td className="py-1.5 pr-2">
                   {t.trackAsLeave ? <NumberInput value={t.leaveHours ?? ""} onChange={(v) => update(t.id, { leaveHours: v })} className="w-16" /> : <span className="text-[11px] text-slate-300">-</span>}
                 </td>
+                <td className="py-1.5 pr-2 text-center" title="시차·공가처럼 쓸 때마다 발생량이 쌓이는 휴가. 켜면 [시차·공가] 탭에서 발생 등록과 잔여 관리를 합니다.">
+                  {t.trackAsLeave
+                    ? <input
+                        type="checkbox" checked={!!t.usesLedger}
+                        onChange={(ev) => update(t.id, { usesLedger: ev.target.checked })}
+                        className="w-4 h-4 accent-violet-600"
+                      />
+                    : <span className="text-[11px] text-slate-300">-</span>}
+                </td>
                 <td className="py-1.5 pr-2">
                   <Select
                     value={t.countsAsShift || ""}
@@ -919,7 +929,7 @@ function TagsTab({ data, setData, role, storeList, currentStoreId }) {
               </tr>
               {t.trackAsLeave && (
                 <tr className="border-b border-slate-100 bg-violet-50/40">
-                  <td colSpan={12} className="py-2 px-2">
+                  <td colSpan={13} className="py-2 px-2">
                     <div className="flex items-start gap-3 flex-wrap text-xs">
                       <div className="flex items-center gap-1.5 pt-1">
                         <span className="font-semibold text-violet-700 whitespace-nowrap">추가 차감</span>
@@ -948,14 +958,7 @@ function TagsTab({ data, setData, role, storeList, currentStoreId }) {
                           <button onClick={() => addExtra(t)} className="text-[11px] text-violet-700 hover:text-violet-900 font-semibold">
                             + 차감 항목 추가
                           </button>
-                          <label className="flex items-center gap-1 text-[11px] text-slate-500">
-                            <input
-                              type="checkbox" checked={!!t.usesLedger}
-                              onChange={(ev) => update(t.id, { usesLedger: ev.target.checked })}
-                              className="w-3.5 h-3.5 accent-violet-600"
-                            />
-                            발생 장부로 관리 (시차·공가처럼 쓸 때마다 쌓이는 휴가)
-                          </label>
+
                         </div>
                       </div>
                       <div className="text-[10px] text-slate-500 pt-1 leading-relaxed">
@@ -976,8 +979,10 @@ function TagsTab({ data, setData, role, storeList, currentStoreId }) {
           </tbody>
         </table>
         <p className="text-xs text-slate-500 mt-3">
-          "연차추적"을 켜고 시간(H)을 지정하면(예: 연차=8H, 반차=4H, 반반차=2H), [연차현황] 탭에서 이 태그가 입력된 날짜를 자동으로 집계해 보여줍니다.
-          "연차종류"를 같은 이름으로 맞춰두면 같은 보유량으로 묶여서 계산됩니다 — 예를 들어 연차/반차/반반차는 "연차"로, 리프레시휴가·안식휴가는
+          "사용량 추적"을 켜고 시간(H)을 지정하면(예: 연차=8H, 반차=4H, 반반차=2H), 이 태그가 입력된 날짜를 자동으로 집계해 보여줍니다.
+          연차뿐 아니라 <b>시차·공가도 이걸 켜야 사용량이 집계됩니다.</b> 그중 시차·공가처럼 쓸 때마다 발생량이 쌓이는 휴가는
+          "발생장부"까지 켜면 [시차·공가] 탭에서 발생 등록과 잔여 관리를 할 수 있습니다.
+          "휴가 종류"를 같은 이름으로 맞춰두면 같은 보유량으로 묶여서 계산됩니다 — 예를 들어 연차/반차/반반차는 "연차"로, 리프레시휴가·안식휴가는
           새로 태그를 추가해서 "리프레시/안식휴가"라는 이름으로 묶어두면 [연차현황]에서 별도의 보유량으로 따로 관리됩니다.
           "근무조 환산"을 지정하면 그날 그 근무조 인원 1명으로 계산됩니다 (예: 반차(오후)·반반차 → A조).
           "휴무/휴일 후보"를 켜두면(예: RQ 같은 휴무 요청 태그), 1단계 실행 시 그 사람의 남은 휴무/휴일로 자동 전환되고,
@@ -2514,7 +2519,7 @@ function LeaveTab({ data, setData, archive, role }) {
       <div className="max-w-3xl">
         <SectionCard title="연차 사용 현황" icon={PieChart}>
           <p className="text-sm text-slate-500">
-            아직 "연차추적"이 켜진 태그가 없습니다. [태그목록] 탭에서 연차/반차/반반차 같은 태그의 "연차추적"을 켜고 시간(H)을 지정해주세요.
+            아직 "사용량 추적"이 켜진 태그가 없습니다. [태그목록] 탭에서 연차/반차/반반차 같은 태그의 "사용량 추적"을 켜고 시간(H)을 지정해주세요.
           </p>
         </SectionCard>
       </div>
@@ -2532,7 +2537,7 @@ function LeaveTab({ data, setData, archive, role }) {
           [월별기록]에 "기록으로 저장"해둔 데이터만 기준으로 계산합니다. 스케줄 1·2개월차에서 아직 저장하지 않은 진행중인 내용은 반영되지 않으니,
           연차 사용이 확정되면 [스케줄 1·2개월차]에서 "기록으로 저장"을 눌러 남겨주세요. (진행중인 스케줄을 지우거나 수정해도 이미 저장된 기록에는 영향 없습니다.)
           보유량은 "일" 단위로 입력하면 1일=8시간 기준으로 환산되어, 반차·반반차를 섞어 써도 자동으로 정확히 계산됩니다.
-          연차종류(예: 연차 / 리프레시·안식휴가)는 [태그목록]에서 태그마다 지정합니다.
+          휴가 종류(예: 연차 / 리프레시·안식휴가)는 [태그목록]에서 태그마다 지정합니다.
         </p>
       </SectionCard>
 
