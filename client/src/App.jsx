@@ -353,44 +353,16 @@ function EmployeesTab({ data, setData, role }) {
   const ftList = emps.filter((e) => e.type === "정직원");
   const ptList = emps.filter((e) => e.type === "파트타이머");
 
-  // 로테이션 인원은 연속근무 권장/최대를 반드시 입력해야 한다.
-  // (비워두면 매장 기본값으로 돌아가긴 하지만, 그 사람에게 맞는 값인지 아무도 확인하지 않은 상태가 된다)
-  const missingConsec = ftList.filter((e) => {
-    if (!isActiveEmployee(e)) return false;
-    // 자동배정에서 빠지는 인원(지원근무/스위칭근무)은 연속근무 상한을 쓸 일이 없으므로 경고 대상이 아니다
-    if (!isAutoAssignable(e)) return false;
-    const rotation = (e.restMode || data.settings?.restMode || "로테이션") !== "고정휴무";
-    if (!rotation) return false;
-    const blank = (v) => v === undefined || v === "" || v === null;
-    return blank(e.consecRecommended) || blank(e.consecMax);
-  });
-
   return (
     <div className="max-w-5xl">
       {locked && <ReadOnlyNotice>이 화면은 열람만 가능합니다. 변경이 필요하면 매장관리자 이상에게 요청하세요.</ReadOnlyNotice>}
       <ReadOnlyFence locked={locked}>
-      {missingConsec.length > 0 && (
-        <div className="mb-4 bg-red-50 border border-red-200 rounded-lg px-4 py-3">
-          <div className="flex items-center gap-2 mb-1">
-            <AlertTriangle size={15} className="text-red-600" />
-            <span className="font-bold text-red-800 text-sm">연속근무 값을 입력해야 하는 인원: {missingConsec.length}명</span>
-          </div>
-          <p className="text-xs text-red-700">
-            휴무방식이 <b>로테이션</b>인 인원은 연속근무 권장/최대를 각자 입력해야 합니다 —
-            <span className="font-semibold"> {missingConsec.map((e) => e.name || "(이름 없음)").join(", ")}</span>
-          </p>
-          <p className="text-[11px] text-red-600 mt-1">
-            비워두면 [설정]의 매장 기본값({data.settings?.consecRecommended ?? "-"}/{data.settings?.consecMax ?? "-"})으로 계산되어 자동배정은 돌아가지만,
-            그 값이 이 사람에게 맞는지 확인되지 않은 상태입니다.
-          </p>
-        </div>
-      )}
       <SectionCard title="정직원" icon={Users} right={<GhostBtn onClick={addFT} icon={Plus}>정직원 추가</GhostBtn>}>
         <p className="text-xs text-slate-500 mb-3">
           소속을 "지원근무"나 "스위칭근무"로 두면 휴무/휴일·근무 자동배정에서 제외되고, 스케줄 화면에서 수기로만 입력됩니다.
           "자동배정 포함"을 켜면 예외적으로 우리매장 인원처럼 자동배정 대상에 포함시킬 수 있습니다.
-          "휴무방식"이 로테이션이면 같은 행에서 개인별 연속근무 상한을 지정할 수 있고(비우면 매장 기본값), 고정휴무면
-          직책을 "인턴"으로 두면 계약기간·목표를 아래 추가 줄에서 지정할 수 있습니다. 휴무방식(로테이션/고정휴무)과 연속근무 상한은 [휴무방식] 탭에서 지정합니다.
+          직책을 "인턴"으로 두면 계약기간·목표를 아래 추가 줄에서 지정할 수 있습니다.
+          휴무방식(로테이션/고정휴무)과 연속근무 상한은 [휴무방식] 탭에서 지정합니다.
         </p>
         <div className="overflow-x-auto">
         <table className="w-full text-sm">
@@ -892,6 +864,18 @@ function RestModeTab({ data, setData, role }) {
   const ftList = data.employees.filter((e) => e.type === "정직원" && isActiveEmployee(e));
   const ftEmployeeNames = ftList.filter((e) => (e.restMode || "로테이션") === "고정휴무").map((e) => e.name);
 
+  // 로테이션 인원은 연속근무 권장/최대를 반드시 입력해야 한다.
+  // (비워두면 아래 매장 기본값으로 돌아가긴 하지만, 그 사람에게 맞는 값인지 아무도 확인하지 않은 상태가 된다)
+  // 값을 넣는 표가 이 탭에 있으므로 경고도 여기 둔다 - 예전처럼 [직원목록]에 띄우면
+  // 경고를 보고도 그 자리에서 고칠 수가 없다.
+  const missingConsec = ftList.filter((e) => {
+    // 자동배정에서 빠지는 인원(지원근무/스위칭근무)은 연속근무 상한을 쓸 일이 없으므로 경고 대상이 아니다
+    if (!isAutoAssignable(e)) return false;
+    if ((e.restMode || s?.restMode || "로테이션") === "고정휴무") return false;
+    const blank = (v) => v === undefined || v === "" || v === null;
+    return blank(e.consecRecommended) || blank(e.consecMax);
+  });
+
   /* ---------- 근무 리듬 (7칸) ---------- */
   // 쉬는 칸은 항상 두 개다. 한 개면 매장 휴무 목표에 한참 못 미쳐 남는 쉬는 날이
   // 여기저기 붙어버리고(틀이 무너지고 휴일이 초과된다), 세 개면 목표보다 많이 쉰다.
@@ -975,6 +959,23 @@ function RestModeTab({ data, setData, role }) {
     <div className="max-w-5xl">
       {locked && <ReadOnlyNotice>휴무방식 설정은 매장관리자 이상만 수정할 수 있습니다.</ReadOnlyNotice>}
       <ReadOnlyFence locked={locked}>
+
+      {missingConsec.length > 0 && (
+        <div className="mb-4 bg-red-50 border border-red-200 rounded-lg px-4 py-3">
+          <div className="flex items-center gap-2 mb-1">
+            <AlertTriangle size={15} className="text-red-600" />
+            <span className="font-bold text-red-800 text-sm">연속근무 값을 입력해야 하는 인원: {missingConsec.length}명</span>
+          </div>
+          <p className="text-xs text-red-700">
+            휴무방식이 <b>로테이션</b>인 인원은 연속근무 권장/최대를 각자 입력해야 합니다 —
+            <span className="font-semibold"> {missingConsec.map((e) => e.name || "(이름 없음)").join(", ")}</span>
+          </p>
+          <p className="text-[11px] text-red-600 mt-1">
+            비워두면 아래 "휴무 배정 - 매장 기본값"({s?.consecRecommended ?? "-"}/{s?.consecMax ?? "-"})으로 계산되어 자동배정은 돌아가지만,
+            그 값이 이 사람에게 맞는지 확인되지 않은 상태입니다.
+          </p>
+        </div>
+      )}
 
       <SectionCard title="인원별 휴무방식" icon={Users}>
         <p className="text-xs text-slate-500 mb-3">
@@ -1130,7 +1131,7 @@ function RestModeTab({ data, setData, role }) {
 
       <SectionCard title="고정휴무 설정 (정직원)" icon={CalendarDays} right={<GhostBtn onClick={addFixed} icon={Plus}>고정휴무 추가</GhostBtn>}>
         <p className="text-xs text-slate-500 mb-3">
-          [직원목록]에서 "고정휴무"로 지정한 인원만 매주 같은 요일쌍으로 쉬는 패턴을 여기서 지정합니다 (예: 월화 고정휴무 5명).
+          위 "인원별 휴무방식"에서 <b>고정휴무</b>로 지정한 인원만 매주 같은 요일쌍으로 쉬는 패턴을 여기서 지정합니다 (예: 월화 고정휴무 5명).
           [요청] 탭에 등록된 개인 요청(요청휴무·이슈)이 항상 먼저 반영되고, 남은 칸에 여기서 지정한 요일이 자동으로 휴무/휴일로 채워집니다.
           기간을 나눠서 여러 개 등록하면 월별로 다른 패턴도 반영할 수 있습니다. 그날 최소 출근인원(또는 리더 최소인원)이
           부족해지면, 그 달 우선순위가 낮은 직원의 휴무만 건너뛰고 나머지는 그대로 배정됩니다(우선순위는 매달 자동으로 돌아가
@@ -1138,7 +1139,7 @@ function RestModeTab({ data, setData, role }) {
         </p>
         {ftEmployeeNames.length === 0 && (
           <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mb-3">
-            고정휴무로 지정된 직원이 없습니다 — [직원목록]에서 정직원의 "휴무방식"을 "고정휴무"로 먼저 지정하세요.
+            고정휴무로 지정된 직원이 없습니다 — 맨 위 "인원별 휴무방식"에서 정직원의 휴무방식을 "고정휴무"로 먼저 지정하세요.
           </p>
         )}
         <div className="space-y-2">
@@ -1201,7 +1202,7 @@ function HolidaysTab({ data, setData, role }) {
     return { ...d, fixedRestSchedules: arr };
   });
 
-  // 휴무 방식은 이제 인원별로 [직원목록]에서 지정한다 - 여기는 "고정휴무"로 지정된 인원만 대상으로 노출
+  // 휴무 방식은 인원별로 [휴무방식] 탭에서 지정한다 - 여기는 "고정휴무"로 지정된 인원만 대상으로 노출
   const ftEmployeeNames = employees.filter((e) => e.type === "정직원" && (e.restMode || "로테이션") === "고정휴무").map((e) => e.name);
 
   return (
@@ -2299,7 +2300,7 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
         {missingConsecNames.length > 0 && (
           <span
             className="px-2 py-1 rounded-md font-semibold bg-red-100 text-red-700"
-            title={`[직원목록]에서 이 인원들의 연속근무 권장/최대를 입력해주세요: ${missingConsecNames.join(", ")}`}
+            title={`[휴무방식] 탭에서 이 인원들의 연속근무 권장/최대를 입력해주세요: ${missingConsecNames.join(", ")}`}
           >
             연속근무 값 미입력: {missingConsecNames.length}명
           </span>
