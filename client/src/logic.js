@@ -1090,6 +1090,15 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
   // [요청]으로 잡아둔 쉬는 날은 이 단계에서 절대 근무일로 되돌리지 않는다.
   // (매장이 "이 날은 쉰다"고 확정해둔 자리라, 목표 초과분을 메우려고 여기를 헐면 안 된다)
   const requestedRest = buildRequestedRestSet(employees, tags, personalTags, monthsMeta, usageRecords);
+
+  // 고정휴무로 지정된 요일인지. [요청]처럼 아예 못 건드리게 막지는 않는다 - 전원이 고정휴무인
+  // 매장에서는 그 사람의 쉬는 날이 전부 고정휴무라, 막아버리면 목표 초과를 해소할 방법이 없다.
+  // 대신 "되돌릴 자리"를 고를 때 맨 뒤로 미뤄서, 다른 자리가 있으면 고정휴무는 건드리지 않는다.
+  const isFixedRestDay = (empId, day) => {
+    const emp = employees.find((e) => e.id === empId);
+    if (!emp || isRotationEmployee(emp, settings)) return false;
+    return isFixedRestCovered(fixedRestSchedules, dayPairOptions, emp.name, day.dateStr);
+  };
   const isRequestedRest = (key, empId, dayNum) => requestedRest.has(`${key}|${empId}|${dayNum}`);
 
   // 2개월 전체를 월~일 주 단위로 묶어둔다 (주 규칙 확인용)
@@ -1278,9 +1287,9 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
             next[overMonth.key][e.id][day.day - 1] = "";
             const streakAfter = maxStreakOf(e.id);
             next[overMonth.key][e.id][day.day - 1] = before;
-            return { day, streakAfter };
+            return { day, streakAfter, fixed: isFixedRestDay(e.id, day) ? 1 : 0 };
           })
-          .sort((a, b) => a.streakAfter - b.streakAfter)
+          .sort((a, b) => (a.fixed - b.fixed) || (a.streakAfter - b.streakAfter))
           .slice(0, 6);
         // 부족한 달에서 근무 중이면서 그날 여유가 있는 날을 후보로 모아, 평일 우선 + 이미 쉬는 사람이
         // 적은(=덜 몰린) 날 우선으로 고른다 - 그래야 여러 인원의 부족분이 같은 날 하나로 몰리지 않는다.
@@ -1484,12 +1493,15 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
             return {
               day,
               streakAfter,
+              // 고정휴무로 지정된 날은 매장이 "이 요일엔 쉰다"고 약속해둔 자리라 가장 마지막에 쓴다
+              fixed: isFixedRestDay(e.id, day) ? 1 : 0,
               overRec: streakAfter > rec ? 1 : 0,
               weekend: day.weekday === "토" || day.weekday === "일" ? 0 : 1,
               usage: revertDayUsage.get(`${key}|${day.day}`) || 0,
             };
           })
           .sort((a, b) =>
+            (a.fixed - b.fixed) ||
             (a.overRec - b.overRec) ||
             (a.streakAfter - b.streakAfter) ||
             (a.weekend - b.weekend) ||
