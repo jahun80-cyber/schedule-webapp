@@ -16,6 +16,7 @@ import {
   validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT, requiredLeaderFT,
   isOffTag, dowBucket, nextMonth, emptySchedule, reconcileSchedule, isActiveEmployee, isAutoAssignable, computeLeaveUsage,
   isUnderContractOn, isCountedOn, restTargetFor,
+  restRhythmOf, rhythmMaxWorkRun, DEFAULT_REST_RHYTHM,
   tagDeductions, computeAccrued, ledgerPoolsOf,
 } from "./logic";
 import {
@@ -262,6 +263,38 @@ function SettingsTab({ data, setData, role }) {
   const s = data.settings;
   const dayPairOptions = data.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS;
   const update = (patch) => setData((d) => ({ ...d, settings: { ...d.settings, ...patch } }));
+
+  /* ---------- 근무 리듬 (7칸 근무형태) ---------- */
+  const rhythm = restRhythmOf(s);
+  const toggleRhythm = (i) => {
+    const next = rhythm.map((v, j) => (j === i ? !v : v));
+    if (!next.some(Boolean) || next.every(Boolean)) return; // 전부 근무 / 전부 휴무는 의미가 없다
+    update({ restRhythm: next });
+  };
+  // 이 틀이 만드는 "n근무 → 휴무" 순서를 사람이 읽는 말로 바꾼다
+  const rhythmText = (() => {
+    const parts = [];
+    let work = 0, rest = 0;
+    const flush = () => {
+      if (work > 0) { parts.push(`${work}근무`); work = 0; }
+      if (rest > 0) { parts.push(rest === 1 ? "휴무" : `${rest}일 연휴`); rest = 0; }
+    };
+    rhythm.forEach((isRest) => {
+      if (isRest) rest++;
+      else { if (rest > 0) flush(); work++; }
+    });
+    flush();
+    return parts.join(" → ");
+  })();
+  // 이 리듬이면 한 달에 며칠 쉬게 되는지 vs 이 매장의 실제 목표
+  const rhythmDays = (() => {
+    const days = buildMonthDays(s.year, s.startMonth, data.holidays || [], data.issueDays || []);
+    const goal = satTarget(days) + sunHolTarget(days);
+    const byRhythm = (rhythm.filter(Boolean).length * days.length) / rhythm.length;
+    return { goal, byRhythm, len: days.length };
+  })();
+  const rhythmRun = rhythmMaxWorkRun(rhythm);
+  const rhythmOverMax = rhythmRun > (Number(s.consecMax) || 99);
   const updateDow = (wd, val) => setData((d) => ({ ...d, settings: { ...d.settings, dow: { ...d.settings.dow, [wd]: val } } }));
 
   const updDayPair = (i, patch) => setData((d) => {
@@ -331,6 +364,57 @@ function SettingsTab({ data, setData, role }) {
         <div className="grid grid-cols-4 gap-4">
           <Field label="연속근무 권장 상한(일)"><NumberInput value={s.consecRecommended} onChange={(v) => update({ consecRecommended: v })} /></Field>
           <Field label="연속근무 최대 허용(일)"><NumberInput value={s.consecMax} onChange={(v) => update({ consecMax: v })} /></Field>
+        </div>
+
+        <div className="mt-5 border border-slate-200 rounded-lg p-3 bg-slate-50/60">
+          <div className="flex items-baseline gap-2 mb-1">
+            <span className="text-xs font-semibold text-slate-700">근무 리듬</span>
+            <span className="text-[11px] text-slate-500">쉬는 칸을 눌러서 우리 매장 틀을 만드세요 (로테이션 인원에게 적용)</span>
+          </div>
+          <div className="flex items-center gap-1.5 mt-2">
+            {rhythm.map((isRest, i) => (
+              <button
+                key={i}
+                onClick={() => toggleRhythm(i)}
+                className={`w-11 h-11 rounded-md border text-xs font-bold transition-colors ${
+                  isRest
+                    ? "bg-indigo-600 border-indigo-600 text-white"
+                    : "bg-white border-slate-300 text-slate-500 hover:border-indigo-400"
+                }`}
+                title={isRest ? "쉬는 날 (눌러서 근무로)" : "근무 (눌러서 쉬는 날로)"}
+              >
+                <div>{i + 1}</div>
+                <div className="text-[9px] font-medium">{isRest ? "휴무" : "근무"}</div>
+              </button>
+            ))}
+          </div>
+          <p className="text-xs text-slate-700 mt-2.5">
+            <b>{rhythmText}</b> 를 반복합니다.
+          </p>
+          <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
+            이 틀이면 {rhythmDays.len}일 기준 한 달 <b>{rhythmDays.byRhythm.toFixed(1)}일</b>을 쉽니다.
+            이 매장 목표는 <b>{rhythmDays.goal}일</b>입니다
+            {Math.abs(rhythmDays.byRhythm - rhythmDays.goal) < 0.5
+              ? " — 딱 맞습니다."
+              : rhythmDays.byRhythm < rhythmDays.goal
+                ? ` — 월 ${(rhythmDays.goal - rhythmDays.byRhythm).toFixed(1)}일이 모자라서, 그만큼은 쉬는 날 옆에 하루씩 붙여 연휴로 채웁니다.`
+                : ` — 월 ${(rhythmDays.byRhythm - rhythmDays.goal).toFixed(1)}일이 남아서, 그만큼은 이 틀보다 적게 쉽니다.`}
+            <br />
+            공휴일·요청휴무·연차가 있는 날은 그쪽이 먼저이므로 틀이 조금씩 어긋날 수 있습니다.
+            사람마다 시작 칸을 어긋나게 돌려서 같은 날 전원이 쉬는 일은 없게 합니다.
+          </p>
+          {!rhythmOverMax && rhythmRun > (Number(s.consecRecommended) || 99) && (
+            <p className="text-[11px] text-amber-700 font-semibold mt-2">
+              이 틀은 {rhythmRun}일 연속근무가 생깁니다. "연속근무 권장 상한"({s.consecRecommended}일)보다 길지만
+              최대 허용({s.consecMax}일) 안이라 그대로 배정합니다.
+            </p>
+          )}
+          {rhythmOverMax && (
+            <p className="text-[11px] text-red-600 font-semibold mt-2">
+              이 틀은 {rhythmRun}일 연속근무가 생기는데 "연속근무 최대 허용"이 {s.consecMax}일입니다.
+              최대 허용을 넘길 수는 없으므로, 쉬는 칸을 늘리거나 최대 허용을 올려주세요.
+            </p>
+          )}
         </div>
 
         <div className="flex items-center justify-between mb-2 mt-5">

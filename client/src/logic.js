@@ -662,6 +662,43 @@ function buildRequestedRestSet(employees, tags, personalTags, monthsMeta, usageR
   return set;
 }
 
+
+/* ------------------------------------------------------------
+   근무 리듬 (7칸 근무형태)
+   ------------------------------------------------------------
+   매장이 [설정]에서 7칸 중 "쉬는 칸"을 골라 둔 틀. 예) 4·7번을 고르면 3근-휴-2근-휴.
+   로테이션 인원에게만 쓴다(고정휴무 인원은 기존 고정휴무 설정이 따로 처리한다).
+   사람마다 시작점을 어긋나게 돌려서, 같은 날 전원이 쉬는 일이 없게 한다.
+
+   주의: 7칸으로는 이 매장의 한 달 휴무 목표에 딱 맞출 수 없는 게 보통이다
+   (예: 목표 10일 = 7칸 기준 2.33칸). 그래서 리듬은 "이대로 해라"가 아니라
+   "최대한 이 리듬을 따라가라"이고, 모자란 만큼은 쉬는 날에 하루 붙여 연휴로 채운다.
+   ------------------------------------------------------------ */
+const DEFAULT_REST_RHYTHM = [false, false, false, true, false, false, true]; // 3근-휴-2근-휴
+
+function restRhythmOf(settings) {
+  const r = settings?.restRhythm;
+  if (Array.isArray(r) && r.length === 7 && r.some(Boolean) && !r.every(Boolean)) return r.map(Boolean);
+  return DEFAULT_REST_RHYTHM;
+}
+
+// 이 리듬이 만드는 가장 긴 근무 블록 (칸이 순환하므로 이어붙여서 계산)
+function rhythmMaxWorkRun(rhythm) {
+  const twice = [...rhythm, ...rhythm];
+  let run = 0, best = 0;
+  twice.forEach((isRest) => {
+    if (isRest) { if (run > best) best = run; run = 0; }
+    else run++;
+  });
+  return Math.min(best, rhythm.length);
+}
+
+// 이 리듬으로 한 달(30일 기준)에 며칠 쉬게 되는지 - 화면 안내용
+function rhythmRestPerMonth(rhythm, daysInMonth) {
+  const per = rhythm.filter(Boolean).length;
+  return (per * (daysInMonth || 30)) / rhythm.length;
+}
+
 function assignRestDays(schedule, employees, tags, settings, monthsMeta, fixedRestSchedules, dayPairOptions) {
   const next = { m1: { ...schedule.m1 }, m2: { ...schedule.m2 } };
   Object.keys(next.m1).forEach((id) => (next.m1[id] = [...schedule.m1[id]]));
@@ -686,13 +723,33 @@ function assignRestDays(schedule, employees, tags, settings, monthsMeta, fixedRe
   const target =
     monthTargets.m1.sat + monthTargets.m1.sunHol + monthTargets.m2.sat + monthTargets.m2.sunHol;
 
-  const streak = {}, restCount = {};
-  ftEmps.forEach((e) => { streak[e.id] = 0; restCount[e.id] = 0; });
+  const streak = {}, restCount = {}, restRun = {}, pending = {};
+  ftEmps.forEach((e) => { streak[e.id] = 0; restCount[e.id] = 0; restRun[e.id] = 0; pending[e.id] = 0; });
+
+  // 매장이 고른 근무 리듬. 사람마다 시작점을 고르게 어긋나게 둔다.
+  const rhythm = restRhythmOf(settings);
+  const cycle = rhythm.length;
+  const phase = {};
+  ftEmps.forEach((e, i) => { phase[e.id] = Math.round((i * cycle) / ftEmps.length) % cycle; });
+  const rhythmSaysRest = (empId, idx) => rhythm[(idx + phase[empId]) % cycle];
+  // 오늘부터 세어 다음 "쉬는 칸"까지 며칠 남았는지 (오늘이 쉬는 칸이면 0)
+  const daysToNextRhythmRest = (empId, idx) => {
+    for (let d = 0; d < cycle; d++) if (rhythmSaysRest(empId, idx + d)) return d;
+    return cycle;
+  };
+  const rhythmRun = rhythmMaxWorkRun(rhythm);
   const selNew = {};
   ftEmps.forEach((e) => { selNew[e.id] = new Set(); });
 
   let inserted = 0;
-  const urgentThresholdOf = (e) => Number(e.consecRecommended) || Number(settings.consecRecommended) || 3;
+  // "이쯤이면 반드시 쉬게 한다" 기준.
+  // 매장이 고른 리듬이 권장보다 길게 일하는 틀이면(예: 5근-2휴) 리듬 쪽을 따르되,
+  // 최대 허용은 절대 넘지 않는다.
+  const urgentThresholdOf = (e) => {
+    const rec = Number(e.consecRecommended) || Number(settings.consecRecommended) || 3;
+    const max = Number(e.consecMax) || Number(settings.consecMax) || rec;
+    return Math.min(Math.max(rec, rhythmRun), max);
+  };
 
   timeline.forEach((slot, idx) => {
     const { key, day } = slot;
@@ -743,55 +800,87 @@ function assignRestDays(schedule, employees, tags, settings, monthsMeta, fixedRe
     const selected = new Set();
     let usedSlots = 0;
 
-    // 1단계: 급한 사람(연속근무 권장 상한 이상) - 소프트 한도
+    // 오늘이 리듬상 쉬는 칸인 사람은 "쉴 차례"로 쌓아둔다. 자리가 없어 오늘 못 쉬면
+    // 이 값이 남아 있다가 다음 날 우선권을 갖는다(리듬이 밀리기만 하고 사라지지는 않는다).
+    activeToday.forEach((e) => { if (rhythmSaysRest(e.id, idx)) pending[e.id]++; });
+
+    const pickable = (e) => isBlank[e.id] && !isFixedToday[e.id] && !selected.has(e.id) && !leaderBlocks(e);
+    const paceTarget = (target * (idx + 1)) / totalDays;
+
+    // A) 최대 연속근무에 다다른 사람 - 하드 한도까지 무조건 쉬게 한다
     while (true) {
       let bestId = null, bestStreak = -1;
       activeToday.forEach((e) => {
-        if (isBlank[e.id] && !isFixedToday[e.id] && !selected.has(e.id) && !leaderBlocks(e) && streak[e.id] >= urgentThresholdOf(e) && streak[e.id] > bestStreak) {
-          bestStreak = streak[e.id]; bestId = e.id;
-        }
-      });
-      if (!bestId) break;
-      if (usedSlots < slackSoft) { markSelected(bestId); } else break;
-    }
-    // 1b단계: 하드 한도까지
-    while (true) {
-      let bestId = null, bestStreak = -1;
-      activeToday.forEach((e) => {
-        if (isBlank[e.id] && !isFixedToday[e.id] && !selected.has(e.id) && !leaderBlocks(e) && streak[e.id] >= urgentThresholdOf(e) && streak[e.id] > bestStreak) {
+        if (pickable(e) && streak[e.id] >= urgentThresholdOf(e) && streak[e.id] > bestStreak) {
           bestStreak = streak[e.id]; bestId = e.id;
         }
       });
       if (!bestId) break;
       if (usedSlots < slackHard) { markSelected(bestId); } else break;
     }
-    // 2단계: 선제 배정 (페이스 뒤처짐)
+
+    // A2) 리듬 앞당기기.
+    // 리듬 순번이 사람마다 겹치면 그날 자리가 모자라 밀리는데, 그대로 다음 칸까지 기다리면
+    // 연속근무 상한을 넘어버린다. 다음 쉬는 칸까지 기다렸을 때 상한을 넘게 되는 사람은
+    // 자리가 있을 때 미리 쉬게 한다(리듬보다 상한이 우선이다).
     while (true) {
-      let bestId = null, bestRest = Infinity;
+      let bestId = null, bestKey = null;
       activeToday.forEach((e) => {
-        if (isBlank[e.id] && !isFixedToday[e.id] && !selected.has(e.id) && !leaderBlocks(e) && streak[e.id] >= 1 && restCount[e.id] < bestRest) {
-          bestRest = restCount[e.id]; bestId = e.id;
-        }
+        if (!pickable(e) || pending[e.id] > 0) return;   // 오늘 쉴 차례인 사람은 B에서 처리
+        if (restCount[e.id] >= target) return;
+        const wait = daysToNextRhythmRest(e.id, idx);
+        if (wait <= 0) return;
+        if (streak[e.id] + wait <= urgentThresholdOf(e)) return; // 기다려도 상한 안에 들어오면 그냥 기다린다
+        const k = [-streak[e.id], restCount[e.id]];
+        if (!bestKey || k[0] < bestKey[0] || (k[0] === bestKey[0] && k[1] < bestKey[1])) { bestKey = k; bestId = e.id; }
+      });
+      if (!bestId) break;
+      if (usedSlots < slackHard) { markSelected(bestId); } else break;
+    }
+
+    // B) 리듬상 쉴 차례인 사람. 많이 밀린 사람 -> 연속근무가 긴 사람 -> 덜 쉰 사람 순.
+    while (true) {
+      let bestId = null, bestKey = null;
+      activeToday.forEach((e) => {
+        if (!pickable(e) || pending[e.id] <= 0) return;
+        const k = [-pending[e.id], -streak[e.id], restCount[e.id]];
+        if (!bestKey || k[0] < bestKey[0] ||
+            (k[0] === bestKey[0] && (k[1] < bestKey[1] ||
+            (k[1] === bestKey[1] && k[2] < bestKey[2])))) { bestKey = k; bestId = e.id; }
       });
       if (!bestId) break;
       if (usedSlots >= slackSoft) break;
-      const paceTarget = (target * (idx + 1)) / totalDays;
+      // 이미 목표보다 앞서 쉬고 있으면 리듬이라도 더 주지 않는다(초과 배정 방지)
+      if (restCount[bestId] >= target) break;
+      markSelected(bestId);
+    }
+
+    // C) 페이스 보정. 7칸 리듬으로는 이 매장 휴무 목표에 못 미치는 게 보통이라,
+    //    모자란 만큼은 어제 쉰 사람에게 하루 붙여 연휴로 채운다. 리듬이 덜 흐트러진다.
+    while (true) {
+      let bestId = null, bestRest = Infinity;
+      activeToday.forEach((e) => {
+        if (!pickable(e)) return;
+        if (restRun[e.id] !== 1) return;               // 어제 딱 하루 쉰 사람만
+        if (rhythmSaysRest(e.id, idx)) return;          // 리듬이 이미 챙긴 날은 B에서 처리됨
+        if (restCount[e.id] < bestRest) { bestRest = restCount[e.id]; bestId = e.id; }
+      });
+      if (!bestId) break;
+      if (usedSlots >= slackSoft) break;
       if (restCount[bestId] < paceTarget) { markSelected(bestId); } else break;
     }
 
     activeToday.forEach((e) => {
-      if (isBlank[e.id]) {
-        if (selected.has(e.id)) {
-          selNew[e.id].add(idx);
-          restCount[e.id]++;
-          streak[e.id] = 0;
-          inserted++;
-        } else {
-          streak[e.id]++;
-        }
+      const restedToday = isBlank[e.id] ? selected.has(e.id) : isOffTag(tags, cellsToday[e.id]);
+      if (isBlank[e.id] && restedToday) { selNew[e.id].add(idx); inserted++; }
+      if (restedToday) {
+        streak[e.id] = 0;
+        restRun[e.id]++;
+        restCount[e.id]++;
+        if (pending[e.id] > 0) pending[e.id]--;
       } else {
-        if (isOffTag(tags, cellsToday[e.id])) { streak[e.id] = 0; restCount[e.id]++; }
-        else streak[e.id]++;
+        streak[e.id]++;
+        restRun[e.id] = 0;
       }
     });
   });
@@ -1161,11 +1250,25 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
         const underMonth = monthsMeta.find(({ key }) => countOf(e.id, key)[countKey] < targetOf(e, key)[countKey]);
         if (!overMonth || !underMonth) continue;
 
-        // 초과한 달에서 이 코드로 쉬는 날 하나를 근무로 바꾸고
-        const giveSlot = overMonth.days.find((day) =>
-          (next[overMonth.key][e.id]?.[day.day - 1] || "") === code &&
-          !isRequestedRest(overMonth.key, e.id, day.day) // 요청으로 확정된 쉬는 날은 이월 대상에서 제외
-        );
+        // 초과한 달에서 이 코드로 쉬는 날 하나를 근무로 바꾸고.
+        // 어느 자리를 빼느냐에 따라 앞뒤 근무 블록이 이어붙어 연속근무가 길어지므로,
+        // "빼고 났을 때 연속근무가 짧게 남는 자리"부터 차례로 시도한다.
+        // (예전에는 첫 번째 자리 하나만 보고 실패하면 포기해서, 실제로는 옮길 수 있는데도
+        //  1개월차 초과가 그대로 남았다.)
+        const giveCandidates = overMonth.days
+          .filter((day) =>
+            (next[overMonth.key][e.id]?.[day.day - 1] || "") === code &&
+            !isRequestedRest(overMonth.key, e.id, day.day) // 요청으로 확정된 쉬는 날은 이월 대상에서 제외
+          )
+          .map((day) => {
+            const before = next[overMonth.key][e.id][day.day - 1];
+            next[overMonth.key][e.id][day.day - 1] = "";
+            const streakAfter = maxStreakOf(e.id);
+            next[overMonth.key][e.id][day.day - 1] = before;
+            return { day, streakAfter };
+          })
+          .sort((a, b) => a.streakAfter - b.streakAfter)
+          .slice(0, 6);
         // 부족한 달에서 근무 중이면서 그날 여유가 있는 날을 후보로 모아, 평일 우선 + 이미 쉬는 사람이
         // 적은(=덜 몰린) 날 우선으로 고른다 - 그래야 여러 인원의 부족분이 같은 날 하나로 몰리지 않는다.
         const takeCandidates = underMonth.days
@@ -1183,22 +1286,25 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
           .filter(Boolean)
           .sort((a, b) => (a.weekend - b.weekend) || (a.off - b.off));
         const takeSlot = takeCandidates[0]?.day;
-        if (!giveSlot || !takeSlot) continue;
+        if (giveCandidates.length === 0 || !takeSlot) continue;
 
-        const giveBefore = next[overMonth.key][e.id][giveSlot.day - 1];
-        const takeBefore = next[underMonth.key][e.id][takeSlot.day - 1];
-        next[overMonth.key][e.id][giveSlot.day - 1] = "";      // 근무로 되돌림(2단계 재배정이 채움)
-        next[underMonth.key][e.id][takeSlot.day - 1] = code;
+        for (const { day: giveSlot } of giveCandidates) {
+          const giveBefore = next[overMonth.key][e.id][giveSlot.day - 1];
+          const takeBefore = next[underMonth.key][e.id][takeSlot.day - 1];
+          next[overMonth.key][e.id][giveSlot.day - 1] = "";      // 근무로 되돌림(2단계 재배정이 채움)
+          next[underMonth.key][e.id][takeSlot.day - 1] = code;
 
-        if (maxStreakOf(e.id) <= limitOf(e) && leaderOk(overMonth.key, giveSlot) && leaderOk(underMonth.key, takeSlot)) {
-          changedDays.add(`${overMonth.key}|${giveSlot.day}`);
-          changedDays.add(`${underMonth.key}|${takeSlot.day}`);
-          balanceFixed++;
-          moved = true;
-          break;
+          if (maxStreakOf(e.id) <= limitOf(e) && leaderOk(overMonth.key, giveSlot) && leaderOk(underMonth.key, takeSlot)) {
+            changedDays.add(`${overMonth.key}|${giveSlot.day}`);
+            changedDays.add(`${underMonth.key}|${takeSlot.day}`);
+            balanceFixed++;
+            moved = true;
+            break;
+          }
+          next[overMonth.key][e.id][giveSlot.day - 1] = giveBefore;
+          next[underMonth.key][e.id][takeSlot.day - 1] = takeBefore;
         }
-        next[overMonth.key][e.id][giveSlot.day - 1] = giveBefore;
-        next[underMonth.key][e.id][takeSlot.day - 1] = takeBefore;
+        if (moved) break;
       }
       if (moved) break;
     }
@@ -1332,12 +1438,21 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
     let reverted = false;
     for (const e of ftEmps) {
       for (const { key, days } of monthsMeta) {
-        const c = countOf(e.id, key);
-        const t = targetOf(e, key);
-        const overHumu = c.humu - t.humu;
-        const overHyuil = c.hyuil - t.hyuil;
+        // 2개월을 통틀어 본 초과분으로 판단한다. 1개월차에서 더 쉬고 2개월차에서 덜 쉬었으면
+        // 서로 상쇄되므로 되돌릴 이유가 없다(화면의 잔여 표시도 같은 방식으로 이월해서 보여준다).
+        // 달마다 따로 보면 상쇄되는 자리를 근무로 되돌려서 오히려 목표에 못 미치게 만든다.
+        let overHumu = 0, overHyuil = 0;
+        for (const { key: k } of monthsMeta) {
+          const cc = countOf(e.id, k), tt = targetOf(e, k);
+          overHumu += cc.humu - tt.humu;
+          overHyuil += cc.hyuil - tt.hyuil;
+        }
         const code = overHyuil > 0 ? "휴일" : (overHumu > 0 ? "휴무" : null);
         if (!code) continue;
+        // 되돌리는 자리는 "그 달 자체도 초과인" 달에서만 뺀다
+        const cHere = countOf(e.id, key), tHere = targetOf(e, key);
+        if (code === "휴일" && cHere.hyuil <= tHere.hyuil) continue;
+        if (code === "휴무" && cHere.humu <= tHere.humu) continue;
 
         // 이 코드로 쉬는 날 후보를 모은다. 쉬는 날 하나를 근무로 되돌리면 앞뒤 근무 블록이 이어붙어
         // 연속근무가 길어지므로, "되돌린 뒤 연속근무가 몇 일이 되는지"를 미리 재보고
@@ -1392,17 +1507,20 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
   const stillShort = [];   // 목표에 못 미친 경우 - 실제로 조치가 필요
   const extraRest = [];    // 목표를 채우고 더 쉰 경우 - 문제 아님(참고용)
   ftEmps.forEach((e) => {
-    const shortParts = [], extraParts = [];
-    monthsMeta.forEach(({ key, label }) => {
+    // 2개월 합산으로 본다. 앞 달에서 더 쉰 만큼은 뒤 달 잔여에서 빠지므로(화면 표시와 동일),
+    // 달별로 나눠 알리면 실제로는 맞는데도 부족/초과라고 잘못 알리게 된다.
+    let dh = 0, dy = 0;
+    monthsMeta.forEach(({ key }) => {
       const c = countOf(e.id, key);
       const t = targetOf(e, key);
-      const dh = c.humu - t.humu;
-      const dy = c.hyuil - t.hyuil;
-      if (dh < 0) shortParts.push(`${label || key} 휴무 ${dh}`);
-      if (dy < 0) shortParts.push(`${label || key} 휴일 ${dy}`);
-      if (dh > 0) extraParts.push(`${label || key} 휴무 +${dh}`);
-      if (dy > 0) extraParts.push(`${label || key} 휴일 +${dy}`);
+      dh += c.humu - t.humu;
+      dy += c.hyuil - t.hyuil;
     });
+    const shortParts = [], extraParts = [];
+    if (dh < 0) shortParts.push(`휴무 ${dh}`);
+    if (dy < 0) shortParts.push(`휴일 ${dy}`);
+    if (dh > 0) extraParts.push(`휴무 +${dh}`);
+    if (dy > 0) extraParts.push(`휴일 +${dy}`);
     if (shortParts.length > 0) stillShort.push(`${e.name}(${shortParts.join(", ")})`);
     if (extraParts.length > 0) extraRest.push(`${e.name}(${extraParts.join(", ")})`);
   });
@@ -2138,6 +2256,7 @@ export {
   validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT, requiredLeaderFT,
   buildRequestedRestSet,
   isOffTag, shiftCodeOf, dowBucket, nextMonth, emptySchedule, isWeekendBucket, isExtendedHoursDay, isActiveEmployee, pickThresholdIndex, isAutoAssignable,
+  restRhythmOf, rhythmMaxWorkRun, rhythmRestPerMonth, DEFAULT_REST_RHYTHM,
   restModeOf, isRotationEmployee, isUnderContractOn, isCountedOn, restTargetFor, fixedRestLimitOf,
   computeLeaveUsage, tagDeductions, isTrackedTag, computeAccrued, ledgerPoolsOf,
 };
