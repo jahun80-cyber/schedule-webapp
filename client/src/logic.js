@@ -1964,10 +1964,10 @@ function validateCombined(schedule, employees, tags, settings, monthsMeta, fixed
    현재 진행중인 스케줄(1·2개월차)과 저장된 월별기록(archive)을 합쳐서
    그 해(year) 동안 각 직원이 어떤 태그를 언제 썼는지 자동 집계
    ============================================================ */
-// 태그 하나가 어떤 휴가에서 몇 시간을 차감하는지. 여러 개일 수 있다.
-// 예) "시차(오전)+반차(오후)" 태그 하나로 시차 4시간 + 연차 4시간을 각각 차감한다.
-// 예전 태그는 leavePool/leaveHours 한 쌍만 갖고 있으므로, 그 경우 한 건짜리 목록으로 바꿔서 돌려준다
-// (기존 데이터는 손대지 않아도 그대로 동작한다).
+// 태그 하나가 어떤 휴가에서 몇 시간을 차감하는지 목록으로 돌려준다.
+// 태그는 휴가 한 종류만 차감한다(예: 반차 -> 연차 4시간). 하루에 여러 휴가를 섞어 쓰는 경우
+// (예: 공가 3시간 + 시차 1시간 + 오후 반차)는 태그로 조합하지 않고 [휴가관리] 탭의 "사용 등록"으로
+// 한 줄 등록한다. 조합마다 태그를 새로 만들면 태그 목록과 스케줄 드롭다운이 끝없이 길어지기 때문이다.
 function tagDeductions(tag) {
   if (!tag) return [];
   const out = [];
@@ -1976,10 +1976,6 @@ function tagDeductions(tag) {
     const hours = Number(tag.leaveHours) || 0;
     if (hours > 0) out.push({ pool: tag.leavePool || "연차", hours });
   }
-  // 추가 차감 - 조합 태그에서 두 번째 이후 차감(예: 시차 4시간)을 여기에 담는다
-  (tag.extraDeductions || []).forEach((d) => {
-    if (d && d.pool && Number(d.hours) > 0) out.push({ pool: String(d.pool), hours: Number(d.hours) });
-  });
   return out;
 }
 

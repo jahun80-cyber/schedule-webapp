@@ -740,15 +740,6 @@ function TagsTab({ data, setData, role, storeList, currentStoreId }) {
     tags: [...d.tags, { id: `tag_${Date.now()}`, code: "새태그" + (d.tags.length + 1), category: "확정휴무", countsAsAttend: false, restType: "해당없음", desc: "" }],
   }));
 
-  // 추가 차감 항목 편집 (조합 태그용)
-  const updExtra = (t, idx, patch) => {
-    const arr = [...(t.extraDeductions || [])];
-    arr[idx] = { ...arr[idx], ...patch };
-    update(t.id, { extraDeductions: arr });
-  };
-  const addExtra = (t) => update(t.id, { extraDeductions: [...(t.extraDeductions || []), { pool: "", hours: "" }] });
-  const rmExtra = (t, idx) => update(t.id, { extraDeductions: (t.extraDeductions || []).filter((_, i) => i !== idx) });
-
   const dragIndex = useRef(null);
   const [overIndex, setOverIndex] = useState(null);
 
@@ -861,8 +852,8 @@ function TagsTab({ data, setData, role, storeList, currentStoreId }) {
           </thead>
           <tbody>
             {tags.map((t, i) => (
-              <React.Fragment key={t.id || t.code}>
               <tr
+                key={t.id || t.code}
                 onDragOver={(e) => onDragOver(e, i)}
                 onDrop={() => onDrop(i)}
                 className={`border-b border-slate-100 ${overIndex === i ? "bg-indigo-50" : ""}`}
@@ -902,23 +893,14 @@ function TagsTab({ data, setData, role, storeList, currentStoreId }) {
                   />
                 </td>
                 <td className="py-1.5 pr-2">
-                  {t.trackAsLeave ? (
-                    <div className="flex items-center gap-1">
-                      <TextInput value={t.leavePool || "연차"} onChange={(v) => update(t.id, { leavePool: v })} className="w-28" placeholder="예: 리프레시/안식휴가" />
-                      {(t.extraDeductions || []).length === 0 && (
-                        <button
-                          onClick={() => addExtra(t)}
-                          className="text-[10px] text-violet-600 hover:text-violet-800 font-bold whitespace-nowrap"
-                          title="이 태그를 한 번 쓸 때 다른 휴가에서도 같이 차감되게 하려면 누르세요 (예: 오전 시차 + 오후 반차)"
-                        >＋조합</button>
-                      )}
-                    </div>
-                  ) : <span className="text-[11px] text-slate-300">-</span>}
+                  {t.trackAsLeave
+                    ? <TextInput value={t.leavePool || "연차"} onChange={(v) => update(t.id, { leavePool: v })} className="w-28" placeholder="예: 리프레시/안식휴가" />
+                    : <span className="text-[11px] text-slate-300">-</span>}
                 </td>
                 <td className="py-1.5 pr-2">
                   {t.trackAsLeave ? <NumberInput value={t.leaveHours ?? ""} onChange={(v) => update(t.id, { leaveHours: v })} className="w-16" /> : <span className="text-[11px] text-slate-300">-</span>}
                 </td>
-                <td className="py-1.5 pr-2 text-center" title="시차·공가처럼 쓸 때마다 발생량이 쌓이는 휴가. 켜면 [시차·공가] 탭에서 발생 등록과 잔여 관리를 합니다.">
+                <td className="py-1.5 pr-2 text-center" title="시차·공가처럼 쓸 때마다 발생량이 쌓이는 휴가. 켜면 [휴가관리] 탭에서 발생 등록과 잔여 관리를 합니다.">
                   {t.trackAsLeave
                     ? <input
                         type="checkbox" checked={!!t.usesLedger}
@@ -938,54 +920,6 @@ function TagsTab({ data, setData, role, storeList, currentStoreId }) {
                 <td className="py-1.5 pr-2"><TextInput value={t.desc} onChange={(v) => update(t.id, { desc: v })} className="w-40" /></td>
                 <td><IconBtn onClick={() => remove(t.id)} title="삭제" danger /></td>
               </tr>
-              {t.trackAsLeave && (t.extraDeductions || []).length > 0 && (
-                <tr className="border-b border-slate-100 bg-violet-50/40">
-                  <td colSpan={13} className="py-2 px-2">
-                    <div className="flex items-start gap-3 flex-wrap text-xs">
-                      <div className="flex items-center gap-1.5 pt-1">
-                        <span className="font-semibold text-violet-700 whitespace-nowrap">추가 차감</span>
-                        <span className="text-[10px] text-slate-400">한 번 쓸 때 다른 휴가에서도 같이 차감되면 여기에 추가</span>
-                      </div>
-                      <div className="flex flex-col gap-1.5">
-                        {(t.extraDeductions || []).map((d, di) => (
-                          <div key={di} className="flex items-center gap-1.5">
-                            <TextInput
-                              value={d.pool || ""}
-                              onChange={(v) => updExtra(t, di, { pool: v })}
-                              className="w-32" placeholder="예: 시차 / 공가(예비군)"
-                            />
-                            <NumberInput
-                              value={d.hours ?? ""}
-                              onChange={(v) => updExtra(t, di, { hours: v })}
-                              className="w-16"
-                            />
-                            <span className="text-[11px] text-slate-400">시간</span>
-                            <button onClick={() => rmExtra(t, di)} className="text-slate-300 hover:text-red-500" title="삭제">
-                              <Trash2 size={13} />
-                            </button>
-                          </div>
-                        ))}
-                        <div className="flex items-center gap-2">
-                          <button onClick={() => addExtra(t)} className="text-[11px] text-violet-700 hover:text-violet-900 font-semibold">
-                            + 차감 항목 추가
-                          </button>
-
-                        </div>
-                      </div>
-                      <div className="text-[10px] text-slate-500 pt-1 leading-relaxed">
-                        이 태그를 하루 쓰면: {tagDeductions(t).length === 0
-                          ? <span className="text-slate-400">차감 없음</span>
-                          : tagDeductions(t).map((d, i) => (
-                              <span key={i} className="inline-block ml-1 bg-white border border-violet-200 rounded px-1.5 py-0.5 font-semibold text-violet-700">
-                                {d.pool} {d.hours}H
-                              </span>
-                            ))}
-                      </div>
-                    </div>
-                  </td>
-                </tr>
-              )}
-              </React.Fragment>
             ))}
           </tbody>
         </table>
