@@ -1097,6 +1097,22 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
   // (매장이 "이 날은 쉰다"고 확정해둔 자리라, 목표 초과분을 메우려고 여기를 헐면 안 된다)
   const requestedRest = buildRequestedRestSet(employees, tags, personalTags, monthsMeta, usageRecords);
 
+  // 그날 한 명이 더 쉬어도 최소 출근인원이 유지되는지.
+  // 계약기간 밖이거나 아직 "1인분"으로 세지 않는 인원은 출근 가능 인원에서 뺀다 -
+  // 3단계(assignRemainingRest)와 화면의 출근/필요 표시가 쓰는 기준과 같다.
+  // 예전에는 ftEmps.length를 그대로 써서 계약이 끝난 인원까지 세는 바람에 여유를 실제보다
+  // 많게 보고, 최소 출근인원을 깨는 자리로 휴무를 옮기는 일이 있었다.
+  const hasRoomOn = (key, day) => {
+    let total = 0, off = 0;
+    ftEmps.forEach((o) => {
+      if (!isUnderContractOn(o, day.dateStr) || !isCountedOn(o, day.dateStr)) return;
+      total++;
+      const ov = next[key][o.id]?.[day.day - 1] || "";
+      if (ov !== "" && isOffTag(tags, ov)) off++;
+    });
+    return (total - off) - 1 >= requiredFT(settings, day);
+  };
+
   // 고정휴무로 지정된 요일인지. [요청]처럼 아예 못 건드리게 막지는 않는다 - 전원이 고정휴무인
   // 매장에서는 그 사람의 쉬는 날이 전부 고정휴무라, 막아버리면 목표 초과를 해소할 방법이 없다.
   // 대신 "되돌릴 자리"를 고를 때 맨 뒤로 미뤄서, 다른 자리가 있으면 고정휴무는 건드리지 않는다.
@@ -1303,12 +1319,12 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
           .map((day) => {
             const v = next[underMonth.key][e.id]?.[day.day - 1] || "";
             if (!workCodeSet.has(v)) return null;
+            if (!hasRoomOn(underMonth.key, day)) return null;
             let off = 0;
             ftEmps.forEach((o) => {
               const ov = next[underMonth.key][o.id]?.[day.day - 1] || "";
               if (ov !== "" && isOffTag(tags, ov)) off++;
             });
-            if ((ftEmps.length - off) - 1 < requiredFT(settings, day)) return null;
             return { day, off, weekend: day.weekday === "토" || day.weekday === "일" ? 1 : 0 };
           })
           .filter(Boolean)
@@ -1361,12 +1377,12 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
             if (k !== key) continue;
             const v = next[k][e.id]?.[day.day - 1] || "";
             if (!(v === "" || workCodeSet.has(v))) continue; // 연차 등은 건드리지 않음
+            if (!hasRoomOn(k, day)) continue;
             let off = 0;
             ftEmps.forEach((o) => {
               const ov = next[k][o.id]?.[day.day - 1] || "";
               if (ov !== "" && isOffTag(tags, ov)) off++;
             });
-            if ((ftEmps.length - off) - 1 < requiredFT(settings, day)) continue;
             candidates.push({ key: k, day, off, weekend: day.weekday === "토" || day.weekday === "일" ? 1 : 0 });
           }
           candidates.sort((a, b) => (a.weekend - b.weekend) || (a.off - b.off));
@@ -1533,6 +1549,56 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
     if (!reverted) break;
   }
 
+  /* --- (E) 마지막 마무리: 아직 부족한데 쉴 수 있는 자리가 남아 있으면 채운다 --- */
+  // 앞의 (A)~(D)에서 쉬는 날을 사람끼리 주고받거나 다른 달로 옮기다 보면, 원래 쉬던 자리가
+  // 비면서 그 날에 여유가 새로 생기는 경우가 있다. 2개월치를 한 번에 짜는 것이므로
+  // "쉴 수 있는 날이 남아 있는데 휴무/휴일이 부족한 사람이 있는" 상태로 끝나면 안 된다.
+  // 여기서 그런 자리를 찾아 마지막으로 채운다.
+  let filledAtEnd = 0;
+  for (let round = 0; round < 60; round++) {
+    let filled = false;
+    for (const e of ftEmps) {
+      // 2개월을 통틀어 본 부족분 (앞 달에서 더 쉰 만큼은 채운 것으로 친다)
+      let shortHumu = 0, shortHyuil = 0;
+      monthsMeta.forEach(({ key }) => {
+        const cc = countOf(e.id, key), tt = targetOf(e, key);
+        shortHumu += tt.humu - cc.humu;
+        shortHyuil += tt.hyuil - cc.hyuil;
+      });
+      if (shortHumu <= 0 && shortHyuil <= 0) continue;
+      const code = shortHyuil > 0 ? "휴일" : "휴무";
+
+      // 쉴 수 있는 자리 후보: 그날 한 명 더 쉬어도 최소인원이 유지되고,
+      // 빈칸이거나 일반 근무코드인 칸(연차·요청 등 확정된 자리는 건드리지 않는다)
+      const spots = [];
+      for (const { key, days } of monthsMeta) {
+        for (const day of days) {
+          if (!isUnderContractOn(e, day.dateStr)) continue;
+          const v = next[key][e.id]?.[day.day - 1] || "";
+          if (!(v === "" || workCodeSet.has(v))) continue;
+          if (!hasRoomOn(key, day)) continue;
+          if (!leaderOk(key, day)) continue;
+          spots.push({ key, day });
+        }
+      }
+      let done = false;
+      for (const { key, day } of spots) {
+        const before = next[key][e.id][day.day - 1];
+        next[key][e.id][day.day - 1] = code;
+        if (maxStreakOf(e.id) <= limitOf(e)) {
+          changedDays.add(`${key}|${day.day}`);
+          filledAtEnd++;
+          filled = true;
+          done = true;
+          break;
+        }
+        next[key][e.id][day.day - 1] = before; // 연속근무가 나빠지면 되돌린다
+      }
+      if (done) break;
+    }
+    if (!filled) break;
+  }
+
   // 남은 문제 확인
   const stillOver = ftEmps.filter((e) => maxStreakOf(e.id) > limitOf(e)).map((e) => `${e.name}(${maxStreakOf(e.id)}일)`);
   const stillShort = [];   // 목표에 못 미친 경우 - 실제로 조치가 필요
@@ -1560,6 +1626,7 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
   parts.push(`연속근무 조율: ${streakFixed}건`);
   parts.push(`휴무/휴일 균형 조율: ${balanceFixed}건`);
   if (revertedToWork > 0) parts.push(`초과분을 근무로 되돌림: ${revertedToWork}건`);
+  if (filledAtEnd > 0) parts.push(`남은 자리에 추가 배정: ${filledAtEnd}건`);
   if (stillOver.length > 0) parts.push(`아직 연속근무 상한 초과: ${stillOver.join(", ")} — 수기 조정 필요`);
   if (stillShort.length > 0) parts.push(`목표에 못 미침: ${stillShort.join(", ")} — 수기 조정 필요`);
   if (extraRest.length > 0) parts.push(`목표보다 초과해서 쉬는 인원: ${extraRest.join(", ")} — 연차로 처리하거나 근무로 되돌려주세요`);
@@ -1711,13 +1778,19 @@ function assignRemainingRest(schedule, employees, tags, settings, monthsMeta, fi
   // 1개월차에서 목표보다 더(또는 덜) 쉬었으면 그만큼이 2개월차 잔여로 이월되기 때문에,
   // 달마다 따로 계산하면 화면에는 잔여가 0인데도 여기서는 부족하다고 보고 더 배정해 초과가 난다.
   const monthOrder = monthsMeta.map((m) => m.key);
+  // allowCrossMonth가 켜지면 달을 가리지 않고 2개월 전체 부족분을 본다.
+  // 평소에는 "이 달까지" 누적으로만 보기 때문에, 예를 들어 2개월차가 부족해도
+  // 1개월차 날짜에는 배정하지 않는다(1개월차 초반에 쉬는 날이 몰리는 것을 막기 위해서다).
+  // 하지만 2개월치를 한 번에 짜는 것이므로, 다 돌리고도 부족분이 남았는데 아직 쉴 수 있는
+  // 날(AVAILABLE)이 남아 있다면 그때는 달을 넘겨서라도 채워야 한다.
+  let allowCrossMonth = false;
   const cumShort = (emp, key) => {
     let humu = 0, hyuil = 0;
     for (const k of monthOrder) {
       const t = targetOf(emp, k);
       humu += t.humu - counts[emp.id][k].humu;
       hyuil += t.hyuil - counts[emp.id][k].hyuil;
-      if (k === key) break;
+      if (!allowCrossMonth && k === key) break;
     }
     return { humu, hyuil };
   };
@@ -1800,7 +1873,12 @@ function assignRemainingRest(schedule, employees, tags, settings, monthsMeta, fi
       // 후보를 순서대로 시도 - 한 명이 연속근무 제약에 걸려도 그날을 포기하지 않고 다음 후보를 본다
       let placedSomeone = false;
       for (const picked of candidates) {
-        const code = cumShort(picked, key).humu > 0 ? "휴무" : "휴일";
+        // 달을 넘겨 채울 때는 휴일부터 쓴다. 휴무는 그 달의 토요일 수를 기준으로 잡히는 값이라
+        // 월별 의미가 커서, 다른 달로 옮기는 건 휴일 쪽이 자연스럽다.
+        const csPick = cumShort(picked, key);
+        const code = allowCrossMonth
+          ? (csPick.hyuil > 0 ? "휴일" : "휴무")
+          : (csPick.humu > 0 ? "휴무" : "휴일");
         const before = next[key][picked.id][day.day - 1];
         const streakBefore = maxStreakOf(picked.id);
         placeRest(key, day, picked.id, code);
@@ -1850,6 +1928,23 @@ function assignRemainingRest(schedule, employees, tags, settings, monthsMeta, fi
     for (let round = 0; round < 60; round++) {
       if (runPass(timelineAll) === 0) break;
     }
+  }
+
+  // 5) 여기까지 하고도 2개월 전체로 부족한 사람이 남았으면, 이제는 달을 가리지 않고 채운다.
+  //    (2개월치를 한 번에 짜는 것이므로, 쉴 수 있는 날을 남겨둔 채로 부족분이 남으면 안 된다.
+  //     1개월차가 다 찼는데 2개월차가 부족하면 1개월차의 남은 자리로 당겨오고, 그 반대도 된다.)
+  if (ftEmps.some((e) => shortOf(e.id).total > 0)) {
+    allowCrossMonth = true;
+    allowThirdRestDay = true;
+    for (let round = 0; round < 60; round++) {
+      if (runPass(weekdayTimeline) === 0) break;
+    }
+    if (ftEmps.some((e) => shortOf(e.id).total > 0)) {
+      for (let round = 0; round < 60; round++) {
+        if (runPass(timelineAll) === 0) break;
+      }
+    }
+    allowCrossMonth = false;
   }
 
   // 주 단위 정리: 한 주(월~일) 안에서 쉬는 날이 여러 개면 "가장 앞선 날 = 휴무", 나머지 = 휴일
