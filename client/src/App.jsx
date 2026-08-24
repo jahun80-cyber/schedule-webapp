@@ -926,9 +926,9 @@ function TagsTab({ data, setData, role, storeList, currentStoreId }) {
         <p className="text-xs text-slate-500 mt-3">
           "사용량 추적"을 켜고 시간(H)을 지정하면(예: 연차=8H, 반차=4H, 반반차=2H), 이 태그가 입력된 날짜를 자동으로 집계해 보여줍니다.
           연차뿐 아니라 <b>시차·공가도 이걸 켜야 사용량이 집계됩니다.</b> 그중 시차·공가처럼 쓸 때마다 발생량이 쌓이는 휴가는
-          "발생장부"까지 켜면 [시차·공가] 탭에서 발생 등록과 잔여 관리를 할 수 있습니다.
+          "발생장부"까지 켜면 [휴가관리] 탭에서 발생 등록과 잔여 관리를 할 수 있습니다. 시차·공가는 쓸 때마다 시간이 다르므로 시간(H)은 비워둡니다.
           "휴가 종류"를 같은 이름으로 맞춰두면 같은 보유량으로 묶여서 계산됩니다 — 예를 들어 연차/반차/반반차는 "연차"로, 리프레시휴가·안식휴가는
-          새로 태그를 추가해서 "리프레시/안식휴가"라는 이름으로 묶어두면 [연차현황]에서 별도의 보유량으로 따로 관리됩니다.
+          새로 태그를 추가해서 "리프레시/안식휴가"라는 이름으로 묶어두면 [휴가관리]에서 별도의 보유량으로 따로 관리됩니다.
           "근무조 환산"을 지정하면 그날 그 근무조 인원 1명으로 계산됩니다 (예: 반차(오후)·반반차 → A조).
           "휴무/휴일 후보"를 켜두면(예: RQ 같은 휴무 요청 태그), 1단계 실행 시 그 사람의 남은 휴무/휴일로 자동 전환되고,
           휴무/휴일을 다 소진했으면 연차 잔여가 남아있는 만큼만 하루 단위 연차로 등록됩니다 (반차·반반차는 자동 전환하지 않습니다).
@@ -2436,13 +2436,18 @@ function LeaveTab({ data, setData, archive, role }) {
   );
 
   const leaveTags = data.tags.filter((t) => tagDeductions(t).length > 0);
-  // 태그들이 차감하는 "휴가 종류"를 전부 모은다(조합 태그의 추가 차감 대상까지 포함, 등장 순서 유지)
-  const allPools = [];
+  // 태그가 정해진 시간을 차감하는 "휴가 종류"(연차/리프레시/안식 등). 등장 순서 유지
+  const tagPools = [];
   leaveTags.forEach((t) => {
-    tagDeductions(t).forEach(({ pool }) => { if (!allPools.includes(pool)) allPools.push(pool); });
+    tagDeductions(t).forEach(({ pool }) => { if (!tagPools.includes(pool)) tagPools.push(pool); });
   });
-  // 발생 장부로 관리하는 휴가(시차·공가 등)와, 보유량을 수기 입력하는 휴가(연차 등)를 나눈다
-  const ledgerPools = ledgerPoolsOf(data.tags).filter((x) => allPools.includes(x));
+  // 발생 장부로 관리하는 휴가(시차·공가). 쓸 때마다 시간이 달라서 태그에 고정 시간(H)을 넣지 않으므로
+  // tagPools에는 잡히지 않는다. 그래서 따로 모아 합쳐야 한다 - 안 합치면 "발생 등록" 칸 자체가
+  // 사라지고 사용 등록의 차감 종류 목록에도 시차·공가가 안 나온다.
+  const ledgerPools = ledgerPoolsOf(data.tags);
+  const allPools = [...tagPools];
+  ledgerPools.forEach((x) => { if (!allPools.includes(x)) allPools.push(x); });
+  // 연차처럼 보유량을 연 단위로 수기 입력하는 휴가만 아래 연차 표에 남긴다
   const pools = allPools.filter((x) => !ledgerPools.includes(x));
 
   const accrued = useMemo(() => computeAccrued(year, data.accrualLedger || []), [year, data.accrualLedger]);
@@ -2510,6 +2515,7 @@ function LeaveTab({ data, setData, archive, role }) {
         <SectionCard title="연차 사용 현황" icon={PieChart}>
           <p className="text-sm text-slate-500">
             아직 "사용량 추적"이 켜진 태그가 없습니다. [태그목록] 탭에서 연차/반차/반반차 같은 태그의 "사용량 추적"을 켜고 시간(H)을 지정해주세요.
+            시차·공가처럼 쓸 때마다 쌓이는 휴가는 시간(H)을 비워둔 채 "사용량 추적"과 "발생장부"를 함께 켜면 됩니다.
           </p>
         </SectionCard>
       </div>
@@ -2531,8 +2537,7 @@ function LeaveTab({ data, setData, archive, role }) {
         </p>
       </SectionCard>
 
-      {locked && <ReadOnlyNotice>연차 보유량 입력은 매장관리자 이상만 할 수 있습니다.</ReadOnlyNotice>}
-      <ReadOnlyFence locked={locked}>
+      {locked && <ReadOnlyNotice>휴가 등록은 매장관리자 이상만 할 수 있습니다.</ReadOnlyNotice>}
       <ReadOnlyFence locked={locked}>
       <SectionCard title="사용 등록" icon={ClipboardList}
         right={!locked && <PrimaryBtn onClick={addUsage} icon={Plus}>사용 등록</PrimaryBtn>}>
@@ -2629,7 +2634,6 @@ function LeaveTab({ data, setData, archive, role }) {
           )}
         </SectionCard>
       )}
-      </ReadOnlyFence>
 
       {ledgerPools.map((poolName) => (
         <SectionCard key={"lg-" + poolName} title={`${year}년 "${poolName}" 발생·사용 현황`} icon={PieChart}>
