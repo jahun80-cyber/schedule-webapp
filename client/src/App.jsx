@@ -2475,12 +2475,40 @@ function LeaveTab({ data, setData, archive, role }) {
   }));
 
   /* ---------- 사용 등록 (시간 조합이 자유로운 사용) ---------- */
+  // 차감 선택지. 태그로 고르면 그 태그의 휴가 종류와 시간이 그대로 따라오고,
+  // 아래 사용일 표에도 날짜가 태그별로 찍힌다.
+  // 시차·공가처럼 고정 시간이 없는 휴가는 태그가 아니라 종류를 고르고 시간은 직접 넣는다.
+  const deductChoices = useMemo(() => {
+    const out = [];
+    leaveTags.forEach((t) => {
+      const ds = tagDeductions(t);
+      if (ds.length !== 1) return;
+      out.push({
+        value: "tag:" + t.code,
+        label: t.code + " (" + ds[0].pool + " " + ds[0].hours + "H)",
+        tag: t.code, pool: ds[0].pool, hours: ds[0].hours,
+      });
+    });
+    ledgerPools.forEach((p) => {
+      out.push({ value: "pool:" + p, label: p + " (시간 직접 입력)", tag: "", pool: p, hours: "" });
+    });
+    return out;
+  }, [leaveTags, ledgerPools]);
+
+  // 저장된 항목이 위 선택지 중 무엇인지. 예전에 종류만 골라둔 항목은 빈 값이 되어 다시 골라야 한다.
+  const choiceValueOf = (it) => {
+    if (!it) return "";
+    if (it.tag) return "tag:" + it.tag;
+    if (it.pool && ledgerPools.includes(it.pool)) return "pool:" + it.pool;
+    return "";
+  };
+
   const usageRecords = data.usageRecords || [];
   const addUsage = () => setData((d) => ({
     ...d,
     usageRecords: [{
       id: "use_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
-      empId: "", date: "", displayTag: "", items: [{ pool: allPools[0] || "", hours: "" }], note: "",
+      empId: "", date: "", displayTag: "", items: [{ pool: "", hours: "", tag: "" }], note: "",
     }, ...(d.usageRecords || [])],
   }));
   const updUsage = (id, patch) => setData((d) => ({
@@ -2494,7 +2522,7 @@ function LeaveTab({ data, setData, archive, role }) {
     items[idx] = { ...items[idx], ...patch };
     updUsage(r.id, { items });
   };
-  const addUsageItem = (r) => updUsage(r.id, { items: [...(r.items || []), { pool: allPools[0] || "", hours: "" }] });
+  const addUsageItem = (r) => updUsage(r.id, { items: [...(r.items || []), { pool: "", hours: "", tag: "" }] });
   const rmUsageItem = (r, idx) => updUsage(r.id, { items: (r.items || []).filter((_, i) => i !== idx) });
 
   // 스케줄 칸에 표시할 수 있는 태그(쉬는 날로 잡히는 것만) - 그날 출근 인원 반영 방식도 이 태그가 결정
@@ -2515,6 +2543,10 @@ function LeaveTab({ data, setData, archive, role }) {
   };
 
   const activeEmps = data.employees.filter((e) => isActiveEmployee(e));
+  // 휴가를 태그로 고르지 않은 사용 등록이 남아 있는지. 있으면 그 날짜도 표에 보여줘야 한다
+  // (안 그러면 시간만 차감되고 언제 썼는지가 화면 어디에도 안 나온다).
+  const hasDirect = (poolName) =>
+    activeEmps.some((e) => (usage[e.id]?.byPool?.[poolName]?.byTag?.["직접 등록"]?.dates || []).length > 0);
 
   if (leaveTags.length === 0 && ledgerPools.length === 0) {
     return (
@@ -2584,9 +2616,15 @@ function LeaveTab({ data, setData, archive, role }) {
                       <div key={ii} className="flex items-center gap-1.5">
                         <span className="text-[11px] text-slate-400 w-10">차감</span>
                         <Select
-                          value={it.pool || ""} onChange={(v) => updUsageItem(r, ii, { pool: v })}
-                          options={[{ value: "", label: "종류" }, ...allPools.map((x) => ({ value: x, label: x }))]}
-                          className="w-36"
+                          value={choiceValueOf(it)}
+                          onChange={(v) => {
+                            const c = deductChoices.find((x) => x.value === v);
+                            if (!c) { updUsageItem(r, ii, { tag: "", pool: "", hours: "" }); return; }
+                            // 태그를 고르면 시간까지 자동으로 채운다(반차 -> 4시간). 필요하면 뒤에서 고칠 수 있다.
+                            updUsageItem(r, ii, { tag: c.tag, pool: c.pool, hours: c.hours === "" ? (it.hours ?? "") : c.hours });
+                          }}
+                          options={[{ value: "", label: "휴가 선택" }, ...deductChoices.map((c) => ({ value: c.value, label: c.label }))]}
+                          className="w-52"
                         />
                         <NumberInput value={it.hours ?? ""} onChange={(v) => updUsageItem(r, ii, { hours: v })} className="w-16" invalid={!(Number(it.hours) > 0)} />
                         <span className="text-[11px] text-slate-400">시간</span>
@@ -2601,6 +2639,11 @@ function LeaveTab({ data, setData, archive, role }) {
                     </div>
                   </div>
                   {incomplete && <p className="text-[10px] text-red-600 font-semibold mt-1.5">직원·날짜·스케줄 표시 태그·차감 시간을 모두 채워야 반영됩니다</p>}
+                  {(r.items || []).some((it) => Number(it.hours) > 0 && !choiceValueOf(it)) && (
+                    <p className="text-[10px] text-amber-700 font-semibold mt-1.5">
+                      휴가가 선택되지 않은 차감이 있습니다. 시간은 이미 반영돼 있지만, 휴가를 골라야 아래 사용일 표에 날짜가 표시됩니다.
+                    </p>
+                  )}
                 </div>
               );
             })}
@@ -2688,6 +2731,7 @@ function LeaveTab({ data, setData, archive, role }) {
                   <th>잔여</th>
                   <th>소진율</th>
                   {poolTags.map((t) => <th key={t.id}>{t.code} 사용일</th>)}
+                  {hasDirect(poolName) && <th>직접 등록 사용일</th>}
                 </tr>
               </thead>
               <tbody>
@@ -2721,6 +2765,13 @@ function LeaveTab({ data, setData, archive, role }) {
                           </td>
                         );
                       })}
+                      {hasDirect(poolName) && (
+                        <td className="py-2 text-[11px] text-slate-600 max-w-[200px]">
+                          {(u?.byTag?.["직접 등록"]?.dates || []).length === 0
+                            ? <span className="text-slate-300">-</span>
+                            : (u?.byTag?.["직접 등록"]?.dates || []).map((d) => d.slice(5).replace("-", "/")).join(", ")}
+                        </td>
+                      )}
                     </tr>
                   );
                 })}

@@ -2026,7 +2026,8 @@ function ledgerPoolsOf(tags) {
   return pools;
 }
 
-// 사용 등록(usageOverrides) 한 줄: { id, empId, date, items: [{pool, hours}], note }
+// 사용 등록(usageOverrides) 한 줄: { id, empId, date, displayTag, items: [{pool, hours, tag}], note }
+//   items[].tag = 이 차감이 어떤 태그에 해당하는지(예: "반차(오후)"). 없으면 "직접 등록"으로 집계된다.
 //
 // 왜 필요한가: "9/20에 공가 3시간 + 시차 1시간 + 오후 반차" 처럼 시간 조합이 자유로운 사용은
 // 태그로 표현하려면 조합마다 태그를 새로 만들어야 하고 가짓수가 사실상 무한하다.
@@ -2091,7 +2092,10 @@ function computeLeaveUsage(year, tags, archive, usageOverrides) {
       if (!result[r.empId]) result[r.empId] = { name: r.empName || "", byPool: {} };
       if (!result[r.empId].byPool[it.pool]) result[r.empId].byPool[it.pool] = { totalHours: 0, byTag: {} };
       const poolEntry = result[r.empId].byPool[it.pool];
-      const label = "직접 등록";
+      // 어떤 휴가를 썼는지 태그로 골랐으면 그 태그 이름으로 집계한다.
+      // 그래야 [휴가관리]의 사용일 열(반차(오후) 사용일 등)에 날짜가 그대로 찍힌다.
+      // 태그 없이 종류만 고른 경우(시차·공가처럼 태그가 없는 휴가)는 "직접 등록"으로 모은다.
+      const label = it.tag || "직접 등록";
       if (!poolEntry.byTag[label]) poolEntry.byTag[label] = { hours, dates: [] };
       poolEntry.byTag[label].dates.push(r.date);
       poolEntry.totalHours += hours;
