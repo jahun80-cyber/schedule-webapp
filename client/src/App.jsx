@@ -1350,6 +1350,45 @@ function buildShiftColorMap(ftTemplates, ptTemplates) {
   return map;
 }
 
+// 셀 드롭다운을 분류별로 묶는다. 태그가 20개를 넘어가면 한 줄로 늘어놓은 목록에서
+// 원하는 걸 찾기가 어렵기 때문에, 근무조 / 휴무 / 휴가 / 기타로 나눠서 보여준다.
+// [스케줄 1·2개월차]와 [월별기록]이 같은 드롭다운을 쓰므로 최상위에 둔다.
+function buildCodeGroups(tags, ftTemplates, ptTemplates) {
+  const ftCodes = (ftTemplates || []).map((t) => t.code).filter(Boolean);
+  const ptCodes = (ptTemplates || []).map((t) => t.code).filter(Boolean).filter((c) => !ftCodes.includes(c));
+  const used = new Set([...ftCodes, ...ptCodes]);
+  const rest = [], leave = [], etc = [];
+  (tags || []).forEach((t) => {
+    if (!t.code || used.has(t.code)) return;
+    used.add(t.code);
+    if (t.code === "휴무" || t.code === "휴일" || t.restType === "휴무" || t.restType === "휴일") rest.push(t.code);
+    // 시차·공가는 고정 차감 시간이 없지만(발생장부로 관리) 분류는 휴가가 맞다
+    else if (tagDeductions(t).length > 0 || t.usesLedger) leave.push(t.code);
+    else etc.push(t.code);
+  });
+  return [
+    { label: "정직원 근무조", codes: ftCodes },
+    { label: "파트타이머 근무조", codes: ptCodes },
+    { label: "휴무/휴일", codes: rest },
+    { label: "휴가 (연차·시차·공가 등)", codes: leave },
+    { label: "기타", codes: etc },
+  ].filter((g) => g.codes.length > 0);
+}
+
+// 분류별로 묶은 <option> 묶음 (셀 드롭다운 공통)
+function CodeOptions({ groups }) {
+  return (
+    <>
+      <option value=""></option>
+      {(groups || []).map((g) => (
+        <optgroup key={g.label} label={g.label}>
+          {g.codes.map((c) => <option key={c} value={c}>{c}</option>)}
+        </optgroup>
+      ))}
+    </>
+  );
+}
+
 function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, priorMonthCarry, filterDate, filterMode }) {
   const { employees, tags, settings } = data;
   const memoRowLabels = data.memoRowLabels || [];
@@ -1362,39 +1401,9 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
     return Array.from(set);
   }, [tags, data.ftTemplates, data.ptTemplates]);
 
-  // 셀 드롭다운을 분류별로 묶는다. 태그가 20개를 넘어가면 한 줄로 늘어놓은 목록에서
-  // 원하는 걸 찾기가 어렵기 때문에, 근무조 / 휴무 / 휴가 / 기타로 나눠서 보여준다.
-  const codeGroups = useMemo(() => {
-    const ftCodes = data.ftTemplates.map((t) => t.code).filter(Boolean);
-    const ptCodes = data.ptTemplates.map((t) => t.code).filter(Boolean).filter((c) => !ftCodes.includes(c));
-    const used = new Set([...ftCodes, ...ptCodes]);
-    const rest = [], leave = [], etc = [];
-    tags.forEach((t) => {
-      if (!t.code || used.has(t.code)) return;
-      used.add(t.code);
-      if (t.code === "휴무" || t.code === "휴일" || t.restType === "휴무" || t.restType === "휴일") rest.push(t.code);
-      else if (tagDeductions(t).length > 0) leave.push(t.code);
-      else etc.push(t.code);
-    });
-    return [
-      { label: "정직원 근무조", codes: ftCodes },
-      { label: "파트타이머 근무조", codes: ptCodes },
-      { label: "휴무/휴일", codes: rest },
-      { label: "휴가 (연차·시차·공가 등)", codes: leave },
-      { label: "기타", codes: etc },
-    ].filter((g) => g.codes.length > 0);
-  }, [tags, data.ftTemplates, data.ptTemplates]);
-
-  // 분류별로 묶은 <option> 묶음 (셀 드롭다운 공통)
-  const CodeOptions = () => (
-    <>
-      <option value=""></option>
-      {codeGroups.map((g) => (
-        <optgroup key={g.label} label={g.label}>
-          {g.codes.map((c) => <option key={c} value={c}>{c}</option>)}
-        </optgroup>
-      ))}
-    </>
+  const codeGroups = useMemo(
+    () => buildCodeGroups(tags, data.ftTemplates, data.ptTemplates),
+    [tags, data.ftTemplates, data.ptTemplates]
   );
 
   const ftCodeList = useMemo(() => data.ftTemplates.map((t) => t.code).filter(Boolean), [data.ftTemplates]);
@@ -1824,7 +1833,7 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
                         style={{ color: cellTextColor(v) || cc?.fg }}
                         className="w-full h-full text-[10px] text-center border-none bg-transparent focus:outline-none focus:ring-1 focus:ring-indigo-400 py-1.5 font-semibold"
                       >
-                        <CodeOptions />
+                        <CodeOptions groups={codeGroups} />
                       </select>
                     </td>
                   );
@@ -1862,7 +1871,7 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
                         style={{ color: cellTextColor(v) || cc?.fg }}
                         className="w-full h-full text-[10px] text-center border-none bg-transparent focus:outline-none focus:ring-1 focus:ring-indigo-400 py-1.5 font-semibold"
                       >
-                        <CodeOptions />
+                        <CodeOptions groups={codeGroups} />
                       </select>
                     </td>
                   );
@@ -2230,12 +2239,10 @@ function ArchiveTab({ data, archive, setArchive, role }) {
   const entry = archive[selected];
   const monthDayCount = new Date(year, selectedMonth, 0).getDate();
 
-  const allCodes = useMemo(() => {
-    const set = new Set(["", ...data.tags.map((t) => t.code)]);
-    data.ftTemplates.forEach((t) => t.code && set.add(t.code));
-    data.ptTemplates.forEach((t) => t.code && set.add(t.code));
-    return Array.from(set);
-  }, [data]);
+  const codeGroups = useMemo(
+    () => buildCodeGroups(data.tags, data.ftTemplates, data.ptTemplates),
+    [data.tags, data.ftTemplates, data.ptTemplates]
+  );
 
   const setCell = (empId, dayIdx, value) => {
     setArchive((prev) => {
@@ -2394,7 +2401,7 @@ function ArchiveTab({ data, archive, setArchive, role }) {
                           onChange={(ev) => setCell(e.id, i, ev.target.value)}
                           className="w-full h-full text-[10px] text-center border-none bg-transparent focus:outline-none focus:ring-1 focus:ring-indigo-400 py-1.5"
                         >
-                          <CodeOptions />
+                          <CodeOptions groups={codeGroups} />
                         </select>
                       </td>
                     ))}
