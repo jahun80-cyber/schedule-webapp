@@ -19,7 +19,7 @@ const DEFAULT_TAGS = [
   { id: "tag_default_15", code: "교육", category: "확정근무", countsAsAttend: true, restType: "해당없음", desc: "사내 교육" },
   { id: "tag_default_16", code: "PT입사", category: "확정근무", countsAsAttend: true, restType: "해당없음", desc: "신규 PT 입사/교육" },
   { id: "tag_default_17", code: "민방위", category: "확정휴무", countsAsAttend: false, restType: "해당없음", desc: "민방위 훈련" },
-  { id: "tag_default_18", code: "RQ", category: "확정휴무", countsAsAttend: false, restType: "해당없음", desc: "개인 요청 휴무" },
+  { id: "tag_default_18", code: "요청", category: "확정휴무", countsAsAttend: false, restType: "해당없음", desc: "개인 요청 휴무" },
   // 시차/공가 - 쓸 때마다 발생량이 쌓이는 휴가라 [연차현황]의 발생 장부로 관리한다(usesLedger).
   // 공가는 사유별로 구분해서 관리하려면 이 태그를 복사해 "공가(예비군)", "공가(건강검진)"처럼 나누면 된다.
   { id: "tag_default_19", code: "시차", category: "확정휴무", countsAsAttend: false, restType: "해당없음", desc: "초과근무로 발생한 시차 사용(하루)", trackAsLeave: true, leaveHours: 8, leavePool: "시차", usesLedger: true },
@@ -361,7 +361,7 @@ function buildTimeline(monthsMeta) {
 }
 
 /* ============================================================
-   요청태그(RQ 등) 자동 전환
+   요청태그(요청 등) 자동 전환
    "휴무/휴일 후보"로 지정된 태그(convertToRest=true)가 스케줄에 있으면
    그 사람의 남은 휴무/휴일 목표 안에서 휴무 또는 휴일로 바꿔준다.
    휴무/휴일을 다 소진했는데도 요청이 남으면, 연차 잔여가 충분한 경우에 한해 연차로 전환한다.
@@ -377,7 +377,7 @@ function convertRequestTags(schedule, employees, tags, settings, monthsMeta, opt
   Object.keys(next.m1).forEach((id) => (next.m1[id] = [...schedule.m1[id]]));
   Object.keys(next.m2).forEach((id) => (next.m2[id] = [...schedule.m2[id]]));
 
-  // 전환 대상 태그 (예: RQ)
+  // 전환 대상 태그 (예: 요청)
   const requestCodes = new Set((tags || []).filter((t) => t.convertToRest).map((t) => t.code));
   if (requestCodes.size === 0) {
     return { schedule: next, toRest: 0, toLeave: 0, leaveDetails: [], leftOver: [], message: "" };
@@ -402,9 +402,9 @@ function convertRequestTags(schedule, employees, tags, settings, monthsMeta, opt
   const daysByKey = {};
   monthsMeta.forEach(({ key, days }) => { daysByKey[key] = days; });
 
-  // 참고: 여기서는 리더 최소인원을 따로 검사하지 않는다. RQ 등 "요청" 태그는 이미 그 자체로
+  // 참고: 여기서는 리더 최소인원을 따로 검사하지 않는다. "요청" 태그는 이미 그 자체로
   // 출근 안 함(countsAsAttend:false)으로 취급되는 상태라, 그걸 휴무/휴일로 "전환"해도 그날 출근인원은
-  // 바뀌지 않는다(휴무든 RQ든 둘 다 "쉬는 상태"). 그래서 이 단계에서 리더 슬랙을 막을 이유가 없다
+  // 바뀌지 않는다(휴무든 요청이든 둘 다 "쉬는 상태"). 그래서 이 단계에서 리더 슬랙을 막을 이유가 없다
   // (실제로 리더 최소인원을 지켜야 하는 지점은 "새로 누군가를 쉬게 정하는" assignRestDays/
   // applyFixedRestSchedules/assignRemainingRest와, 자리를 맞바꾸는 finalAdjust다).
 
@@ -1558,14 +1558,26 @@ function assignRemainingRest(schedule, employees, tags, settings, monthsMeta, fi
     });
   });
 
+  // 이 달까지 누적으로 본 부족분. 화면의 "잔여 휴무/휴일"과 같은 방식이다.
+  // 1개월차에서 목표보다 더(또는 덜) 쉬었으면 그만큼이 2개월차 잔여로 이월되기 때문에,
+  // 달마다 따로 계산하면 화면에는 잔여가 0인데도 여기서는 부족하다고 보고 더 배정해 초과가 난다.
+  const monthOrder = monthsMeta.map((m) => m.key);
+  const cumShort = (emp, key) => {
+    let humu = 0, hyuil = 0;
+    for (const k of monthOrder) {
+      const t = targetOf(emp, k);
+      humu += t.humu - counts[emp.id][k].humu;
+      hyuil += t.hyuil - counts[emp.id][k].hyuil;
+      if (k === key) break;
+    }
+    return { humu, hyuil };
+  };
+  const lastKey = monthOrder[monthOrder.length - 1];
+
   const shortOf = (empId) => {
     const emp = ftEmps.find((e) => e.id === empId);
-    let humu = 0, hyuil = 0;
-    monthsMeta.forEach(({ key }) => {
-      const t = targetOf(emp, key);
-      humu += Math.max(0, t.humu - counts[empId][key].humu);
-      hyuil += Math.max(0, t.hyuil - counts[empId][key].hyuil);
-    });
+    const c = cumShort(emp, lastKey);
+    const humu = Math.max(0, c.humu), hyuil = Math.max(0, c.hyuil);
     return { humu, hyuil, total: humu + hyuil };
   };
 
@@ -1596,11 +1608,9 @@ function assignRemainingRest(schedule, employees, tags, settings, monthsMeta, fi
         if (!isUnderContractOn(e, day.dateStr)) return false; // 계약기간(인턴 등) 밖인 인원은 대상 아님
         if (e.role === "리더" && !leaderHasRoom(key, day)) return false; // 리더 최소인원을 깨는 배정은 제외
         if (!canRest(key, day, e.id)) return false;
-        // 이 달 기준 부족분 (다른 달 부족분 때문에 이 달을 초과 배정하지 않도록)
-        const t = targetOf(e, key);
-        const humuShortHere = t.humu - counts[e.id][key].humu;
-        const hyuilShortHere = t.hyuil - counts[e.id][key].hyuil;
-        if (humuShortHere <= 0 && hyuilShortHere <= 0) return false;
+        // 이 달까지 누적 부족분 (앞 달에서 더 쉰 만큼은 이미 채운 것으로 친다)
+        const cs = cumShort(e, key);
+        if (cs.humu <= 0 && cs.hyuil <= 0) return false;
         // 한 주에 쉬는 날이 너무 몰리지 않도록 제한.
         // 기본은 주 2일(휴무1+휴일1)이지만, 그렇게 해서는 목표를 못 채우는 경우
         // (예: 고정휴무 매장에서 공휴일이 많은 달) 주 3일까지는 허용한다.
@@ -1620,8 +1630,8 @@ function assignRemainingRest(schedule, employees, tags, settings, monthsMeta, fi
       // 이 달에 부족분이 가장 많은 사람 우선. 단, 연속근무가 상한을 넘고 있는 사람이 있으면 그 사람을 최우선.
       const monthShortOf = (empId) => {
         const emp = ftEmps.find((e) => e.id === empId);
-        const t = targetOf(emp, key);
-        return Math.max(0, t.humu - counts[empId][key].humu) + Math.max(0, t.hyuil - counts[empId][key].hyuil);
+        const c = cumShort(emp, key);
+        return Math.max(0, c.humu) + Math.max(0, c.hyuil);
       };
       const overLimitOf = (emp) => {
         const limit = fixedRestLimitOf(fixedRestSchedules, dayPairOptions, emp, settings);
@@ -1641,7 +1651,7 @@ function assignRemainingRest(schedule, employees, tags, settings, monthsMeta, fi
       // 후보를 순서대로 시도 - 한 명이 연속근무 제약에 걸려도 그날을 포기하지 않고 다음 후보를 본다
       let placedSomeone = false;
       for (const picked of candidates) {
-        const code = (targetOf(picked, key).humu - counts[picked.id][key].humu) > 0 ? "휴무" : "휴일";
+        const code = cumShort(picked, key).humu > 0 ? "휴무" : "휴일";
         const before = next[key][picked.id][day.day - 1];
         const streakBefore = maxStreakOf(picked.id);
         placeRest(key, day, picked.id, code);
@@ -1712,7 +1722,7 @@ function assignRemainingRest(schedule, employees, tags, settings, monthsMeta, fi
     });
   });
 
-  // 배정 후에도 남은 인원 확인 (초과한 달이 부족한 달을 상쇄하지 않도록 부족분만 합산)
+  // 배정 후에도 남은 인원 확인 (2개월을 통틀어 본 부족분)
   const stillShort = [];
   ftEmps.forEach((e) => {
     let humuShort = 0, hyuilShort = 0;
@@ -1720,9 +1730,12 @@ function assignRemainingRest(schedule, employees, tags, settings, monthsMeta, fi
       let humu = 0, hyuil = 0;
       (next[key][e.id] || []).forEach((v) => { if (v === "휴무") humu++; if (v === "휴일") hyuil++; });
       const t = targetOf(e, key);
-      humuShort += Math.max(0, t.humu - humu);
-      hyuilShort += Math.max(0, t.hyuil - hyuil);
+      humuShort += t.humu - humu;
+      hyuilShort += t.hyuil - hyuil;
     });
+    // 2개월을 통틀어 본 부족분. 앞 달에서 더 쉬었으면 그만큼 뒤 달에서 덜 쉬어도 채운 것으로 본다
+    humuShort = Math.max(0, humuShort);
+    hyuilShort = Math.max(0, hyuilShort);
     if (humuShort > 0 || hyuilShort > 0) {
       const parts = [];
       if (humuShort > 0) parts.push(`휴무 ${humuShort}일`);
@@ -1788,7 +1801,10 @@ function assignShiftCodes(schedule, employees, tags, settings, ftTemplates, ptTe
 
     if (ftEligible.length > 0 && ftTemplates.length > 0) {
       const attendingFT = ftAlreadyWorking + ftEligibleCounted;
-      const weekendB = dowBucket(settings, wd) === "주말" || isHoliday;
+      // [설정]에서 "평일(소프트-주말수준)"으로 둔 요일(예: 금요일)도 주말 템플릿을 쓴다.
+      // 그렇게 지정한 이유가 "그날은 주말처럼 돌아간다"는 뜻이므로, 근무조별 인원도
+      // 주말 기준(weCounts)으로 배분해야 [근무형태템플릿]에 적어둔 값과 화면이 맞는다.
+      const weekendB = isExtendedHoursDay(settings, day);
       const bucketList = weekendB ? thresholds.weekend : thresholds.weekday;
       const colIdx = pickThresholdIndex(bucketList, attendingFT);
       const needCnt = {};

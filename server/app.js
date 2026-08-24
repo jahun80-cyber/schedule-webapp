@@ -378,7 +378,7 @@ async function handleApi(req, res, pathname, method) {
 
       // PUT .../config - 역할별로 실제 저장되는 필드가 다르다.
       //   admin:   보낸 config를 그대로 저장
-      //   manager: tags만 기존 값으로 강제 유지(무시), 나머지는 그대로 저장 - 태그목록은 총관리자 전용
+      //   manager: 보낸 config를 그대로 저장 (태그목록도 매장마다 근무조가 달라 직접 고쳐야 한다)
       //   viewer:  personalTags만 반영, 나머지는 전부 기존 값 유지 - 개인 지정 태그(요청휴무)만 허용
       // 클라이언트 화면이 <fieldset disabled>로 입력을 막아두더라도, 여기서 서버가 한 번 더 강제한다.
       if (sub === "config" && method === "PUT") {
@@ -391,8 +391,6 @@ async function handleApi(req, res, pathname, method) {
         let toSave = body;
         if (auth.role === "viewer") {
           toSave = { ...(current || {}), personalTags: body.personalTags };
-        } else if (auth.role === "manager") {
-          toSave = { ...body, tags: (current || {}).tags };
         }
 
         const { found, updatedAt } = await db.putStoreField(id, "config", toSave);

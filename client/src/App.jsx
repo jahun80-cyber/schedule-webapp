@@ -719,7 +719,11 @@ function PtContractsTab({ data, setData, role }) {
    태그목록 탭
    ============================================================ */
 function TagsTab({ data, setData, role, storeList, currentStoreId }) {
-  const locked = role !== "admin"; // 태그목록은 총관리자만 수정 가능
+  // 태그목록은 매장관리자도 수정할 수 있다. 매장마다 근무조가 다르고, 그에 따라 반차·반반차의
+  // 근무조 환산 기준도 달라서 매장 스스로 맞춰야 하기 때문이다.
+  // 다만 "전체 매장에 동일 적용"은 다른 매장 설정까지 덮어쓰므로 총관리자 전용으로 남긴다.
+  const locked = role === "viewer";
+  const isAdmin = role === "admin";
   const tags = data.tags;
 
   // 예전 데이터에 id가 없는 태그가 있으면 한 번만 안정적인 id를 부여 (코드 입력 중 커서가 사라지는 문제 방지)
@@ -801,14 +805,14 @@ function TagsTab({ data, setData, role, storeList, currentStoreId }) {
 
   return (
     <div className="max-w-5xl">
-      {locked && <ReadOnlyNotice>태그목록은 총관리자만 수정할 수 있습니다. 변경이 필요하면 총관리자에게 요청하세요.</ReadOnlyNotice>}
+      {locked && <ReadOnlyNotice>태그목록은 매장관리자 이상만 수정할 수 있습니다.</ReadOnlyNotice>}
       <ReadOnlyFence locked={locked}>
       <SectionCard
         title="태그목록"
         icon={Tag}
         right={
           <div className="flex items-center gap-2">
-            {!locked && (
+            {isAdmin && (
               <GhostBtn onClick={syncTagsToAllStores} icon={FolderCog}>
                 {syncBusy ? `적용 중... (${syncProgress.done}/${syncProgress.total})` : "전체 매장에 동일 적용"}
               </GhostBtn>
@@ -930,7 +934,7 @@ function TagsTab({ data, setData, role, storeList, currentStoreId }) {
           "휴가 종류"를 같은 이름으로 맞춰두면 같은 보유량으로 묶여서 계산됩니다 — 예를 들어 연차/반차/반반차는 "연차"로, 리프레시휴가·안식휴가는
           새로 태그를 추가해서 "리프레시/안식휴가"라는 이름으로 묶어두면 [휴가관리]에서 별도의 보유량으로 따로 관리됩니다.
           "근무조 환산"을 지정하면 그날 그 근무조 인원 1명으로 계산됩니다 (예: 반차(오후)·반반차 → A조).
-          "휴무/휴일 후보"를 켜두면(예: RQ 같은 휴무 요청 태그), 1단계 실행 시 그 사람의 남은 휴무/휴일로 자동 전환되고,
+          "휴무/휴일 후보"를 켜두면(예: "요청" 같은 휴무 요청 태그), 1단계 실행 시 그 사람의 남은 휴무/휴일로 자동 전환되고,
           휴무/휴일을 다 소진했으면 연차 잔여가 남아있는 만큼만 하루 단위 연차로 등록됩니다 (반차·반반차는 자동 전환하지 않습니다).
         </p>
       </SectionCard>
@@ -1360,10 +1364,13 @@ function buildCodeGroups(tags, ftTemplates, ptTemplates) {
   const rest = [], leave = [], etc = [];
   (tags || []).forEach((t) => {
     if (!t.code || used.has(t.code)) return;
+    // 시차·공가처럼 발생장부로 관리하는 휴가는 [휴가관리]의 "사용 등록"으로만 넣는다.
+    // 시간 조합이 매번 달라서 칸에 직접 골라 넣을 일이 없고, 목록만 길어진다.
+    if (t.usesLedger) return;
     used.add(t.code);
     if (t.code === "휴무" || t.code === "휴일" || t.restType === "휴무" || t.restType === "휴일") rest.push(t.code);
     // 시차·공가는 고정 차감 시간이 없지만(발생장부로 관리) 분류는 휴가가 맞다
-    else if (tagDeductions(t).length > 0 || t.usesLedger) leave.push(t.code);
+    else if (tagDeductions(t).length > 0) leave.push(t.code);
     else etc.push(t.code);
   });
   return [
@@ -1376,11 +1383,16 @@ function buildCodeGroups(tags, ftTemplates, ptTemplates) {
 }
 
 // 분류별로 묶은 <option> 묶음 (셀 드롭다운 공통)
-function CodeOptions({ groups }) {
+function CodeOptions({ groups, value }) {
+  const list = groups || [];
+  // 칸에 이미 들어있는 값이 목록에 없으면(예: 사용 등록이 넣은 시차) 그 값도 항목으로 넣어준다.
+  // 없으면 select가 빈칸으로 보이고, 한 번 건드리는 순간 값이 지워진다.
+  const missing = value && !list.some((g) => g.codes.includes(value)) ? value : null;
   return (
     <>
       <option value=""></option>
-      {(groups || []).map((g) => (
+      {missing && <option value={missing}>{missing}</option>}
+      {list.map((g) => (
         <optgroup key={g.label} label={g.label}>
           {g.codes.map((c) => <option key={c} value={c}>{c}</option>)}
         </optgroup>
@@ -1416,6 +1428,8 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
   const sunHolT = sunHolTarget(days);
 
   // 직원별 이번달 휴무/휴일 잔여수량 (2개월차면 1개월차에서 당겨쓴 만큼 반영)
+  // 목표는 restTargetFor로 구한다 - [직원목록]에서 사람별로 목표를 따로 적어둔 경우가 있는데,
+  // 매장 공통값(satT/sunHolT)을 쓰면 그 사람만 화면 잔여가 실제와 어긋난다.
   const remainByEmp = useMemo(() => {
     const result = {};
     ftList.forEach((e) => {
@@ -1424,13 +1438,14 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
       let humu = 0, hyuil = 0;
       (schedule[monthKey][e.id] || []).forEach((v) => { if (v === "휴무") humu++; if (v === "휴일") hyuil++; });
       const carry = priorMonthCarry?.[e.id] || { humu: 0, hyuil: 0 };
+      const t = restTargetFor(e, monthKey, days);
       result[e.id] = {
-        remainHumu: satT - humu - carry.humu,
-        remainHyuil: sunHolT - hyuil - carry.hyuil,
+        remainHumu: t.humu - humu - carry.humu,
+        remainHyuil: t.hyuil - hyuil - carry.hyuil,
       };
     });
     return result;
-  }, [ftList, schedule, monthKey, satT, sunHolT, priorMonthCarry]);
+  }, [ftList, schedule, monthKey, days, priorMonthCarry]);
 
   // 직원별 근무형태 코드 배정 횟수 집계
   const codeCountByEmp = useMemo(() => {
@@ -1833,7 +1848,7 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
                         style={{ color: cellTextColor(v) || cc?.fg }}
                         className="w-full h-full text-[10px] text-center border-none bg-transparent focus:outline-none focus:ring-1 focus:ring-indigo-400 py-1.5 font-semibold"
                       >
-                        <CodeOptions groups={codeGroups} />
+                        <CodeOptions groups={codeGroups} value={v} />
                       </select>
                     </td>
                   );
@@ -1871,7 +1886,7 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
                         style={{ color: cellTextColor(v) || cc?.fg }}
                         className="w-full h-full text-[10px] text-center border-none bg-transparent focus:outline-none focus:ring-1 focus:ring-indigo-400 py-1.5 font-semibold"
                       >
-                        <CodeOptions groups={codeGroups} />
+                        <CodeOptions groups={codeGroups} value={v} />
                       </select>
                     </td>
                   );
@@ -1900,17 +1915,21 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
     if (monthKey !== "m2") return null;
     const m1 = monthsMeta.find((m) => m.key === "m1");
     if (!m1) return null;
-    const t1humu = satTarget(m1.days);
-    const t1hyuil = sunHolTarget(m1.days);
     const carry = {};
     data.employees.forEach((e) => {
       if (!isAutoAssignable(e)) return; // 자동배정 제외 인원은 이월 계산도 하지 않음
       let humu = 0, hyuil = 0;
       (schedule.m1[e.id] || []).forEach((v) => { if (v === "휴무") humu++; if (v === "휴일") hyuil++; });
-      carry[e.id] = { humu: humu - t1humu, hyuil: hyuil - t1hyuil }; // 양수면 1개월차에서 더 씀(당겨씀), 음수면 덜 씀
+      const t1 = restTargetFor(e, "m1", m1.days);
+      carry[e.id] = { humu: humu - t1.humu, hyuil: hyuil - t1.hyuil }; // 양수면 1개월차에서 더 씀(당겨씀), 음수면 덜 씀
     });
     return carry;
   }, [monthKey, monthsMeta, schedule.m1, data.employees]);
+
+  // 자동배정 함수들은 근무 칸(m1/m2)만 돌려준다. 그대로 setSchedule에 넣으면 메모 줄
+  // (m1Memo/m2Memo)이 통째로 사라지므로, 이전 메모를 항상 그대로 이어붙인다.
+  const applyScheduleKeepingMemo = (nextSchedule) =>
+    setSchedule((prev) => ({ ...nextSchedule, m1Memo: prev.m1Memo, m2Memo: prev.m2Memo }));
 
   const runRestDays = () => {
     setRunning(true);
@@ -1932,13 +1951,13 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
         data.fixedRestSchedules, data.dayPairOptions
       );
 
-      // RQ 같은 "휴무/휴일 후보" 태그를 그 사람의 남은 휴무/휴일(→ 부족하면 연차)로 자동 전환
+      // "요청" 같은 "휴무/휴일 후보" 태그를 그 사람의 남은 휴무/휴일(→ 부족하면 연차)로 자동 전환
       const rq = convertRequestTags(afterRest, data.employees, data.tags, data.settings, monthsMeta, {
         annualLeaveGrants: data.annualLeaveGrants,
         archive: archive || {},
       });
 
-      setSchedule(rq.schedule);
+      applyScheduleKeepingMemo(rq.schedule);
       const fixedMsg = ` · 고정휴무로 채운 칸: ${fixedApplied}건${fixedSkipped > 0 ? ` (최소인원 확보를 위해 ${fixedSkipped}건은 건너뜀)` : ""}`;
       const rqMsg = rq.message ? ` · ${rq.message}` : "";
       setMsg(`요청으로 채운 칸: ${applied}건${usageApplied > 0 ? ` · 사용 등록으로 채운 칸: ${usageApplied}건` : ""}${fixedMsg} · ${message}${rqMsg}`);
@@ -1950,7 +1969,7 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
     setRunning(true);
     setTimeout(() => {
       const { schedule: result, message } = assignShiftCodes(schedule, data.employees, data.tags, data.settings, data.ftTemplates, data.ptTemplates, data.prefCode, monthsMeta, data.ftThresholds);
-      setSchedule(result);
+      applyScheduleKeepingMemo(result);
       setMsg(message);
       setRunning(false);
     }, 30);
@@ -1976,7 +1995,7 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
         rebalanceMsg = ` · 인원이 바뀐 ${r3.changedDayCount}일의 근무조를 새 인원수에 맞게 다시 배정했습니다`;
       }
 
-      setSchedule(finalSchedule);
+      applyScheduleKeepingMemo(finalSchedule);
       const baseMsg = `추가로 배정한 휴무/휴일: ${r3.added}건`;
       const shortMsg = r3.stillShort && r3.stillShort.length > 0
         ? ` · 자리가 부족해 아직 남은 인원: ${r3.stillShort.join(", ")} — 수기로 조정해주세요`
@@ -2003,17 +2022,20 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
         ).schedule;
       }
 
-      setSchedule(finalSchedule);
+      applyScheduleKeepingMemo(finalSchedule);
       setMsg(r4.message);
       setRunning(false);
     }, 30);
   };
 
   const clearAll = () => {
-    if (!window.confirm(`${meta.label} 스케줄을 전부 지울까요?`)) return;
+    if (!window.confirm(`${meta.label} 스케줄을 전부 지울까요? 메모도 함께 지워집니다.`)) return;
+    const memoKey = monthKey === "m1" ? "m1Memo" : "m2Memo";
     setSchedule((prev) => {
-      const next = { ...prev, [monthKey]: {} };
+      const next = { ...prev, [monthKey]: {}, [memoKey]: {} };
       data.employees.forEach((e) => { next[monthKey][e.id] = Array(meta.days.length).fill(""); });
+      // 메모 줄도 이 달만 빈 칸으로 되돌린다
+      (data.memoRowLabels || []).forEach((r) => { next[memoKey][r.id] = Array(meta.days.length).fill(""); });
       return next;
     });
     setMsg(null);
@@ -2401,7 +2423,7 @@ function ArchiveTab({ data, archive, setArchive, role }) {
                           onChange={(ev) => setCell(e.id, i, ev.target.value)}
                           className="w-full h-full text-[10px] text-center border-none bg-transparent focus:outline-none focus:ring-1 focus:ring-indigo-400 py-1.5"
                         >
-                          <CodeOptions groups={codeGroups} />
+                          <CodeOptions groups={codeGroups} value={(entry.schedule[e.id] || [])[i] || ""} />
                         </select>
                       </td>
                     ))}
@@ -3834,6 +3856,7 @@ const TAB_GROUPS = [
       { key: "templates", label: "근무형태템플릿", icon: ClipboardCheck },
       { key: "shifty", label: "시프티코드변환", icon: FileSpreadsheet },
       { key: "support", label: "지원근무 찾기", icon: Building2 },
+      { key: "leave", label: "휴가관리", icon: PieChart },
     ],
   },
   {
@@ -3844,7 +3867,6 @@ const TAB_GROUPS = [
       { key: "m2", label: "스케줄 2개월차", icon: ClipboardList },
       { key: "summary", label: "2개월요약", icon: CheckCircle2 },
       { key: "archive", label: "월별기록", icon: Archive },
-      { key: "leave", label: "휴가관리", icon: PieChart },
     ],
   },
   {
