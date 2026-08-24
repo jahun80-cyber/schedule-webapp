@@ -2010,9 +2010,19 @@ function assignShiftCodes(schedule, employees, tags, settings, ftTemplates, ptTe
   const ftAllActive = employees.filter((e) => e.type === "정직원" && isActiveEmployee(e));
   const ptEmps = employees.filter((e) => e.type === "파트타이머" && isActiveEmployee(e));
   const timeline = buildTimeline(monthsMeta);
+  // 근무조를 고르게 나눠주기 위한 "지금까지 몇 번 들어갔나" 집계.
+  // 이미 칸에 들어있는 근무조도 먼저 세어둔다. 3단계가 인원이 바뀐 날의 근무조만 비우고
+  // 이 함수를 다시 부르는데, 예전에는 집계를 0에서 새로 시작해서 이미 특정 조에 많이
+  // 들어간 사람이 다시 그 조를 받는 일이 있었다(2개월 전체로 보면 한쪽으로 쏠린다).
   const usage = {};
   const getU = (id, code) => usage[id + "|" + code] || 0;
   const incU = (id, code) => { usage[id + "|" + code] = getU(id, code) + 1; };
+  timeline.forEach(({ key, day }) => {
+    ftAllActive.forEach((e) => {
+      const v = next[key][e.id]?.[day.day - 1] || "";
+      if (v) incU(e.id, v);
+    });
+  });
 
   let assigned = 0, warn = 0;
 
