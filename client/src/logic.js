@@ -676,10 +676,23 @@ function buildRequestedRestSet(employees, tags, personalTags, monthsMeta, usageR
    ------------------------------------------------------------ */
 const DEFAULT_REST_RHYTHM = [false, false, false, true, false, false, true]; // 3근-휴-2근-휴
 
+// 쉬는 칸은 반드시 두 개이고, 서로 붙어 있으면 안 된다.
+//  - 한 개면 매장의 월 휴무 목표에 한참 못 미쳐서, 남는 쉬는 날이 여기저기 붙어버리고 틀이 무너진다.
+//  - 세 개면 목표보다 많이 쉬게 된다.
+//  - 두 개를 붙여 두면(예: 6·7번) 실데이터로 돌려봤을 때 휴무 초과가 생긴다.
+//    이틀 연속 쉬게 하려면 리듬이 아니라 고정휴무로 지정하는 게 맞다.
+// 화면에서 이미 막고 있지만, 예전에 저장된 값이나 손으로 고친 값이 들어올 수 있어 여기서도 확인한다.
+function isUsableRhythm(r) {
+  if (!Array.isArray(r) || r.length !== 7) return false;
+  const picked = r.map((v, i) => (v ? i : -1)).filter((i) => i >= 0);
+  if (picked.length !== 2) return false;
+  const d = Math.abs(picked[0] - picked[1]);
+  return Math.min(d, r.length - d) >= 2;
+}
+
 function restRhythmOf(settings) {
   const r = settings?.restRhythm;
-  if (Array.isArray(r) && r.length === 7 && r.some(Boolean) && !r.every(Boolean)) return r.map(Boolean);
-  return DEFAULT_REST_RHYTHM;
+  return isUsableRhythm(r) ? r.map(Boolean) : DEFAULT_REST_RHYTHM;
 }
 
 // 이 리듬이 만드는 가장 긴 근무 블록 (칸이 순환하므로 이어붙여서 계산)
@@ -2256,7 +2269,7 @@ export {
   validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT, requiredLeaderFT,
   buildRequestedRestSet,
   isOffTag, shiftCodeOf, dowBucket, nextMonth, emptySchedule, isWeekendBucket, isExtendedHoursDay, isActiveEmployee, pickThresholdIndex, isAutoAssignable,
-  restRhythmOf, rhythmMaxWorkRun, rhythmRestPerMonth, DEFAULT_REST_RHYTHM,
+  restRhythmOf, rhythmMaxWorkRun, rhythmRestPerMonth, DEFAULT_REST_RHYTHM, isUsableRhythm,
   restModeOf, isRotationEmployee, isUnderContractOn, isCountedOn, restTargetFor, fixedRestLimitOf,
   computeLeaveUsage, tagDeductions, isTrackedTag, computeAccrued, ledgerPoolsOf,
 };

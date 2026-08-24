@@ -4,7 +4,7 @@ import {
   PlayCircle, Plus, Trash2, Store, Loader2, AlertTriangle,
   Sparkles, Save, ClipboardCheck, LogOut, Lock, Download, Upload, Archive,
   FileSpreadsheet, Copy, PieChart, History, FolderCog, FolderCheck, HardDriveDownload,
-  Building2, Search, ChevronDown, ChevronRight, MessageSquare,
+  Building2, Search, ChevronDown, ChevronRight, MessageSquare, RefreshCw,
 } from "lucide-react";
 import { api, getPassword, setPassword, clearPassword, getRole, setRole } from "./api";
 import {
@@ -261,60 +261,11 @@ function LoginScreen({ onLoggedIn }) {
 function SettingsTab({ data, setData, role }) {
   const locked = role === "viewer";
   const s = data.settings;
-  const dayPairOptions = data.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS;
   const update = (patch) => setData((d) => ({ ...d, settings: { ...d.settings, ...patch } }));
 
-  /* ---------- 근무 리듬 (7칸 근무형태) ---------- */
-  const rhythm = restRhythmOf(s);
-  const toggleRhythm = (i) => {
-    const next = rhythm.map((v, j) => (j === i ? !v : v));
-    if (!next.some(Boolean) || next.every(Boolean)) return; // 전부 근무 / 전부 휴무는 의미가 없다
-    update({ restRhythm: next });
-  };
-  // 이 틀이 만드는 "n근무 → 휴무" 순서를 사람이 읽는 말로 바꾼다
-  const rhythmText = (() => {
-    const parts = [];
-    let work = 0, rest = 0;
-    const flush = () => {
-      if (work > 0) { parts.push(`${work}근무`); work = 0; }
-      if (rest > 0) { parts.push(rest === 1 ? "휴무" : `${rest}일 연휴`); rest = 0; }
-    };
-    rhythm.forEach((isRest) => {
-      if (isRest) rest++;
-      else { if (rest > 0) flush(); work++; }
-    });
-    flush();
-    return parts.join(" → ");
-  })();
-  // 이 리듬이면 한 달에 며칠 쉬게 되는지 vs 이 매장의 실제 목표
-  const rhythmDays = (() => {
-    const days = buildMonthDays(s.year, s.startMonth, data.holidays || [], data.issueDays || []);
-    const goal = satTarget(days) + sunHolTarget(days);
-    const byRhythm = (rhythm.filter(Boolean).length * days.length) / rhythm.length;
-    return { goal, byRhythm, len: days.length };
-  })();
-  const rhythmRun = rhythmMaxWorkRun(rhythm);
-  const rhythmOverMax = rhythmRun > (Number(s.consecMax) || 99);
+
   const updateDow = (wd, val) => setData((d) => ({ ...d, settings: { ...d.settings, dow: { ...d.settings.dow, [wd]: val } } }));
 
-  const updDayPair = (i, patch) => setData((d) => {
-    const opts = [...(d.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS)];
-    opts[i] = { ...opts[i], ...patch };
-    return { ...d, dayPairOptions: opts };
-  });
-  const rmDayPair = (i) => setData((d) => ({
-    ...d, dayPairOptions: (d.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS).filter((_, idx) => idx !== i),
-  }));
-  const addDayPair = () => setData((d) => ({
-    ...d,
-    dayPairOptions: [...(d.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS), { id: "dp_" + Date.now(), label: "새구분", weekdays: [] }],
-  }));
-  const toggleDayPairWeekday = (i, wd) => setData((d) => {
-    const opts = [...(d.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS)];
-    const cur = opts[i].weekdays || [];
-    opts[i] = { ...opts[i], weekdays: cur.includes(wd) ? cur.filter((x) => x !== wd) : [...cur, wd] };
-    return { ...d, dayPairOptions: opts };
-  });
 
   return (
     <div className="max-w-4xl">
@@ -356,93 +307,6 @@ function SettingsTab({ data, setData, role }) {
         )}
       </SectionCard>
 
-      <SectionCard title="휴무 배정 - 매장 기본값" icon={AlertTriangle}>
-        <p className="text-xs text-slate-500 mb-3">
-          이제 휴무 배정 방식(로테이션/고정휴무)은 [직원목록]에서 인원별로 지정합니다. 여기 값은 "로테이션"으로 지정한 인원이
-          개인별 값을 따로 입력하지 않았을 때 쓰이는 매장 공통 기본값입니다.
-        </p>
-        <div className="grid grid-cols-4 gap-4">
-          <Field label="연속근무 권장 상한(일)"><NumberInput value={s.consecRecommended} onChange={(v) => update({ consecRecommended: v })} /></Field>
-          <Field label="연속근무 최대 허용(일)"><NumberInput value={s.consecMax} onChange={(v) => update({ consecMax: v })} /></Field>
-        </div>
-
-        <div className="mt-5 border border-slate-200 rounded-lg p-3 bg-slate-50/60">
-          <div className="flex items-baseline gap-2 mb-1">
-            <span className="text-xs font-semibold text-slate-700">근무 리듬</span>
-            <span className="text-[11px] text-slate-500">쉬는 칸을 눌러서 우리 매장 틀을 만드세요 (로테이션 인원에게 적용)</span>
-          </div>
-          <div className="flex items-center gap-1.5 mt-2">
-            {rhythm.map((isRest, i) => (
-              <button
-                key={i}
-                onClick={() => toggleRhythm(i)}
-                className={`w-11 h-11 rounded-md border text-xs font-bold transition-colors ${
-                  isRest
-                    ? "bg-indigo-600 border-indigo-600 text-white"
-                    : "bg-white border-slate-300 text-slate-500 hover:border-indigo-400"
-                }`}
-                title={isRest ? "쉬는 날 (눌러서 근무로)" : "근무 (눌러서 쉬는 날로)"}
-              >
-                <div>{i + 1}</div>
-                <div className="text-[9px] font-medium">{isRest ? "휴무" : "근무"}</div>
-              </button>
-            ))}
-          </div>
-          <p className="text-xs text-slate-700 mt-2.5">
-            <b>{rhythmText}</b> 를 반복합니다.
-          </p>
-          <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
-            이 틀이면 {rhythmDays.len}일 기준 한 달 <b>{rhythmDays.byRhythm.toFixed(1)}일</b>을 쉽니다.
-            이 매장 목표는 <b>{rhythmDays.goal}일</b>입니다
-            {Math.abs(rhythmDays.byRhythm - rhythmDays.goal) < 0.5
-              ? " — 딱 맞습니다."
-              : rhythmDays.byRhythm < rhythmDays.goal
-                ? ` — 월 ${(rhythmDays.goal - rhythmDays.byRhythm).toFixed(1)}일이 모자라서, 그만큼은 쉬는 날 옆에 하루씩 붙여 연휴로 채웁니다.`
-                : ` — 월 ${(rhythmDays.byRhythm - rhythmDays.goal).toFixed(1)}일이 남아서, 그만큼은 이 틀보다 적게 쉽니다.`}
-            <br />
-            공휴일·요청휴무·연차가 있는 날은 그쪽이 먼저이므로 틀이 조금씩 어긋날 수 있습니다.
-            사람마다 시작 칸을 어긋나게 돌려서 같은 날 전원이 쉬는 일은 없게 합니다.
-          </p>
-          {!rhythmOverMax && rhythmRun > (Number(s.consecRecommended) || 99) && (
-            <p className="text-[11px] text-amber-700 font-semibold mt-2">
-              이 틀은 {rhythmRun}일 연속근무가 생깁니다. "연속근무 권장 상한"({s.consecRecommended}일)보다 길지만
-              최대 허용({s.consecMax}일) 안이라 그대로 배정합니다.
-            </p>
-          )}
-          {rhythmOverMax && (
-            <p className="text-[11px] text-red-600 font-semibold mt-2">
-              이 틀은 {rhythmRun}일 연속근무가 생기는데 "연속근무 최대 허용"이 {s.consecMax}일입니다.
-              최대 허용을 넘길 수는 없으므로, 쉬는 칸을 늘리거나 최대 허용을 올려주세요.
-            </p>
-          )}
-        </div>
-
-        <div className="flex items-center justify-between mb-2 mt-5">
-          <span className="text-xs font-semibold text-slate-600">요일쌍(구분) 목록 — 고정휴무 인원이 쓸 수 있는 요일쌍 정의</span>
-          <GhostBtn onClick={addDayPair} icon={Plus}>구분 추가</GhostBtn>
-        </div>
-        <div className="space-y-2">
-          {dayPairOptions.map((p, i) => (
-            <div key={p.id || i} className="flex items-center gap-2 flex-wrap border border-slate-200 rounded-md px-3 py-2">
-              <TextInput value={p.label} onChange={(v) => updDayPair(i, { label: v })} className="w-20" />
-              <div className="flex items-center gap-1">
-                {WEEKDAYS.map((wd) => (
-                  <label key={wd} className={`text-[11px] px-2 py-1 rounded cursor-pointer select-none ${(p.weekdays || []).includes(wd) ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-500"}`}>
-                    <input type="checkbox" className="hidden" checked={(p.weekdays || []).includes(wd)} onChange={() => toggleDayPairWeekday(i, wd)} />
-                    {wd}
-                  </label>
-                ))}
-              </div>
-              <IconBtn onClick={() => rmDayPair(i)} title="삭제" danger />
-            </div>
-          ))}
-          {dayPairOptions.length === 0 && <p className="text-xs text-slate-400">등록된 구분이 없습니다.</p>}
-        </div>
-        <p className="text-[11px] text-slate-400 mt-2">
-          체크한 요일 중 첫번째가 휴무, 나머지가 휴일로 채워집니다. 실제로 누가 어떤 요일쌍을 쓰는지는
-          [직원목록]에서 "고정휴무"로 지정한 뒤 [공휴일·이슈일] 탭의 "고정휴무 설정"에서 지정합니다.
-        </p>
-      </SectionCard>
 
       <SectionCard title="요일 구분 설정" icon={CalendarDays}>
         <p className="text-xs text-slate-500 mb-2">백화점 채널처럼 금·토·일이 주말인 경우 여기서 직접 바꾸세요.</p>
@@ -526,7 +390,7 @@ function EmployeesTab({ data, setData, role }) {
           소속을 "지원근무"나 "스위칭근무"로 두면 휴무/휴일·근무 자동배정에서 제외되고, 스케줄 화면에서 수기로만 입력됩니다.
           "자동배정 포함"을 켜면 예외적으로 우리매장 인원처럼 자동배정 대상에 포함시킬 수 있습니다.
           "휴무방식"이 로테이션이면 같은 행에서 개인별 연속근무 상한을 지정할 수 있고(비우면 매장 기본값), 고정휴무면
-          [공휴일·이슈일]의 "고정휴무 설정"에서 요일쌍을 지정합니다. 직책을 "인턴"으로 두면 계약기간·목표를 아래 추가 줄에서 지정할 수 있습니다.
+          직책을 "인턴"으로 두면 계약기간·목표를 아래 추가 줄에서 지정할 수 있습니다. 휴무방식(로테이션/고정휴무)과 연속근무 상한은 [휴무방식] 탭에서 지정합니다.
         </p>
         <div className="overflow-x-auto">
         <table className="w-full text-sm">
@@ -537,9 +401,6 @@ function EmployeesTab({ data, setData, role }) {
               <th className="py-2 font-semibold">소속</th>
               <th className="py-2 font-semibold">자동배정 포함</th>
               <th className="py-2 font-semibold">직책</th>
-              <th className="py-2 font-semibold">휴무방식</th>
-              <th className="py-2 font-semibold">연속근무 권장</th>
-              <th className="py-2 font-semibold">연속근무 최대</th>
               <th className="py-2 font-semibold">재직상태</th>
               <th className="py-2 w-8"></th>
             </tr>
@@ -548,7 +409,6 @@ function EmployeesTab({ data, setData, role }) {
             {ftList.map((e) => {
               const memberType = e.memberType || "우리매장";
               const isGuest = memberType !== "우리매장";
-              const restMode = e.restMode || "로테이션";
               const isIntern = e.role === "인턴";
               return (
                 <React.Fragment key={e.id}>
@@ -572,29 +432,12 @@ function EmployeesTab({ data, setData, role }) {
                   <td className="py-1.5 pr-2">
                     <Select value={e.role || "직원"} onChange={(v) => update(e.id, { role: v })} options={["리더", "직원", "인턴"]} className="w-20" />
                   </td>
-                  <td className="py-1.5 pr-2">
-                    <Select value={restMode} onChange={(v) => update(e.id, { restMode: v })} options={["로테이션", "고정휴무"]} className="w-24" />
-                  </td>
-                  <td className="py-1.5 pr-2">
-                    {restMode === "로테이션" ? (
-                      <NumberInput value={e.consecRecommended ?? ""} onChange={(v) => update(e.id, { consecRecommended: v })} className="w-16" placeholder="필수" invalid={e.consecRecommended === undefined || e.consecRecommended === "" || e.consecRecommended === null} />
-                    ) : (
-                      <span className="text-[11px] text-slate-300">-</span>
-                    )}
-                  </td>
-                  <td className="py-1.5 pr-2">
-                    {restMode === "로테이션" ? (
-                      <NumberInput value={e.consecMax ?? ""} onChange={(v) => update(e.id, { consecMax: v })} className="w-16" placeholder="필수" invalid={e.consecMax === undefined || e.consecMax === "" || e.consecMax === null} />
-                    ) : (
-                      <span className="text-[11px] text-slate-300">-</span>
-                    )}
-                  </td>
                   <td className="py-1.5 pr-2"><Select value={e.status} onChange={(v) => update(e.id, { status: v })} options={["재직", "퇴직예정", "퇴직"]} /></td>
                   <td><IconBtn onClick={() => remove(e.id)} title="삭제" danger /></td>
                 </tr>
                 {isIntern && (
                   <tr className="border-b border-slate-100 bg-amber-50/40">
-                    <td colSpan={10} className="py-2 px-2">
+                    <td colSpan={7} className="py-2 px-2">
                       <div className="flex items-center gap-4 flex-wrap text-xs">
                         <span className="font-semibold text-amber-700">인턴 계약</span>
                         <div className="flex items-center gap-1.5">
@@ -1030,20 +873,91 @@ function TagsTab({ data, setData, role, storeList, currentStoreId }) {
 /* ============================================================
    공휴일 · 이슈일 · 개인지정태그 탭
    ============================================================ */
-function HolidaysTab({ data, setData, role }) {
-  const locked = role === "viewer"; // 공휴일/이슈일/고정휴무 설정은 매장관리자 이상만 (개인 요청은 [요청] 탭으로 분리됨)
-  const { holidays, issueDays, employees } = data;
-  const fixedRestSchedules = data.fixedRestSchedules || [];
+
+/* ============================================================
+   휴무방식 탭 - 로테이션/고정휴무 관련 설정을 한 곳에 모은 화면
+   ------------------------------------------------------------
+   예전에는 인원별 휴무방식은 [직원목록], 연속근무 상한과 근무 리듬·요일쌍은 [설정],
+   고정휴무 월별 배정은 [공휴일·이슈일]에 흩어져 있어서 한 가지를 바꾸려면 탭 세 개를
+   오가야 했다. 매장이 한 화면에서 끝낼 수 있도록 여기로 모았다.
+   ============================================================ */
+function RestModeTab({ data, setData, role }) {
+  const locked = role === "viewer";
+  const s = data.settings;
+  const update = (patch) => setData((d) => ({ ...d, settings: { ...d.settings, ...patch } }));
+  const updateEmp = (id, patch) => setData((d) => ({ ...d, employees: d.employees.map((e) => (e.id === id ? { ...e, ...patch } : e)) }));
   const dayPairOptions = data.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS;
+  const [rhythmMsg, setRhythmMsg] = useState(null);
 
-  const updHol = (i, patch) => setData((d) => { const arr = [...d.holidays]; arr[i] = { ...arr[i], ...patch }; return { ...d, holidays: arr }; });
-  const rmHol = (i) => setData((d) => ({ ...d, holidays: d.holidays.filter((_, idx) => idx !== i) }));
-  const addHol = () => setData((d) => ({ ...d, holidays: [...d.holidays, { date: "", name: "" }] }));
+  const ftList = data.employees.filter((e) => e.type === "정직원" && isActiveEmployee(e));
+  const ftEmployeeNames = ftList.filter((e) => (e.restMode || "로테이션") === "고정휴무").map((e) => e.name);
 
-  const updIss = (i, patch) => setData((d) => { const arr = [...d.issueDays]; arr[i] = { ...arr[i], ...patch }; return { ...d, issueDays: arr }; });
-  const rmIss = (i) => setData((d) => ({ ...d, issueDays: d.issueDays.filter((_, idx) => idx !== i) }));
-  const addIss = () => setData((d) => ({ ...d, issueDays: [...d.issueDays, { start: "", end: "", name: "", ftOverride: "", ptOverride: "" }] }));
+  /* ---------- 근무 리듬 (7칸) ---------- */
+  // 쉬는 칸은 항상 두 개다. 한 개면 매장 휴무 목표에 한참 못 미쳐 남는 쉬는 날이
+  // 여기저기 붙어버리고(틀이 무너지고 휴일이 초과된다), 세 개면 목표보다 많이 쉰다.
+  // 두 칸을 붙여서 고르는 것도 막는다 - 실데이터로 돌려보면 휴무 초과가 생긴다.
+  // 이틀 연속 쉬게 하려면 아래 "고정휴무"를 쓰는 게 맞다.
+  const rhythm = restRhythmOf(s);
+  const cyclicDist = (a, b) => { const d = Math.abs(a - b); return Math.min(d, rhythm.length - d); };
+  const toggleRhythm = (i) => {
+    if (rhythm[i]) { setRhythmMsg("쉬는 칸은 항상 두 개입니다. 옮기려면 다른 칸을 누르세요."); return; }
+    const picked = rhythm.map((v, j) => (v ? j : -1)).filter((j) => j >= 0);
+    // 누른 칸에서 가장 가까운 쉬는 칸을 그 자리로 옮긴다
+    const moveIdx = picked.slice().sort((a, b) => cyclicDist(a, i) - cyclicDist(b, i))[0];
+    const other = picked.find((j) => j !== moveIdx);
+    if (cyclicDist(i, other) < 2) {
+      setRhythmMsg("쉬는 칸 두 개를 붙여서 고를 수는 없습니다. 이틀 연속 쉬게 하려면 아래 고정휴무를 쓰세요.");
+      return;
+    }
+    const next = rhythm.map((_, j) => j === i || j === other);
+    setRhythmMsg(null);
+    update({ restRhythm: next });
+  };
+  // 이 틀이 만드는 "n근무 → 휴무" 순서를 사람이 읽는 말로 바꾼다
+  const rhythmText = (() => {
+    const parts = [];
+    let work = 0, rest = 0;
+    const flush = () => {
+      if (work > 0) { parts.push(`${work}근무`); work = 0; }
+      if (rest > 0) { parts.push(rest === 1 ? "휴무" : `${rest}일 연휴`); rest = 0; }
+    };
+    rhythm.forEach((isRest) => {
+      if (isRest) rest++;
+      else { if (rest > 0) flush(); work++; }
+    });
+    flush();
+    return parts.join(" → ");
+  })();
+  // 이 리듬이면 한 달에 며칠 쉬게 되는지 vs 이 매장의 실제 목표
+  const rhythmDays = (() => {
+    const days = buildMonthDays(s.year, s.startMonth, data.holidays || [], data.issueDays || []);
+    const goal = satTarget(days) + sunHolTarget(days);
+    const byRhythm = (rhythm.filter(Boolean).length * days.length) / rhythm.length;
+    return { goal, byRhythm, len: days.length };
+  })();
+  const rhythmRun = rhythmMaxWorkRun(rhythm);
+  const rhythmOverMax = rhythmRun > (Number(s.consecMax) || 99);
 
+  const updDayPair = (i, patch) => setData((d) => {
+    const opts = [...(d.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS)];
+    opts[i] = { ...opts[i], ...patch };
+    return { ...d, dayPairOptions: opts };
+  });
+  const rmDayPair = (i) => setData((d) => ({
+    ...d, dayPairOptions: (d.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS).filter((_, idx) => idx !== i),
+  }));
+  const addDayPair = () => setData((d) => ({
+    ...d,
+    dayPairOptions: [...(d.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS), { id: "dp_" + Date.now(), label: "새구분", weekdays: [] }],
+  }));
+  const toggleDayPairWeekday = (i, wd) => setData((d) => {
+    const opts = [...(d.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS)];
+    const cur = opts[i].weekdays || [];
+    opts[i] = { ...opts[i], weekdays: cur.includes(wd) ? cur.filter((x) => x !== wd) : [...cur, wd] };
+    return { ...d, dayPairOptions: opts };
+  });
+
+  const fixedRestSchedules = data.fixedRestSchedules || [];
   const updFixed = (i, patch) => setData((d) => { const arr = [...(d.fixedRestSchedules || [])]; arr[i] = { ...arr[i], ...patch }; return { ...d, fixedRestSchedules: arr }; });
   const rmFixed = (i) => setData((d) => ({ ...d, fixedRestSchedules: (d.fixedRestSchedules || []).filter((_, idx) => idx !== i) }));
   const addFixed = () => setData((d) => {
@@ -1053,47 +967,165 @@ function HolidaysTab({ data, setData, role }) {
   const toggleFixedEmp = (i, name) => setData((d) => {
     const arr = [...(d.fixedRestSchedules || [])];
     const cur = arr[i].empNames || [];
-    const next = cur.includes(name) ? cur.filter((x) => x !== name) : [...cur, name];
-    arr[i] = { ...arr[i], empNames: next };
+    arr[i] = { ...arr[i], empNames: cur.includes(name) ? cur.filter((x) => x !== name) : [...cur, name] };
     return { ...d, fixedRestSchedules: arr };
   });
 
-  // 휴무 방식은 이제 인원별로 [직원목록]에서 지정한다 - 여기는 "고정휴무"로 지정된 인원만 대상으로 노출
-  const ftEmployeeNames = employees.filter((e) => e.type === "정직원" && (e.restMode || "로테이션") === "고정휴무").map((e) => e.name);
-
   return (
     <div className="max-w-5xl">
-      {locked && <ReadOnlyNotice>공휴일·이슈일·고정휴무 설정은 매장관리자 이상만 수정할 수 있습니다. 본인 휴무 요청은 [요청] 탭에서 등록하세요.</ReadOnlyNotice>}
+      {locked && <ReadOnlyNotice>휴무방식 설정은 매장관리자 이상만 수정할 수 있습니다.</ReadOnlyNotice>}
       <ReadOnlyFence locked={locked}>
-      <SectionCard title="공휴일 목록" icon={CalendarDays} right={<GhostBtn onClick={addHol} icon={Plus}>공휴일 추가</GhostBtn>}>
-        <div className="grid grid-cols-1 gap-1.5">
-          {holidays.map((h, i) => (
-            <div key={i} className="flex items-center gap-2">
-              <DateInput value={h.date} onChange={(v) => updHol(i, { date: v })} />
-              <TextInput value={h.name} onChange={(v) => updHol(i, { name: v })} placeholder="공휴일명" className="w-40" />
-              <IconBtn onClick={() => rmHol(i)} title="삭제" danger />
-            </div>
-          ))}
-        </div>
+
+      <SectionCard title="인원별 휴무방식" icon={Users}>
+        <p className="text-xs text-slate-500 mb-3">
+          정직원마다 <b>로테이션</b>(근무 리듬대로 돌아가며 쉼)인지 <b>고정휴무</b>(매주 같은 요일에 쉼)인지 정합니다.
+          로테이션 인원은 연속근무 권장·최대를 각자 입력해야 합니다(비우면 아래 매장 기본값을 씁니다).
+        </p>
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+              <th className="py-2 font-semibold">이름</th>
+              <th className="py-2 font-semibold">직책</th>
+              <th className="py-2 font-semibold">휴무방식</th>
+              <th className="py-2 font-semibold">연속근무 권장</th>
+              <th className="py-2 font-semibold">연속근무 최대</th>
+              <th className="py-2 font-semibold">고정휴무 요일</th>
+            </tr>
+          </thead>
+          <tbody>
+            {ftList.map((e) => {
+              const restMode = e.restMode || "로테이션";
+              const assigned = fixedRestSchedules
+                .filter((f) => (f.empNames || []).includes(e.name))
+                .map((f) => f.dayPair)
+                .filter((v, i2, a) => v && a.indexOf(v) === i2);
+              return (
+                <tr key={e.id} className="border-b border-slate-100">
+                  <td className="py-1.5 pr-2 font-medium whitespace-nowrap">{e.name}</td>
+                  <td className="py-1.5 pr-2 text-xs text-slate-500">{e.role || "직원"}</td>
+                  <td className="py-1.5 pr-2">
+                    <Select value={restMode} onChange={(v) => updateEmp(e.id, { restMode: v })} options={["로테이션", "고정휴무"]} className="w-24" />
+                  </td>
+                  <td className="py-1.5 pr-2">
+                    {restMode === "로테이션"
+                      ? <NumberInput value={e.consecRecommended ?? ""} onChange={(v) => updateEmp(e.id, { consecRecommended: v })} className="w-16" placeholder="필수" invalid={e.consecRecommended === undefined || e.consecRecommended === "" || e.consecRecommended === null} />
+                      : <span className="text-[11px] text-slate-300">-</span>}
+                  </td>
+                  <td className="py-1.5 pr-2">
+                    {restMode === "로테이션"
+                      ? <NumberInput value={e.consecMax ?? ""} onChange={(v) => updateEmp(e.id, { consecMax: v })} className="w-16" placeholder="필수" invalid={e.consecMax === undefined || e.consecMax === "" || e.consecMax === null} />
+                      : <span className="text-[11px] text-slate-300">-</span>}
+                  </td>
+                  <td className="py-1.5 pr-2 text-xs">
+                    {restMode === "고정휴무"
+                      ? (assigned.length > 0
+                          ? <span className="text-slate-700 font-semibold">{assigned.join(", ")}</span>
+                          : <span className="text-amber-600">아래에서 배정 필요</span>)
+                      : <span className="text-slate-300">-</span>}
+                  </td>
+                </tr>
+              );
+            })}
+            {ftList.length === 0 && <tr><td colSpan={6} className="py-3 text-xs text-slate-400">정직원이 없습니다.</td></tr>}
+          </tbody>
+        </table>
       </SectionCard>
 
-      <SectionCard title="이슈일 (기간 지정 · 적정인원 조정)" icon={ClipboardList} right={<GhostBtn onClick={addIss} icon={Plus}>이슈일 추가</GhostBtn>}>
-        <p className="text-xs text-slate-500 mb-3">적정인원 칸을 비워두면 이슈일명만 표시되고 평소 로직을 따릅니다.</p>
-        <div className="grid grid-cols-1 gap-1.5">
-          {issueDays.map((iss, i) => (
-            <div key={i} className="flex items-center gap-2">
-              <DateInput value={iss.start} onChange={(v) => updIss(i, { start: v })} />
-              <span className="text-slate-400 text-xs">~</span>
-              <DateInput value={iss.end} onChange={(v) => updIss(i, { end: v })} />
-              <TextInput value={iss.name} onChange={(v) => updIss(i, { name: v })} placeholder="이슈일명" className="w-40" />
-              <NumberInput value={iss.ftOverride} onChange={(v) => updIss(i, { ftOverride: v })} className="w-20" />
-              <span className="text-[10px] text-slate-400">정직원</span>
-              <NumberInput value={iss.ptOverride} onChange={(v) => updIss(i, { ptOverride: v })} className="w-20" />
-              <span className="text-[10px] text-slate-400">PT</span>
-              <IconBtn onClick={() => rmIss(i)} title="삭제" danger />
+      <SectionCard title="휴무 배정 - 매장 기본값" icon={AlertTriangle}>
+        <p className="text-xs text-slate-500 mb-3">
+          아래 "인원별 휴무방식"에서 <b>로테이션</b>으로 지정한 인원에게 적용됩니다. 개인별 값을 비워두면 여기 값을 씁니다.
+        </p>
+        <div className="grid grid-cols-4 gap-4">
+          <Field label="연속근무 권장 상한(일)"><NumberInput value={s.consecRecommended} onChange={(v) => update({ consecRecommended: v })} /></Field>
+          <Field label="연속근무 최대 허용(일)"><NumberInput value={s.consecMax} onChange={(v) => update({ consecMax: v })} /></Field>
+        </div>
+
+        <div className="mt-5 border border-slate-200 rounded-lg p-3 bg-slate-50/60">
+          <div className="flex items-baseline gap-2 mb-1">
+            <span className="text-xs font-semibold text-slate-700">근무 리듬</span>
+            <span className="text-[11px] text-slate-500">근무로 두고 싶은 칸을 누르면 쉬는 칸이 그리로 옮겨갑니다 (쉬는 칸은 항상 두 개)</span>
+          </div>
+          <div className="flex items-center gap-1.5 mt-2">
+            {rhythm.map((isRest, i) => (
+              <button
+                key={i}
+                onClick={() => toggleRhythm(i)}
+                className={`w-11 h-11 rounded-md border text-xs font-bold transition-colors ${
+                  isRest
+                    ? "bg-indigo-600 border-indigo-600 text-white"
+                    : "bg-white border-slate-300 text-slate-500 hover:border-indigo-400"
+                }`}
+                title={isRest ? "쉬는 날" : "누르면 여기로 쉬는 날이 옮겨옵니다"}
+              >
+                <div>{i + 1}</div>
+                <div className="text-[9px] font-medium">{isRest ? "휴무" : "근무"}</div>
+              </button>
+            ))}
+          </div>
+          <p className="text-xs text-slate-700 mt-2.5">
+            <b>{rhythmText}</b> 를 반복합니다.
+          </p>
+          {rhythmMsg && (
+            <p className="text-[11px] text-amber-700 font-semibold mt-1">{rhythmMsg}</p>
+          )}
+          <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
+            이 틀이면 {rhythmDays.len}일 기준 한 달 <b>{rhythmDays.byRhythm.toFixed(1)}일</b>을 쉽니다.
+            이 매장 목표는 <b>{rhythmDays.goal}일</b>입니다
+            {Math.abs(rhythmDays.byRhythm - rhythmDays.goal) < 0.5
+              ? " — 딱 맞습니다."
+              : rhythmDays.byRhythm < rhythmDays.goal
+                ? ` — 월 ${(rhythmDays.goal - rhythmDays.byRhythm).toFixed(1)}일이 모자라서, 그만큼은 쉬는 날 옆에 하루씩 붙여 연휴로 채웁니다.`
+                : ` — 월 ${(rhythmDays.byRhythm - rhythmDays.goal).toFixed(1)}일이 남아서, 그만큼은 이 틀보다 적게 쉽니다.`}
+            <br />
+            공휴일·요청휴무·연차가 있는 날은 그쪽이 먼저이므로 틀이 조금씩 어긋날 수 있습니다.
+            사람마다 시작 칸을 어긋나게 돌려서 같은 날 전원이 쉬는 일은 없게 합니다.
+          </p>
+          {!rhythmOverMax && rhythmRun > (Number(s.consecRecommended) || 99) && (
+            <p className="text-[11px] text-amber-700 font-semibold mt-2">
+              이 틀은 {rhythmRun}일 연속근무가 생깁니다. "연속근무 권장 상한"({s.consecRecommended}일)보다 길지만
+              최대 허용({s.consecMax}일) 안이라 그대로 배정합니다.
+            </p>
+          )}
+          {rhythmOverMax && (
+            <p className="text-[11px] text-red-600 font-semibold mt-2">
+              이 틀은 {rhythmRun}일 연속근무가 생기는데 "연속근무 최대 허용"이 {s.consecMax}일입니다.
+              최대 허용을 넘길 수는 없으므로, 쉬는 칸을 늘리거나 최대 허용을 올려주세요.
+            </p>
+          )}
+        </div>
+
+      </SectionCard>
+
+      <SectionCard title="고정휴무 - 요일쌍 정의" icon={CalendarDays}>
+        <p className="text-xs text-slate-500 mb-3">
+          고정휴무 인원이 쓸 요일 묶음을 먼저 만들어 둡니다. 아래 "고정휴무 배정"에서 이 중 하나를 골라 인원에게 배정합니다.
+        </p>
+        <div className="flex items-center justify-between mb-2 mt-5">
+          <span className="text-xs font-semibold text-slate-600">요일쌍(구분) 목록 — 고정휴무 인원이 쓸 수 있는 요일쌍 정의</span>
+          <GhostBtn onClick={addDayPair} icon={Plus}>구분 추가</GhostBtn>
+        </div>
+        <div className="space-y-2">
+          {dayPairOptions.map((p, i) => (
+            <div key={p.id || i} className="flex items-center gap-2 flex-wrap border border-slate-200 rounded-md px-3 py-2">
+              <TextInput value={p.label} onChange={(v) => updDayPair(i, { label: v })} className="w-20" />
+              <div className="flex items-center gap-1">
+                {WEEKDAYS.map((wd) => (
+                  <label key={wd} className={`text-[11px] px-2 py-1 rounded cursor-pointer select-none ${(p.weekdays || []).includes(wd) ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-500"}`}>
+                    <input type="checkbox" className="hidden" checked={(p.weekdays || []).includes(wd)} onChange={() => toggleDayPairWeekday(i, wd)} />
+                    {wd}
+                  </label>
+                ))}
+              </div>
+              <IconBtn onClick={() => rmDayPair(i)} title="삭제" danger />
             </div>
           ))}
+          {dayPairOptions.length === 0 && <p className="text-xs text-slate-400">등록된 구분이 없습니다.</p>}
         </div>
+        <p className="text-[11px] text-slate-400 mt-2">
+          체크한 요일 중 첫번째가 휴무, 나머지가 휴일로 채워집니다. 실제로 누가 어떤 요일쌍을 쓰는지는
+          [휴무방식] 탭에서 지정합니다.
+        </p>
+
       </SectionCard>
 
       <SectionCard title="고정휴무 설정 (정직원)" icon={CalendarDays} right={<GhostBtn onClick={addFixed} icon={Plus}>고정휴무 추가</GhostBtn>}>
@@ -1135,6 +1167,78 @@ function HolidaysTab({ data, setData, role }) {
           {fixedRestSchedules.length === 0 && <p className="text-xs text-slate-400">등록된 고정휴무가 없습니다.</p>}
         </div>
       </SectionCard>
+
+      </ReadOnlyFence>
+    </div>
+  );
+}
+
+function HolidaysTab({ data, setData, role }) {
+  const locked = role === "viewer"; // 공휴일/이슈일 설정은 매장관리자 이상만 (개인 요청은 [요청] 탭, 고정휴무는 [휴무방식] 탭)
+  const { holidays, issueDays, employees } = data;
+  const fixedRestSchedules = data.fixedRestSchedules || [];
+  const dayPairOptions = data.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS;
+
+  const updHol = (i, patch) => setData((d) => { const arr = [...d.holidays]; arr[i] = { ...arr[i], ...patch }; return { ...d, holidays: arr }; });
+  const rmHol = (i) => setData((d) => ({ ...d, holidays: d.holidays.filter((_, idx) => idx !== i) }));
+  const addHol = () => setData((d) => ({ ...d, holidays: [...d.holidays, { date: "", name: "" }] }));
+
+  const updIss = (i, patch) => setData((d) => { const arr = [...d.issueDays]; arr[i] = { ...arr[i], ...patch }; return { ...d, issueDays: arr }; });
+  const rmIss = (i) => setData((d) => ({ ...d, issueDays: d.issueDays.filter((_, idx) => idx !== i) }));
+  const addIss = () => setData((d) => ({ ...d, issueDays: [...d.issueDays, { start: "", end: "", name: "", ftOverride: "", ptOverride: "" }] }));
+
+  const updFixed = (i, patch) => setData((d) => { const arr = [...(d.fixedRestSchedules || [])]; arr[i] = { ...arr[i], ...patch }; return { ...d, fixedRestSchedules: arr }; });
+  const rmFixed = (i) => setData((d) => ({ ...d, fixedRestSchedules: (d.fixedRestSchedules || []).filter((_, idx) => idx !== i) }));
+  const addFixed = () => setData((d) => {
+    const opts = d.dayPairOptions || DEFAULT_DAY_PAIR_OPTIONS;
+    return { ...d, fixedRestSchedules: [...(d.fixedRestSchedules || []), { start: "", end: "", dayPair: opts[0]?.label || "", empNames: [] }] };
+  });
+  const toggleFixedEmp = (i, name) => setData((d) => {
+    const arr = [...(d.fixedRestSchedules || [])];
+    const cur = arr[i].empNames || [];
+    const next = cur.includes(name) ? cur.filter((x) => x !== name) : [...cur, name];
+    arr[i] = { ...arr[i], empNames: next };
+    return { ...d, fixedRestSchedules: arr };
+  });
+
+  // 휴무 방식은 이제 인원별로 [직원목록]에서 지정한다 - 여기는 "고정휴무"로 지정된 인원만 대상으로 노출
+  const ftEmployeeNames = employees.filter((e) => e.type === "정직원" && (e.restMode || "로테이션") === "고정휴무").map((e) => e.name);
+
+  return (
+    <div className="max-w-5xl">
+      {locked && <ReadOnlyNotice>공휴일·이슈일 설정은 매장관리자 이상만 수정할 수 있습니다. 본인 휴무 요청은 [요청] 탭에서 등록하세요.</ReadOnlyNotice>}
+      <ReadOnlyFence locked={locked}>
+      <SectionCard title="공휴일 목록" icon={CalendarDays} right={<GhostBtn onClick={addHol} icon={Plus}>공휴일 추가</GhostBtn>}>
+        <div className="grid grid-cols-1 gap-1.5">
+          {holidays.map((h, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <DateInput value={h.date} onChange={(v) => updHol(i, { date: v })} />
+              <TextInput value={h.name} onChange={(v) => updHol(i, { name: v })} placeholder="공휴일명" className="w-40" />
+              <IconBtn onClick={() => rmHol(i)} title="삭제" danger />
+            </div>
+          ))}
+        </div>
+      </SectionCard>
+
+      <SectionCard title="이슈일 (기간 지정 · 적정인원 조정)" icon={ClipboardList} right={<GhostBtn onClick={addIss} icon={Plus}>이슈일 추가</GhostBtn>}>
+        <p className="text-xs text-slate-500 mb-3">적정인원 칸을 비워두면 이슈일명만 표시되고 평소 로직을 따릅니다.</p>
+        <div className="grid grid-cols-1 gap-1.5">
+          {issueDays.map((iss, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <DateInput value={iss.start} onChange={(v) => updIss(i, { start: v })} />
+              <span className="text-slate-400 text-xs">~</span>
+              <DateInput value={iss.end} onChange={(v) => updIss(i, { end: v })} />
+              <TextInput value={iss.name} onChange={(v) => updIss(i, { name: v })} placeholder="이슈일명" className="w-40" />
+              <NumberInput value={iss.ftOverride} onChange={(v) => updIss(i, { ftOverride: v })} className="w-20" />
+              <span className="text-[10px] text-slate-400">정직원</span>
+              <NumberInput value={iss.ptOverride} onChange={(v) => updIss(i, { ptOverride: v })} className="w-20" />
+              <span className="text-[10px] text-slate-400">PT</span>
+              <IconBtn onClick={() => rmIss(i)} title="삭제" danger />
+            </div>
+          ))}
+        </div>
+      </SectionCard>
+
       </ReadOnlyFence>
     </div>
   );
@@ -3934,6 +4038,7 @@ const TAB_GROUPS = [
     tabs: [
       { key: "settings", label: "설정", icon: Settings },
       { key: "employees", label: "직원목록", icon: Users },
+      { key: "restMode", label: "휴무방식", icon: RefreshCw },
       { key: "ptContracts", label: "파트타이머 계약현황", icon: CalendarClock },
       { key: "tags", label: "태그목록", icon: Tag },
       { key: "holidays", label: "공휴일·이슈일", icon: CalendarDays },
@@ -4507,6 +4612,7 @@ function MainApp({ role, onLogout }) {
           <div className="flex-1 overflow-auto p-6">
             <h2 className="text-lg font-bold text-slate-800 mb-4">{data.settings.storeName || "매장"} · {TABS.find((t) => t.key === tab)?.label}</h2>
             {tab === "settings" && <SettingsTab data={data} setData={setData} role={role} />}
+            {tab === "restMode" && <RestModeTab data={data} setData={setData} role={role} />}
             {tab === "employees" && <EmployeesTab data={data} setData={setData} role={role} />}
             {tab === "ptContracts" && <PtContractsTab data={data} setData={setData} role={role} />}
             {tab === "audit" && <AuditTab storeList={storeList} currentStoreId={currentStoreId} />}
