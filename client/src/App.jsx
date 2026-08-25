@@ -1768,18 +1768,19 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
     });
   };
 
-  const onGridKeyDown = (ev) => {
-    if (!cellSel) return;
-    if (ev.key === "Delete" || ev.key === "Backspace") {
-      ev.preventDefault();
-      clearSelectedCells();
-    }
-  };
-
   /* ---------- 드래그한 범위 복사 / 붙여넣기 ----------
      엑셀과 같은 방식으로, 칸 사이는 탭(TAB), 줄 사이는 줄바꿈으로 주고받는다.
-     그래서 엑셀·시프티 시트와도 그대로 복사·붙여넣기가 된다.
-     클립보드는 브라우저의 copy/paste 이벤트로만 다룬다(별도 권한 요청이 필요 없다). */
+     그래서 엑셀 시트와도 그대로 복사·붙여넣기가 된다.
+
+     [왜 키 입력으로 직접 처리하는가]
+     칸이 <select>라서 칸을 클릭하면 포커스가 그 select로 간다. 브라우저는 select에
+     포커스가 있고 글자 선택이 없으면 copy/paste 이벤트를 아예 쏘지 않는다. 그래서
+     onCopy/onPaste만 달아두면 아무 일도 일어나지 않는다(실제로 그랬다).
+     키 입력(keydown)은 select에서도 올라오므로 여기서 Ctrl+C/Ctrl+V를 직접 처리한다.
+
+     [클립보드를 못 쓰는 경우]
+     클립보드 읽기는 브라우저가 막을 수 있어서, 앱 안쪽에도 사본을 하나 들고 있다가
+     읽기가 안 되면 그걸 쓴다. 앱 안에서 복사→붙여넣기는 어떤 경우에도 동작한다. */
   const selRect = () => {
     if (!cellSel) return null;
     return {
@@ -1796,9 +1797,13 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
     return s;
   }, [codeGroups]);
 
-  const copySelectedCells = (ev) => {
+  // 앱 안쪽 사본. 브라우저 클립보드를 못 읽을 때 이걸 쓴다.
+  const innerClipRef = useRef("");
+
+  // 고른 범위를 엑셀과 같은 글자(탭·줄바꿈)로 만든다
+  const buildCopyText = () => {
     const rect = selRect();
-    if (!rect) return;
+    if (!rect) return null;
     const lines = [];
     for (let r = rect.rMin; r <= rect.rMax; r++) {
       const empId = orderedEmpIds[r];
@@ -1807,18 +1812,42 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
       for (let c = rect.cMin; c <= rect.cMax; c++) row.push(arr[c] || "");
       lines.push(row.join("\t"));
     }
-    ev.clipboardData.setData("text/plain", lines.join("\n"));
-    ev.preventDefault();
-    setGridNotice(`${(rect.rMax - rect.rMin + 1) * (rect.cMax - rect.cMin + 1)}칸을 복사했습니다. 붙여넣을 곳을 드래그한 뒤 Ctrl+V를 누르세요.`);
+    return { text: lines.join("\n"), count: (rect.rMax - rect.rMin + 1) * (rect.cMax - rect.cMin + 1) };
   };
 
-  const pasteIntoCells = (ev) => {
+  const doCopy = async () => {
+    const built = buildCopyText();
+    if (!built) return;
+    innerClipRef.current = built.text;
+    let toClipboard = false;
+    try {
+      await navigator.clipboard.writeText(built.text);
+      toClipboard = true;
+    } catch { /* 클립보드를 못 쓰면 앱 안쪽 사본만으로 간다 */ }
+    setGridNotice(
+      toClipboard
+        ? `${built.count}칸을 복사했습니다. 붙여넣을 곳을 드래그한 뒤 Ctrl+V를 누르세요.`
+        : `${built.count}칸을 복사했습니다. (이 브라우저에서는 엑셀로는 못 넘기고 이 표 안에서만 붙여넣을 수 있습니다.)`
+    );
+  };
+
+  const doPaste = async () => {
+    if (locked) return;
+    if (!selRect()) { setGridNotice("붙여넣을 곳을 먼저 드래그해서 골라주세요."); return; }
+    let text = "";
+    try { text = await navigator.clipboard.readText(); } catch { /* 아래에서 앱 안쪽 사본을 쓴다 */ }
+    if (!text) text = innerClipRef.current;
+    if (!text) {
+      setGridNotice("붙여넣을 내용이 없습니다. 복사할 칸을 드래그하고 Ctrl+C를 먼저 눌러주세요.");
+      return;
+    }
+    applyPasteText(text);
+  };
+
+  const applyPasteText = (text) => {
     if (locked) return;
     const rect = selRect();
-    if (!rect) return;
-    const text = ev.clipboardData?.getData("text/plain");
-    if (!text) return;
-    ev.preventDefault();
+    if (!rect || !text) return;
 
     // "어느 칸에 무엇을 넣을지"는 logic.js의 planPasteCells가 정한다(따로 검사할 수 있게 떼어둔 계산).
     const { cells } = planPasteCells(text, rect, orderedEmpIds.length, days.length);
@@ -1853,6 +1882,28 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
     if (unknown.size > 0) notes.push(`목록에 없는 값은 건너뛰었습니다: ${[...unknown].join(", ")}`);
     if (skippedContract > 0) notes.push(`계약기간 밖인 칸 ${skippedContract}개는 그대로 두었습니다`);
     setGridNotice(`${written}칸에 붙여넣었습니다.${notes.length ? " " + notes.join(" · ") : ""}`);
+  };
+
+  const onGridKeyDown = (ev) => {
+    if (!cellSel) return;
+    const mod = ev.ctrlKey || ev.metaKey;
+    if (mod && (ev.key === "c" || ev.key === "C")) { ev.preventDefault(); doCopy(); return; }
+    if (mod && (ev.key === "v" || ev.key === "V")) { ev.preventDefault(); doPaste(); return; }
+    if (ev.key === "Delete" || ev.key === "Backspace") {
+      ev.preventDefault();
+      clearSelectedCells();
+    }
+  };
+
+  // 표 바깥 상자에 포커스가 있을 때는 브라우저가 붙여넣기 이벤트를 직접 준다.
+  // 그 경우엔 클립보드 읽기 권한 없이도 값이 오므로 그대로 쓴다.
+  const onNativePaste = (ev) => {
+    if (locked || !cellSel) return;
+    const text = ev.clipboardData?.getData("text/plain");
+    if (!text) return;
+    ev.preventDefault();
+    innerClipRef.current = text;
+    applyPasteText(text);
   };
 
   const setMemoCell = (rowId, dayIdx, value) => {
@@ -1975,8 +2026,7 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
         ref={gridWrapRef}
         tabIndex={0}
         onKeyDown={onGridKeyDown}
-        onCopy={copySelectedCells}
-        onPaste={pasteIntoCells}
+        onPaste={onNativePaste}
         className="overflow-auto border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300"
         style={{ maxHeight: "calc(100vh - 300px)" }}
       >
@@ -3907,10 +3957,9 @@ function InquiryTab({ storeList, currentStoreId, role, storeName }) {
   const [rows, setRows] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  // 기본은 지금 보고 있는 매장 것만. 총관리자는 드롭다운으로 다른 매장이나 "전체 매장"을 고를 수 있다.
-  const [scope, setScope] = useState(currentStoreId || "");
-  // 총관리자용: 지금 고른 범위와 상관없이 "전체 매장 미답변"이 몇 건인지 (다른 매장 문의를 놓치지 않게)
-  const [allOpenCount, setAllOpenCount] = useState(null);
+  // 총관리자는 전체 매장이 기본(모든 매장 문의를 받아 답변하는 자리라서),
+  // 매장관리자·사용자는 자기 매장만 본다(서버도 그 매장 것만 내려준다).
+  const [scope, setScope] = useState(isAdmin ? "" : currentStoreId || "");
   const [onlyOpen, setOnlyOpen] = useState(false);
   // 매장 화면에서는 "숨김 처리(closed)"한 문의를 기본적으로 감춘다(삭제가 아니라 감추기만 - 나중에 다시 볼 수 있음)
   const [showHidden, setShowHidden] = useState(false);
@@ -3934,17 +3983,10 @@ function InquiryTab({ storeList, currentStoreId, role, storeName }) {
     setBusy(false);
   };
 
-  // 전체 매장 미답변 건수는 목록과 따로 가져온다 - 매장 하나만 보고 있어도 다른 매장에
-  // 답변 안 한 문의가 있는지 알 수 있어야 하기 때문(총관리자만 의미가 있다).
-  const loadAllOpenCount = async () => {
-    if (!isAdmin) return;
-    try { setAllOpenCount((await api.countOpenInquiries("")).count); } catch { setAllOpenCount(null); }
-  };
-
-  useEffect(() => { loadAllOpenCount(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
-
-  // 첫 화면과, 매장을 바꿨을 때. 기본이 "지금 보고 있는 매장"이므로 목록도 따라간다.
+  // 첫 화면과, 매장을 바꿨을 때.
+  // 총관리자는 고른 범위를 그대로 두고(전체 매장 기본), 매장관리자·사용자는 바뀐 매장을 따라간다.
   useEffect(() => {
+    if (isAdmin) { load(scope, onlyOpen); return; }
     const next = currentStoreId || "";
     setScope(next);
     load(next, onlyOpen);
@@ -3960,7 +4002,6 @@ function InquiryTab({ storeList, currentStoreId, role, storeName }) {
       setBody("");
       setSent("문의가 등록되었습니다. 답변이 등록되면 아래 목록에서 확인하실 수 있습니다.");
       await load();
-      await loadAllOpenCount();
     } catch (e) { setErr(e.message || "등록하지 못했습니다."); }
     setBusy(false);
   };
@@ -3969,7 +4010,7 @@ function InquiryTab({ storeList, currentStoreId, role, storeName }) {
     const text = (answering?.text || "").trim();
     if (!text) return;
     setBusy(true);
-    try { await api.answerInquiry(id, { answer: text }); setAnswering(null); await load(); await loadAllOpenCount(); }
+    try { await api.answerInquiry(id, { answer: text }); setAnswering(null); await load(); }
     catch (e) { setErr(e.message || "답변을 저장하지 못했습니다."); }
     setBusy(false);
   };
@@ -3977,7 +4018,7 @@ function InquiryTab({ storeList, currentStoreId, role, storeName }) {
   const removeInquiry = async (id) => {
     if (!window.confirm("이 문의를 삭제할까요? 되돌릴 수 없습니다.")) return;
     setBusy(true);
-    try { await api.deleteInquiry(id); await load(); await loadAllOpenCount(); }
+    try { await api.deleteInquiry(id); await load(); }
     catch (e) { setErr(e.message || "삭제하지 못했습니다."); }
     setBusy(false);
   };
@@ -4046,26 +4087,12 @@ function InquiryTab({ storeList, currentStoreId, role, storeName }) {
       </SectionCard>
 
       <SectionCard
-        title={
-          isAdmin
-            ? `${scope === "" ? "전체 매장" : (storeList || []).find((s) => s.id === scope)?.name || "이 매장"} 문의${openCount > 0 ? ` (미답변 ${openCount}건)` : ""}`
-            : "내 매장 문의 내역"
-        }
+        title={isAdmin ? `문의 목록${openCount > 0 ? ` (미답변 ${openCount}건)` : ""}` : "내 매장 문의 내역"}
         icon={ClipboardList}
         right={
           <div className="flex items-center gap-2">
             {isAdmin && (
               <>
-                {/* 지금 한 매장만 보고 있어도 다른 매장에 답변 안 한 문의가 있으면 여기서 알 수 있다 */}
-                {allOpenCount > 0 && scope !== "" && (
-                  <button
-                    onClick={() => { setScope(""); load("", onlyOpen); }}
-                    className="text-[11px] font-semibold bg-amber-100 text-amber-800 border border-amber-300 rounded-md px-2 py-1 hover:bg-amber-200"
-                    title="전체 매장 목록으로 넘어갑니다"
-                  >
-                    전체 미답변 {allOpenCount}건 보기
-                  </button>
-                )}
                 <Select
                   value={scope}
                   onChange={(v) => { setScope(v); load(v, onlyOpen); }}
