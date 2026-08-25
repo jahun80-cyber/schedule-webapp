@@ -1140,6 +1140,23 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
   const weekIndexOfDay = (key, dayNum) =>
     weeksAll.findIndex((w) => w.some(({ key: k, day }) => k === key && day.day === dayNum));
 
+  // 그 주의 휴무 개수가 허용치 안에 있는지 확인한다 (normalizeWeeklyRest와 같은 기준).
+  // 한 주에 휴무는 1개, 쉬는 날이 3개 이상인 주만 2개까지. 휴무가 이어지는 것 자체는 정상이고,
+  // 휴무가 1개뿐인 주는 휴일이 없어도 정상이다. 막아야 하는 것은 쉬는 날 2개가 모두 휴무여서
+  // 휴무 2개에 휴일이 하나도 없게 되는 경우다.
+  // (B)에서 쉬는 날을 주고받을 때 주는 쪽의 주가 이 상태로 떨어지는 것을 막는 데 쓴다.
+  const weekRestOk = (empId, key, dayNum) => {
+    const wi = weekIndexOfDay(key, dayNum);
+    if (wi < 0) return true;
+    let rest = 0, humu = 0;
+    weeksAll[wi].forEach(({ key: k, day: d }) => {
+      const v = next[k][empId]?.[d.day - 1] || "";
+      if (v === "휴무" || v === "휴일") rest++;
+      if (v === "휴무") humu++;
+    });
+    return humu <= (rest >= 3 ? 2 : 1);
+  };
+
   const maxStreakOf = (empId) => {
     const emp = ftEmps.find((e) => e.id === empId);
     let consec = 0, maxRun = 0;
@@ -1269,7 +1286,10 @@ function finalAdjust(schedule, employees, tags, settings, monthsMeta, fixedRestS
           next[slot.key][taker.emp.id][slot.day.day - 1] = taker.code;  // 받는 사람은 부족한 코드로
           next[slot.key][giver.emp.id][slot.day.day - 1] = takerVal;    // 주는 사람은 근무로
 
-          if (maxStreakOf(giver.emp.id) <= limitOf(giver.emp) && maxStreakOf(taker.emp.id) <= limitOf(taker.emp) && leaderOk(slot.key, slot.day)) {
+          // 주는 쪽의 주도 함께 본다. 예전에는 받는 쪽만 보느라, 휴무+휴무+휴일이던 주에서
+          // 휴일 하나를 넘겨주면 휴무+휴무만 남아 그 주에 휴일이 없어지는 일이 있었다.
+          if (maxStreakOf(giver.emp.id) <= limitOf(giver.emp) && maxStreakOf(taker.emp.id) <= limitOf(taker.emp) && leaderOk(slot.key, slot.day) &&
+              weekRestOk(giver.emp.id, slot.key, slot.day.day) && weekRestOk(taker.emp.id, slot.key, slot.day.day)) {
             changedDays.add(`${slot.key}|${slot.day.day}`);
             balanceFixed++;
             moved = true;
@@ -2170,6 +2190,46 @@ function fixedRestLimitOf(fixedRestSchedules, dayPairOptions, emp, settings) {
   return Math.max(base, patternMax);
 }
 
+/* ============================================================
+   스케줄 표 붙여넣기 - 클립보드 글자를 "어느 칸에 무엇을 넣을지"로 바꾼다.
+   화면 코드에서 떼어내 여기 둔 이유는 이 계산(범위 자르기·반복 채우기)이
+   버튼을 눌러야 도는 코드라 렌더 검사로는 확인이 안 되기 때문이다.
+   여기 있으면 tools/paste-check.mjs로 값을 넣어 직접 확인할 수 있다.
+
+   text   : 클립보드 글자 (칸 사이 탭, 줄 사이 줄바꿈 - 엑셀과 같은 형식)
+   rect   : 지금 드래그로 고른 범위 { rMin, rMax, cMin, cMax }
+   maxRows/maxCols : 표의 크기 (이 밖으로는 넘어가지 않는다)
+   반환   : { cells: [{ r, c, value }], height, width }
+   규칙   : 한 칸만 골랐으면 복사한 크기 그대로, 넓게 골랐으면 그 범위를 채울 때까지 반복한다.
+   ============================================================ */
+function planPasteCells(text, rect, maxRows, maxCols) {
+  const empty = { cells: [], height: 0, width: 0 };
+  if (!text || !rect) return empty;
+  const block = String(text)
+    .replace(/\r\n?/g, "\n")
+    .replace(/\n+$/, "")
+    .split("\n")
+    .map((line) => line.split("\t").map((v) => v.trim()));
+  if (block.length === 0) return empty;
+  const height = block.length;
+  const width = Math.max(...block.map((r) => r.length));
+  if (width === 0) return empty;
+
+  const oneCell = rect.rMin === rect.rMax && rect.cMin === rect.cMax;
+  const rEnd = Math.min(oneCell ? rect.rMin + height - 1 : rect.rMax, maxRows - 1);
+  const cEnd = Math.min(oneCell ? rect.cMin + width - 1 : rect.cMax, maxCols - 1);
+
+  const cells = [];
+  for (let r = rect.rMin; r <= rEnd; r++) {
+    for (let c = rect.cMin; c <= cEnd; c++) {
+      const row = block[(r - rect.rMin) % height];
+      const value = (row[(c - rect.cMin) % width] || "").trim();
+      cells.push({ r, c, value });
+    }
+  }
+  return { cells, height, width };
+}
+
 function validateMonth(schedule, employees, tags, settings, days, key, fixedRestSchedules, dayPairOptions) {
   let notOkDates = [];
   const leaderNotOkDates = [];
@@ -2209,9 +2269,37 @@ function validateMonth(schedule, employees, tags, settings, days, key, fixedRest
     if (maxRun > limit) warnList.push(`${e.name}(최대연속 ${maxRun}일)`);
   });
 
+  // 주 단위 휴무 규칙 위반 찾기 (알림만 - 자동으로 고치지는 않는다).
+  // 기준은 normalizeWeeklyRest와 같다: 한 주(월~일)에 휴무는 1개, 쉬는 날이 3일 이상인 주만 2개까지.
+  // 한 주에 나올 수 있는 정상 형태는 [휴무], [휴무+휴일], [휴무+휴무+휴일], [휴무+휴무+휴일 여러 개]다.
+  // 휴무가 1개뿐인 주는 휴일이 없어도 정상이고, 휴무가 2개인 주에만 휴일이 함께 있어야 한다.
+  // 그래서 "휴일이 없는 주"가 아니라 "휴무가 그 주 허용치를 넘은 주"를 센다.
+  // 1단계 직후에는 이 정리가 아직 안 돌아서 남아 있을 수 있고(3단계에서 정리됨),
+  // 4단계의 월별 균형 맞추기가 정리된 결과를 다시 흐트러뜨리는 경우도 있어서 화면에 그대로 보여준다.
+  const humuWeekList = [];
+  employees.filter((e) => e.type === "정직원" && isActiveEmployee(e) && isAutoAssignable(e)).forEach((e) => {
+    const weeks = [];
+    let week = [];
+    days.forEach((day) => {
+      if (day.weekday === "월" && week.length > 0) { weeks.push(week); week = []; }
+      week.push(day);
+    });
+    if (week.length > 0) weeks.push(week);
+    weeks.forEach((wk) => {
+      // 달 경계에 걸려 잘린 주는 나머지 절반을 알 수 없으므로 판단을 보류한다(괜한 경고 방지)
+      if (wk.length < 7) return;
+      const vals = wk.map((day) => schedule[key][e.id]?.[day.day - 1] || "");
+      const restDays = vals.filter((v) => v === "휴무" || v === "휴일").length;
+      const humuDays = wk.filter((day, i) => vals[i] === "휴무");
+      const allowed = restDays >= 3 ? 2 : 1;
+      if (humuDays.length > allowed) humuWeekList.push(`${e.name}(${humuDays.map((d) => `${d.day}일`).join("·")})`);
+    });
+  });
+
   return {
     notOkCount: notOkDates.length, notOkDates, warnList,
     leaderNotOkCount: leaderNotOkDates.length, leaderNotOkDates,
+    humuWeekCount: humuWeekList.length, humuWeekList,
   };
 }
 
@@ -2394,6 +2482,7 @@ export {
   applyFixedRestSchedules, isFixedRestCovered, isFixedRestEmployee, resolveFixedRestEnd, DEFAULT_DAY_PAIR_OPTIONS,
   emptyMemoRows, reconcileMemoRows,
   validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT, requiredLeaderFT,
+  planPasteCells,
   buildRequestedRestSet,
   isOffTag, shiftCodeOf, dowBucket, nextMonth, emptySchedule, isWeekendBucket, isExtendedHoursDay, isActiveEmployee, pickThresholdIndex, isAutoAssignable,
   restRhythmOf, rhythmMaxWorkRun, rhythmRestPerMonth, DEFAULT_REST_RHYTHM, isUsableRhythm,

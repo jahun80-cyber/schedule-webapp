@@ -11,7 +11,7 @@ cd "$(dirname "$0")/.."
 fail=0
 step() { printf "\n\033[1m▶ %s\033[0m\n" "$1"; }
 
-step "1/3  빌드"
+step "1/4  빌드"
 if (cd client && npm run build 2>&1 | tail -3); then
   echo "  통과"
 else
@@ -19,15 +19,22 @@ else
   fail=1
 fi
 
-step "2/3  탭 렌더 검사 (빌드로는 안 잡히는 흰 화면 오류)"
+step "2/4  탭 렌더 검사 (빌드로는 안 잡히는 흰 화면 오류)"
 if node tools/render-check.mjs; then
   :
 else
   fail=1
 fi
 
-step "3/3  스케줄 배정 검사 (실제 계산이 규칙을 지키는지)"
+step "3/4  스케줄 배정 검사 (실제 계산이 규칙을 지키는지)"
 if node tools/schedule-check.mjs; then
+  :
+else
+  fail=1
+fi
+
+step "4/4  표 복사·붙여넣기 검사 (버튼을 눌러야 도는 코드라 렌더 검사가 못 봄)"
+if node tools/paste-check.mjs; then
   :
 else
   fail=1

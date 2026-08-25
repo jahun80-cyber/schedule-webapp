@@ -13,7 +13,7 @@ import {
   buildMonthDays, applyPersonalTags, applyUsageRecords, convertRequestTags, assignRestDays, assignShiftCodes,
   applyFixedRestSchedules, assignRemainingRest, finalAdjust, normalizeFtTemplates, normalizeEmployeeRestModes, DEFAULT_DAY_PAIR_OPTIONS,
   emptyMemoRows, reconcileMemoRows,
-  validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT, requiredLeaderFT,
+  validateMonth, validateCombined, satTarget, sunHolTarget, requiredFT, requiredPT, requiredLeaderFT, planPasteCells,
   isOffTag, dowBucket, nextMonth, emptySchedule, reconcileSchedule, isActiveEmployee, isAutoAssignable, computeLeaveUsage,
   isUnderContractOn, isCountedOn, restTargetFor,
   restRhythmOf, rhythmMaxWorkRun, DEFAULT_REST_RHYTHM,
@@ -1598,8 +1598,10 @@ function CodeOptions({ groups, value }) {
   );
 }
 
-function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, priorMonthCarry, filterDate, filterMode }) {
+function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, priorMonthCarry, filterDate, filterMode, locked }) {
   const { employees, tags, settings } = data;
+  // 복사/붙여넣기 결과를 알려주는 한 줄 안내 (표 바로 위에 뜬다)
+  const [gridNotice, setGridNotice] = useState("");
   const memoRowLabels = data.memoRowLabels || [];
   const memoKey = monthKey === "m1" ? "m1Memo" : "m2Memo";
 
@@ -1744,7 +1746,7 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
   }, [cellSel]);
 
   const clearSelectedCells = () => {
-    if (!cellSel) return;
+    if (locked || !cellSel) return;
     const rMin = Math.min(cellSel.r1, cellSel.r2), rMax = Math.max(cellSel.r1, cellSel.r2);
     const cMin = Math.min(cellSel.c1, cellSel.c2), cMax = Math.max(cellSel.c1, cellSel.c2);
     setSchedule((prev) => {
@@ -1772,6 +1774,85 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
       ev.preventDefault();
       clearSelectedCells();
     }
+  };
+
+  /* ---------- 드래그한 범위 복사 / 붙여넣기 ----------
+     엑셀과 같은 방식으로, 칸 사이는 탭(TAB), 줄 사이는 줄바꿈으로 주고받는다.
+     그래서 엑셀·시프티 시트와도 그대로 복사·붙여넣기가 된다.
+     클립보드는 브라우저의 copy/paste 이벤트로만 다룬다(별도 권한 요청이 필요 없다). */
+  const selRect = () => {
+    if (!cellSel) return null;
+    return {
+      rMin: Math.min(cellSel.r1, cellSel.r2), rMax: Math.max(cellSel.r1, cellSel.r2),
+      cMin: Math.min(cellSel.c1, cellSel.c2), cMax: Math.max(cellSel.c1, cellSel.c2),
+    };
+  };
+
+  // 붙여넣을 수 있는 값인지 - 셀 드롭다운에 있는 코드만 받는다.
+  // (엉뚱한 값이 들어가면 그 칸이 "⚠ 선택 안 됨"이 되고 계산에서도 빠지기 때문)
+  const pasteableCodes = useMemo(() => {
+    const s = new Set([""]);
+    codeGroups.forEach((g) => g.codes.forEach((c) => s.add(c)));
+    return s;
+  }, [codeGroups]);
+
+  const copySelectedCells = (ev) => {
+    const rect = selRect();
+    if (!rect) return;
+    const lines = [];
+    for (let r = rect.rMin; r <= rect.rMax; r++) {
+      const empId = orderedEmpIds[r];
+      const arr = schedule[monthKey][empId] || [];
+      const row = [];
+      for (let c = rect.cMin; c <= rect.cMax; c++) row.push(arr[c] || "");
+      lines.push(row.join("\t"));
+    }
+    ev.clipboardData.setData("text/plain", lines.join("\n"));
+    ev.preventDefault();
+    setGridNotice(`${(rect.rMax - rect.rMin + 1) * (rect.cMax - rect.cMin + 1)}칸을 복사했습니다. 붙여넣을 곳을 드래그한 뒤 Ctrl+V를 누르세요.`);
+  };
+
+  const pasteIntoCells = (ev) => {
+    if (locked) return;
+    const rect = selRect();
+    if (!rect) return;
+    const text = ev.clipboardData?.getData("text/plain");
+    if (!text) return;
+    ev.preventDefault();
+
+    // "어느 칸에 무엇을 넣을지"는 logic.js의 planPasteCells가 정한다(따로 검사할 수 있게 떼어둔 계산).
+    const { cells } = planPasteCells(text, rect, orderedEmpIds.length, days.length);
+    if (cells.length === 0) return;
+
+    const unknown = new Set();
+    let written = 0, skippedContract = 0;
+    let rEnd = rect.rMin, cEnd = rect.cMin;
+    setSchedule((prev) => {
+      const next = { ...prev, [monthKey]: { ...prev[monthKey] } };
+      const rows = new Map();
+      cells.forEach(({ r, c, value }) => {
+        const empId = orderedEmpIds[r];
+        const day = days[c];
+        if (!empId || !day) return;
+        if (r > rEnd) rEnd = r;
+        if (c > cEnd) cEnd = c;
+        if (!pasteableCodes.has(value)) { unknown.add(value); return; }
+        const emp = active.find((e) => e.id === empId);
+        // 계약기간 밖 칸은 지우기와 마찬가지로 건드리지 않는다
+        if (emp && emp.type === "정직원" && !isUnderContractOn(emp, day.dateStr)) { skippedContract++; return; }
+        if (!rows.has(empId)) rows.set(empId, [...(next[monthKey][empId] || [])]);
+        rows.get(empId)[c] = value;
+        written++;
+      });
+      rows.forEach((arr, empId) => { next[monthKey][empId] = arr; });
+      return next;
+    });
+
+    setCellSel({ r1: rect.rMin, c1: rect.cMin, r2: rEnd, c2: cEnd });
+    const notes = [];
+    if (unknown.size > 0) notes.push(`목록에 없는 값은 건너뛰었습니다: ${[...unknown].join(", ")}`);
+    if (skippedContract > 0) notes.push(`계약기간 밖인 칸 ${skippedContract}개는 그대로 두었습니다`);
+    setGridNotice(`${written}칸에 붙여넣었습니다.${notes.length ? " " + notes.join(" · ") : ""}`);
   };
 
   const setMemoCell = (rowId, dayIdx, value) => {
@@ -1868,13 +1949,23 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
         </label>
         {cellSel && (
           <div className="flex items-center gap-2 text-[11px] bg-indigo-50 border border-indigo-200 text-indigo-700 rounded-md px-2 py-1">
-            <span>{selectedCellCount}칸 선택됨 - Delete 키로 지우기</span>
-            <button onClick={clearSelectedCells} className="font-semibold underline hover:text-indigo-900">지금 지우기</button>
+            <span>{selectedCellCount}칸 선택됨 - Ctrl+C 복사 / Ctrl+V 붙여넣기 / Delete 지우기</span>
+            {!locked && <button onClick={clearSelectedCells} className="font-semibold underline hover:text-indigo-900">지금 지우기</button>}
             <button onClick={() => setCellSel(null)} className="text-indigo-400 hover:text-red-500">선택 해제</button>
           </div>
         )}
       </div>
-      <div className="text-[11px] text-slate-400 mb-2">엑셀처럼 칸을 마우스로 드래그해 여러 칸을 선택한 뒤 Delete 키를 누르면 선택한 칸이 한 번에 지워집니다.</div>
+      <div className="text-[11px] text-slate-400 mb-2">
+        엑셀처럼 칸을 마우스로 드래그해 여러 칸을 선택한 뒤 <b>Ctrl+C</b>로 복사하고, 붙여넣을 곳을 드래그한 뒤 <b>Ctrl+V</b>를 누르면 됩니다.
+        한 칸만 고르고 붙여넣으면 복사한 크기 그대로 들어가고, 넓게 골라두면 그 범위를 채울 때까지 반복됩니다.
+        <b>Delete</b> 키를 누르면 선택한 칸이 한 번에 지워집니다. 엑셀·시프티 시트와도 그대로 주고받을 수 있습니다.
+      </div>
+      {gridNotice && (
+        <div className="flex items-center gap-2 text-[11px] bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-md px-2 py-1 mb-2">
+          <span>{gridNotice}</span>
+          <button onClick={() => setGridNotice("")} className="text-emerald-500 hover:text-emerald-900">닫기</button>
+        </div>
+      )}
 
       {/* 세로/가로 스크롤을 이 박스 안에서 직접 담당해야 머리글(thead)의 sticky top이 실제로 동작한다 -
           바깥 페이지 스크롤에 맡기면 overflow-x:auto가 있는 한 브라우저가 overflow-y도 함께
@@ -1884,6 +1975,8 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
         ref={gridWrapRef}
         tabIndex={0}
         onKeyDown={onGridKeyDown}
+        onCopy={copySelectedCells}
+        onPaste={pasteIntoCells}
         className="overflow-auto border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300"
         style={{ maxHeight: "calc(100vh - 300px)" }}
       >
@@ -2305,6 +2398,16 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
         <span className={`px-2 py-1 rounded-md font-semibold ${val.warnList.length > 0 ? "bg-amber-100 text-amber-700" : "bg-green-100 text-green-700"}`}>
           연속근무 상한 초과: {val.warnList.length === 0 ? "없음" : val.warnList.join(", ")}
         </span>
+        <span
+          className={`px-2 py-1 rounded-md font-semibold ${val.humuWeekCount > 0 ? "bg-amber-100 text-amber-700" : "bg-green-100 text-green-700"}`}
+          title={
+            val.humuWeekCount > 0
+              ? `한 주에 휴무가 규칙보다 많습니다: ${val.humuWeekList.join(", ")}\n\n한 주에 들어갈 수 있는 형태는 이렇습니다.\n  휴무\n  휴무 + 휴일\n  휴무 + 휴무 + 휴일\n  휴무 + 휴무 + 휴일 여러 개\n휴무는 최대 2개이고, 휴무가 2개인 주에는 휴일이 하나는 있어야 합니다.\n(휴무가 1개뿐인 주는 휴일이 없어도 정상입니다.)\n\n1단계만 실행한 상태라면 3단계까지 실행하면 대부분 정리됩니다.\n그래도 남으면 표시된 칸 중 하나를 휴일로 바꿔주세요.`
+              : "한 주에 휴무가 몰린 곳이 없습니다."
+          }
+        >
+          주 휴무 규칙: {val.humuWeekCount === 0 ? "이상 없음" : val.humuWeekList.join(", ")}
+        </span>
         {missingConsecNames.length > 0 && (
           <span
             className="px-2 py-1 rounded-md font-semibold bg-red-100 text-red-700"
@@ -2334,7 +2437,7 @@ function ScheduleTab({ data, setData, schedule, setSchedule, archive, setArchive
       </div>
       <ScheduleGrid
         data={data} setData={setData} schedule={schedule} setSchedule={setSchedule} monthKey={monthKey} days={meta.days} priorMonthCarry={priorMonthCarry}
-        filterDate={filterDate} filterMode={filterMode}
+        filterDate={filterDate} filterMode={filterMode} locked={locked}
       />
       </ReadOnlyFence>
     </div>
