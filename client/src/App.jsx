@@ -3907,7 +3907,10 @@ function InquiryTab({ storeList, currentStoreId, role, storeName }) {
   const [rows, setRows] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const [scope, setScope] = useState(isAdmin ? "" : currentStoreId || "");
+  // 기본은 지금 보고 있는 매장 것만. 총관리자는 드롭다운으로 다른 매장이나 "전체 매장"을 고를 수 있다.
+  const [scope, setScope] = useState(currentStoreId || "");
+  // 총관리자용: 지금 고른 범위와 상관없이 "전체 매장 미답변"이 몇 건인지 (다른 매장 문의를 놓치지 않게)
+  const [allOpenCount, setAllOpenCount] = useState(null);
   const [onlyOpen, setOnlyOpen] = useState(false);
   // 매장 화면에서는 "숨김 처리(closed)"한 문의를 기본적으로 감춘다(삭제가 아니라 감추기만 - 나중에 다시 볼 수 있음)
   const [showHidden, setShowHidden] = useState(false);
@@ -3930,7 +3933,23 @@ function InquiryTab({ storeList, currentStoreId, role, storeName }) {
     }
     setBusy(false);
   };
-  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+
+  // 전체 매장 미답변 건수는 목록과 따로 가져온다 - 매장 하나만 보고 있어도 다른 매장에
+  // 답변 안 한 문의가 있는지 알 수 있어야 하기 때문(총관리자만 의미가 있다).
+  const loadAllOpenCount = async () => {
+    if (!isAdmin) return;
+    try { setAllOpenCount((await api.countOpenInquiries("")).count); } catch { setAllOpenCount(null); }
+  };
+
+  useEffect(() => { loadAllOpenCount(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+
+  // 첫 화면과, 매장을 바꿨을 때. 기본이 "지금 보고 있는 매장"이므로 목록도 따라간다.
+  useEffect(() => {
+    const next = currentStoreId || "";
+    setScope(next);
+    load(next, onlyOpen);
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, [currentStoreId]);
 
   const submit = async () => {
     const text = body.trim();
@@ -3941,6 +3960,7 @@ function InquiryTab({ storeList, currentStoreId, role, storeName }) {
       setBody("");
       setSent("문의가 등록되었습니다. 답변이 등록되면 아래 목록에서 확인하실 수 있습니다.");
       await load();
+      await loadAllOpenCount();
     } catch (e) { setErr(e.message || "등록하지 못했습니다."); }
     setBusy(false);
   };
@@ -3949,7 +3969,7 @@ function InquiryTab({ storeList, currentStoreId, role, storeName }) {
     const text = (answering?.text || "").trim();
     if (!text) return;
     setBusy(true);
-    try { await api.answerInquiry(id, { answer: text }); setAnswering(null); await load(); }
+    try { await api.answerInquiry(id, { answer: text }); setAnswering(null); await load(); await loadAllOpenCount(); }
     catch (e) { setErr(e.message || "답변을 저장하지 못했습니다."); }
     setBusy(false);
   };
@@ -3957,7 +3977,7 @@ function InquiryTab({ storeList, currentStoreId, role, storeName }) {
   const removeInquiry = async (id) => {
     if (!window.confirm("이 문의를 삭제할까요? 되돌릴 수 없습니다.")) return;
     setBusy(true);
-    try { await api.deleteInquiry(id); await load(); }
+    try { await api.deleteInquiry(id); await load(); await loadAllOpenCount(); }
     catch (e) { setErr(e.message || "삭제하지 못했습니다."); }
     setBusy(false);
   };
@@ -4026,12 +4046,26 @@ function InquiryTab({ storeList, currentStoreId, role, storeName }) {
       </SectionCard>
 
       <SectionCard
-        title={isAdmin ? `문의 목록${openCount > 0 ? ` (미답변 ${openCount}건)` : ""}` : "내 매장 문의 내역"}
+        title={
+          isAdmin
+            ? `${scope === "" ? "전체 매장" : (storeList || []).find((s) => s.id === scope)?.name || "이 매장"} 문의${openCount > 0 ? ` (미답변 ${openCount}건)` : ""}`
+            : "내 매장 문의 내역"
+        }
         icon={ClipboardList}
         right={
           <div className="flex items-center gap-2">
             {isAdmin && (
               <>
+                {/* 지금 한 매장만 보고 있어도 다른 매장에 답변 안 한 문의가 있으면 여기서 알 수 있다 */}
+                {allOpenCount > 0 && scope !== "" && (
+                  <button
+                    onClick={() => { setScope(""); load("", onlyOpen); }}
+                    className="text-[11px] font-semibold bg-amber-100 text-amber-800 border border-amber-300 rounded-md px-2 py-1 hover:bg-amber-200"
+                    title="전체 매장 목록으로 넘어갑니다"
+                  >
+                    전체 미답변 {allOpenCount}건 보기
+                  </button>
+                )}
                 <Select
                   value={scope}
                   onChange={(v) => { setScope(v); load(v, onlyOpen); }}
