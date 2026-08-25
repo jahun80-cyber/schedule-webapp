@@ -1721,15 +1721,41 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
     return () => window.removeEventListener("mouseup", onMouseUp);
   }, []);
 
-  const beginCellSelect = (empId, dayIdx, shiftKey) => {
+  /* 칸을 누르면 브라우저가 그 칸의 드롭다운을 바로 펼친다. 그 상태로 드래그하면 첫 칸의
+     드롭다운이 열린 채 남고, 키 입력이 전부 그 목록으로 가버려서 Ctrl+C가 먹지 않는다.
+     그래서 누를 때는 펼치지 않고(preventDefault), 드래그 없이 그냥 클릭한 것이면 그때
+     직접 펼친다. showPicker를 지원하지 않는 브라우저에서는 손대지 않고 원래대로 둔다
+     (그쪽에서 막아버리면 드롭다운을 열 방법이 아예 없어지기 때문). */
+  const canOpenPicker = typeof HTMLSelectElement !== "undefined" &&
+    typeof HTMLSelectElement.prototype.showPicker === "function";
+  const dragMovedRef = useRef(false);
+  const pressedCellRef = useRef(null);
+
+  const beginCellSelect = (empId, dayIdx, shiftKey, ev) => {
     const r = orderedEmpIds.indexOf(empId);
     draggingRef.current = true;
+    dragMovedRef.current = false;
+    pressedCellRef.current = ev?.currentTarget?.querySelector?.("select") || null;
+    if (canOpenPicker && ev) {
+      ev.preventDefault();                 // 드롭다운이 펼쳐지지 않게
+      gridWrapRef.current?.focus();        // 키 입력은 표가 받는다
+    }
     setCellSel((prev) => (shiftKey && prev) ? { ...prev, r2: r, c2: dayIdx } : { r1: r, c1: dayIdx, r2: r, c2: dayIdx });
   };
   const extendCellSelect = (empId, dayIdx) => {
     if (!draggingRef.current) return;
+    dragMovedRef.current = true;
     const r = orderedEmpIds.indexOf(empId);
     setCellSel((prev) => (prev ? { ...prev, r2: r, c2: dayIdx } : { r1: r, c1: dayIdx, r2: r, c2: dayIdx }));
+  };
+  // 끌지 않고 그냥 클릭한 것이면 원래처럼 드롭다운을 펼쳐준다
+  const onCellMouseUp = () => {
+    if (!canOpenPicker) return;
+    const sel = pressedCellRef.current;
+    pressedCellRef.current = null;
+    if (!sel || dragMovedRef.current || locked) return;
+    sel.focus();
+    try { sel.showPicker(); } catch { /* 못 펼치면 포커스만 - 방향키로 고를 수 있다 */ }
   };
   const isCellSelected = (empId, dayIdx) => {
     if (!cellSel) return false;
@@ -2169,8 +2195,9 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
                     return (
                       <td
                         key={day.day}
-                        onMouseDown={(ev) => beginCellSelect(e.id, i, ev.shiftKey)}
+                        onMouseDown={(ev) => beginCellSelect(e.id, i, ev.shiftKey, ev)}
                         onMouseEnter={() => extendCellSelect(e.id, i)}
+                        onMouseUp={onCellMouseUp}
                         className={`border border-slate-200 text-center text-slate-300 text-[10px] py-1.5 ${selected ? "bg-indigo-100" : "bg-slate-100"}`}
                         title="계약기간 밖"
                       >-</td>
@@ -2180,8 +2207,9 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
                   return (
                     <td
                       key={day.day}
-                      onMouseDown={(ev) => beginCellSelect(e.id, i, ev.shiftKey)}
+                      onMouseDown={(ev) => beginCellSelect(e.id, i, ev.shiftKey, ev)}
                       onMouseEnter={() => extendCellSelect(e.id, i)}
+                      onMouseUp={onCellMouseUp}
                       style={selected || !cc ? undefined : { background: cc.bg }}
                       className={`border border-slate-200 p-0 ${selected ? "bg-indigo-100" : ""}`}
                     >
@@ -2218,8 +2246,9 @@ function ScheduleGrid({ data, setData, schedule, setSchedule, monthKey, days, pr
                   return (
                     <td
                       key={day.day}
-                      onMouseDown={(ev) => beginCellSelect(e.id, i, ev.shiftKey)}
+                      onMouseDown={(ev) => beginCellSelect(e.id, i, ev.shiftKey, ev)}
                       onMouseEnter={() => extendCellSelect(e.id, i)}
+                      onMouseUp={onCellMouseUp}
                       style={selected || !cc ? undefined : { background: cc.bg }}
                       className={`border border-slate-200 p-0 ${selected ? "bg-indigo-100" : ""}`}
                     >
