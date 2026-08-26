@@ -743,20 +743,24 @@ function TagsTab({ data, setData, role, storeList, currentStoreId }) {
           "매장출근카운트"를 끄면(아니오) 그 태그가 입력된 사람은 자동으로 출근인원 계산에서 제외됩니다.
           왼쪽 ⠿ 를 눌러서 드래그하면 순서를 바꿀 수 있습니다.
         </p>
-        <table className="w-full text-sm">
+        {/* 열이 많아 좁아지면 머리글이 한 글자씩 세로로 쪼개진다.
+            break-keep(한국어 단어 안 쪼개기)으로 띄어쓰기 자리에서만 줄바꿈되게 하고,
+            그래도 좁으면 페이지가 아니라 이 표 안에서 가로로 스크롤되게 한다. */}
+        <div style={{ overflowX: "auto" }}>
+        <table className="w-full text-sm" style={{ minWidth: 1100 }}>
           <thead>
-            <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+            <tr className="text-left text-xs text-slate-500 border-b border-slate-200" style={{ wordBreak: "keep-all" }}>
               <th className="py-2 w-6"></th>
               <th className="py-2 font-semibold">태그</th>
               <th className="py-2 font-semibold">분류</th>
-              <th className="py-2 font-semibold">매장출근카운트</th>
-              <th className="py-2 font-semibold">휴무/휴일구분</th>
-              <th className="py-2 font-semibold">휴무/휴일 후보</th>
-              <th className="py-2 font-semibold">사용량 추적</th>
-              <th className="py-2 font-semibold">휴가 종류</th>
-              <th className="py-2 font-semibold">시간(H)</th>
-              <th className="py-2 font-semibold">발생장부</th>
-              <th className="py-2 font-semibold">근무조 환산</th>
+              <th className="py-2 font-semibold" style={{ minWidth: 92 }}>매장출근카운트</th>
+              <th className="py-2 font-semibold" style={{ minWidth: 86 }}>휴무/휴일구분</th>
+              <th className="py-2 font-semibold" style={{ minWidth: 86 }}>휴무/휴일 후보</th>
+              <th className="py-2 font-semibold" style={{ minWidth: 66 }}>사용량 추적</th>
+              <th className="py-2 font-semibold" style={{ minWidth: 66 }}>휴가 종류</th>
+              <th className="py-2 font-semibold" style={{ minWidth: 60 }}>시간(H)</th>
+              <th className="py-2 font-semibold" style={{ minWidth: 60 }}>발생장부</th>
+              <th className="py-2 font-semibold" style={{ minWidth: 72 }}>근무조 환산</th>
               <th className="py-2 font-semibold">설명</th>
               <th className="py-2 w-8"></th>
             </tr>
@@ -834,6 +838,7 @@ function TagsTab({ data, setData, role, storeList, currentStoreId }) {
             ))}
           </tbody>
         </table>
+        </div>
         <p className="text-xs text-slate-500 mt-3">
           "사용량 추적"을 켜고 시간(H)을 지정하면(예: 연차=8H, 반차=4H, 반반차=2H), 이 태그가 입력된 날짜를 자동으로 집계해 보여줍니다.
           연차뿐 아니라 <b>시차·공가도 이걸 켜야 사용량이 집계됩니다.</b> 그중 시차·공가처럼 쓸 때마다 발생량이 쌓이는 휴가는
