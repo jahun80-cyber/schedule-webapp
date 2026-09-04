@@ -3607,14 +3607,15 @@ function storeDayContext(cfg, sched, archive, dateStr) {
     const { year: y2, month: m2 } = nextMonth(s.year, s.startMonth);
     const key2 = `${y2}-${String(m2).padStart(2, "0")}`;
     if (ym === key1) {
-      return { source: "live", label: "1개월차", days: buildMonthDays(s.year, s.startMonth, cfg.holidays || [], cfg.issueDays || []), cells: sched?.m1 || {} };
+      return { source: "live", label: "1개월차", days: buildMonthDays(s.year, s.startMonth, cfg.holidays || [], cfg.issueDays || []), cells: sched?.m1 || {}, memoCells: sched?.m1Memo || {}, memoLabels: cfg?.memoRowLabels || [] };
     }
     if (ym === key2) {
-      return { source: "live", label: "2개월차", days: buildMonthDays(y2, m2, cfg.holidays || [], cfg.issueDays || []), cells: sched?.m2 || {} };
+      return { source: "live", label: "2개월차", days: buildMonthDays(y2, m2, cfg.holidays || [], cfg.issueDays || []), cells: sched?.m2 || {}, memoCells: sched?.m2Memo || {}, memoLabels: cfg?.memoRowLabels || [] };
     }
   }
   const arch = archive?.[ym];
-  if (arch) return { source: "archive", label: "월별기록", days: arch.days || [], cells: arch.schedule || {} };
+  // [월별기록]은 저장 당시의 메모 줄 이름을 함께 담아두므로(memoRowLabels), 지금 설정이 아니라 그 기록의 것을 쓴다.
+  if (arch) return { source: "archive", label: "월별기록", days: arch.days || [], cells: arch.schedule || {}, memoCells: arch.memo || {}, memoLabels: arch.memoRowLabels || [] };
   return null;
 }
 
@@ -3638,8 +3639,14 @@ function storeDayStats(cfg, ctx, dateStr) {
   });
   const ftReq = requiredFT(settings, day);
   const ptReq = requiredPT(settings, day);
+  // 그날 메모가 적혀 있는 줄만 모은다(빈 줄은 화면에 아무것도 내보내지 않기 위해 여기서 걸러낸다).
+  const memos = (ctx.memoLabels || []).reduce((acc, row) => {
+    const text = String((ctx.memoCells?.[row.id] || [])[idx] || "").replace(/\s+/g, " ").trim();
+    if (text) acc.push({ label: row.label || "메모", text });
+    return acc;
+  }, []);
   return {
-    day, ftAttend, ptAttend, ftReq, ptReq,
+    day, ftAttend, ptAttend, ftReq, ptReq, memos,
     ftSlack: ftAttend - ftReq,
     ptSlack: ptAttend - ptReq,
     ftWorking,
@@ -3724,6 +3731,32 @@ function SupportMatchTab({ storeList, currentStoreId }) {
         : <span className="text-red-600 font-bold">{n}</span>
   );
 
+  // 35개 매장이 한 화면에 나열되므로 메모는 한 줄 분량만 보여주고, 잘린 내용은 마우스를 올리면 전부 보이게 한다.
+  const MEMO_LINE_BUDGET = 100;
+  const MemoLine = ({ memos, className = "" }) => {
+    if (!memos || memos.length === 0) return null;
+    const full = memos.map((m) => `${m.label}: ${m.text}`).join("  ·  ");
+    const shown = [];
+    let used = 0;
+    for (const m of memos) {
+      if (used >= MEMO_LINE_BUDGET) break;
+      const room = MEMO_LINE_BUDGET - used;
+      const text = m.text.length > room ? `${m.text.slice(0, room)}…` : m.text;
+      shown.push({ label: m.label, text });
+      used += m.label.length + text.length + 2;
+    }
+    return (
+      <span className={`text-[11px] text-amber-700 ${className}`} title={full}>
+        {shown.map((m, i) => (
+          <span key={i} className="mr-2">
+            <span className="font-semibold">{m.label}:</span> {m.text}
+          </span>
+        ))}
+        {shown.length < memos.length && <span className="text-amber-500">…</span>}
+      </span>
+    );
+  };
+
   const StoreRow = ({ r, dim }) => {
     const open = !!expanded[r.store.id];
     return (
@@ -3746,6 +3779,13 @@ function SupportMatchTab({ storeList, currentStoreId }) {
           <td className="py-1.5 pr-2 text-center text-[11px] text-slate-500">{r.ptAttend} / {r.ptReq}</td>
           <td className="py-1.5 pr-2 text-[11px] text-slate-400">{r.source}</td>
         </tr>
+        {r.memos && r.memos.length > 0 && (
+          <tr className="border-b border-slate-100">
+            <td colSpan={7} className="pb-1.5 pl-5 pr-2 align-top">
+              <MemoLine memos={r.memos} />
+            </td>
+          </tr>
+        )}
         {open && (
           <tr className="border-b border-slate-100 bg-slate-50">
             <td colSpan={7} className="py-2 px-3 text-[11px] text-slate-600">
@@ -3790,7 +3830,7 @@ function SupportMatchTab({ storeList, currentStoreId }) {
         <p className="text-xs text-slate-500 mb-3">
           날짜를 고르면 그날 <b>여유 인원이 있는 다른 매장</b>을 찾아 보여줍니다. 여유 인원은 각 매장의
           [설정]에 정해둔 <b>최소 출근 기준 대비 그날 실제 배정된 출근 인원</b>의 차이입니다(예: 정직원 여유 +3 = 최소인원보다 3명 더 나옴).
-          매장 이름을 누르면 그날 출근하는 정직원 명단도 볼 수 있습니다.
+          매장 이름을 누르면 그날 출근하는 정직원 명단도 볼 수 있습니다. 그날 메모가 적혀 있는 매장은 매장 줄 아래에 메모가 함께 나옵니다.
         </p>
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-xs font-semibold text-slate-500">날짜</span>
@@ -3818,6 +3858,7 @@ function SupportMatchTab({ storeList, currentStoreId }) {
           <span>{result.date} 정직원 {result.mine.ftAttend}/{result.mine.ftReq}명 (여유 <SlackNum n={result.mine.ftSlack} />)</span>
           <span className="text-slate-400 mx-2">·</span>
           <span>파트 {result.mine.ptAttend}/{result.mine.ptReq}명 (여유 <SlackNum n={result.mine.ptSlack} />)</span>
+          {result.mine.memos && result.mine.memos.length > 0 && <MemoLine memos={result.mine.memos} className="block mt-1" />}
         </div>
       )}
 
